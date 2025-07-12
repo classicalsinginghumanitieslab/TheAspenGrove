@@ -21,9 +21,13 @@ const ClassicalMusicGenealogy = () => {
   const [resizeStartY, setResizeStartY] = useState(0);
   const [resizeStartHeight, setResizeStartHeight] = useState(0);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [expandSubmenu, setExpandSubmenu] = useState(null);
+  const [profileCard, setProfileCard] = useState({ show: false, data: null });
+  const [actualCounts, setActualCounts] = useState({});
 
   const svgRef = useRef(null);
   const simulationRef = useRef(null);
+  const submenuTimeoutRef = useRef(null);
 
   const API_BASE = 'http://localhost:3001';
 
@@ -37,10 +41,27 @@ const ClassicalMusicGenealogy = () => {
 
   // Close context menu when clicking elsewhere
   useEffect(() => {
-    const handleClick = () => setContextMenu({ show: false, x: 0, y: 0, node: null });
+    const handleClick = () => {
+      setContextMenu({ show: false, x: 0, y: 0, node: null });
+      setExpandSubmenu(null);
+      // Clear any pending submenu timeout
+      if (submenuTimeoutRef.current) {
+        clearTimeout(submenuTimeoutRef.current);
+      }
+    };
     document.addEventListener('click', handleClick);
     return () => document.removeEventListener('click', handleClick);
   }, []);
+
+  // Fetch actual counts when context menu opens for isolated nodes
+  useEffect(() => {
+    if (contextMenu.show && contextMenu.node) {
+      const isNodeAlone = networkData.nodes.length === 1 || networkData.links.length === 0;
+      if (isNodeAlone && !actualCounts[contextMenu.node.id]) {
+        fetchActualCounts(contextMenu.node);
+      }
+    }
+  }, [contextMenu.show, contextMenu.node, networkData.nodes.length, networkData.links.length]);
 
   // Handle resize functionality
   useEffect(() => {
@@ -382,6 +403,587 @@ const ClassicalMusicGenealogy = () => {
     setNetworkData({ nodes, links });
   };
 
+  // Function to show full information profile card
+  const showFullInformation = async (node) => {
+    if (node.type === 'person') {
+      try {
+        setLoading(true);
+        const response = await fetch(`${API_BASE}/singer/network`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ singerName: node.name, depth: 1 })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          setProfileCard({ show: true, data: data.center });
+        } else {
+          setError(data.error);
+        }
+      } catch (err) {
+        setError('Failed to fetch profile information');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Function to expand all relationships for a node
+  const expandAllRelationships = async (node) => {
+    try {
+      setLoading(true);
+      let response, data;
+      
+      if (node.type === 'person') {
+        response = await fetch(`${API_BASE}/singer/network`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ singerName: node.name, depth: 2 })
+        });
+      } else if (node.type === 'opera') {
+        response = await fetch(`${API_BASE}/opera/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ operaName: node.name })
+        });
+      } else if (node.type === 'book') {
+        response = await fetch(`${API_BASE}/book/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ bookTitle: node.name })
+        });
+      }
+
+      if (response) {
+        data = await response.json();
+        if (response.ok) {
+          // Merge new data with existing network
+          const existingNodes = new Set(networkData.nodes.map(n => n.id));
+          const existingLinks = new Set(networkData.links.map(l => {
+            const sourceId = typeof l.source === 'string' ? l.source : l.source?.id;
+            const targetId = typeof l.target === 'string' ? l.target : l.target?.id;
+            return `${sourceId}-${targetId}-${l.type}`;
+          }));
+          
+          const newNodes = [];
+          const newLinks = [];
+          
+          // Handle different node types and their data structures
+          if (node.type === 'person') {
+            // Add new nodes from the expanded data for people
+            if (data.teachers) {
+              data.teachers.forEach(teacher => {
+                if (!existingNodes.has(teacher.full_name)) {
+                  newNodes.push({
+                    id: teacher.full_name,
+                    name: teacher.full_name,
+                    type: 'person',
+                    voiceType: teacher.voice_type,
+                    birthYear: teacher.birth_year,
+                    deathYear: teacher.death_year,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${teacher.full_name}-${node.name}-taught`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: teacher.full_name,
+                    target: node.name,
+                    type: 'taught',
+                    label: 'taught'
+                  });
+                }
+              });
+            }
+            
+            if (data.students) {
+              data.students.forEach(student => {
+                if (!existingNodes.has(student.full_name)) {
+                  newNodes.push({
+                    id: student.full_name,
+                    name: student.full_name,
+                    type: 'person',
+                    voiceType: student.voice_type,
+                    birthYear: student.birth_year,
+                    deathYear: student.death_year,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${node.name}-${student.full_name}-taught`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: node.name,
+                    target: student.full_name,
+                    type: 'taught',
+                    label: 'taught'
+                  });
+                }
+              });
+            }
+            
+            if (data.family) {
+              data.family.forEach(relative => {
+                if (!existingNodes.has(relative.full_name)) {
+                  newNodes.push({
+                    id: relative.full_name,
+                    name: relative.full_name,
+                    type: 'person',
+                    voiceType: relative.voice_type,
+                    birthYear: relative.birth_year,
+                    deathYear: relative.death_year,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${node.name}-${relative.full_name}-family`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: node.name,
+                    target: relative.full_name,
+                    type: 'family',
+                    label: relative.relationship_type || 'family'
+                  });
+                }
+              });
+            }
+            
+            if (data.works) {
+              if (data.works.operas) {
+                data.works.operas.forEach(opera => {
+                  const operaId = `opera_${opera.title}`;
+                  if (!existingNodes.has(operaId)) {
+                    newNodes.push({
+                      id: operaId,
+                      name: opera.title,
+                      type: 'opera',
+                      role: opera.role,
+                      x: Math.random() * 800,
+                      y: Math.random() * 600
+                    });
+                  }
+                  
+                  const linkKey = `${node.name}-${operaId}-premiered`;
+                  if (!existingLinks.has(linkKey)) {
+                    newLinks.push({
+                      source: node.name,
+                      target: operaId,
+                      type: 'premiered',
+                      label: 'premiered role in'
+                    });
+                  }
+                });
+              }
+              
+              if (data.works.books) {
+                data.works.books.forEach(book => {
+                  const bookId = `book_${book.title}`;
+                  if (!existingNodes.has(bookId)) {
+                    newNodes.push({
+                      id: bookId,
+                      name: book.title,
+                      type: 'book',
+                      x: Math.random() * 800,
+                      y: Math.random() * 600
+                    });
+                  }
+                  
+                  const linkKey = `${node.name}-${bookId}-authored`;
+                  if (!existingLinks.has(linkKey)) {
+                    newLinks.push({
+                      source: node.name,
+                      target: bookId,
+                      type: 'authored',
+                      label: 'authored'
+                    });
+                  }
+                });
+              }
+            }
+          } else if (node.type === 'opera') {
+            // Handle opera expansion - add performers, composers, etc.
+            if (data.premieredRoles) {
+              data.premieredRoles.forEach(role => {
+                const singerId = role.singer;
+                if (!existingNodes.has(singerId)) {
+                  newNodes.push({
+                    id: singerId,
+                    name: singerId,
+                    type: 'person',
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${singerId}-${node.name}-premiered`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: singerId,
+                    target: node.name,
+                    type: 'premiered',
+                    label: 'premiered role in'
+                  });
+                }
+              });
+            }
+          } else if (node.type === 'book') {
+            // Handle book expansion - add authors, editors, etc.
+            if (data.book && data.book.author) {
+              const authorId = data.book.author;
+              if (!existingNodes.has(authorId)) {
+                newNodes.push({
+                  id: authorId,
+                  name: authorId,
+                  type: 'person',
+                  x: Math.random() * 800,
+                  y: Math.random() * 600
+                });
+              }
+              
+              const linkKey = `${authorId}-${node.name}-authored`;
+              if (!existingLinks.has(linkKey)) {
+                newLinks.push({
+                  source: authorId,
+                  target: node.name,
+                  type: 'authored',
+                  label: 'authored'
+                });
+              }
+            }
+          }
+          
+          // Update network data with new nodes and links
+          setNetworkData({
+            nodes: [...networkData.nodes, ...newNodes],
+            links: [...networkData.links, ...newLinks]
+          });
+          setShouldRunSimulation(true);
+        } else {
+          setError(data.error);
+        }
+      }
+    } catch (err) {
+      setError('Failed to expand relationships');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Function to expand specific relationship type
+  const expandSpecificRelationship = async (node, relationshipType) => {
+    try {
+      setLoading(true);
+      let response, data;
+      
+      if (node.type === 'person') {
+        response = await fetch(`${API_BASE}/singer/network`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ singerName: node.name, depth: 2 })
+        });
+      } else if (node.type === 'opera') {
+        response = await fetch(`${API_BASE}/opera/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ operaName: node.name })
+        });
+      } else if (node.type === 'book') {
+        response = await fetch(`${API_BASE}/book/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ bookTitle: node.name })
+        });
+      }
+
+      if (response) {
+        data = await response.json();
+        if (response.ok) {
+          // Merge new data with existing network
+          const existingNodes = new Set(networkData.nodes.map(n => n.id));
+          const existingLinks = new Set(networkData.links.map(l => {
+            const sourceId = typeof l.source === 'string' ? l.source : l.source?.id;
+            const targetId = typeof l.target === 'string' ? l.target : l.target?.id;
+            return `${sourceId}-${targetId}-${l.type}`;
+          }));
+          
+          const newNodes = [];
+          const newLinks = [];
+          
+          // Handle specific relationship types for people
+          if (node.type === 'person') {
+            if (relationshipType === 'taughtBy' && data.teachers) {
+              data.teachers.forEach(teacher => {
+                if (!existingNodes.has(teacher.full_name)) {
+                  newNodes.push({
+                    id: teacher.full_name,
+                    name: teacher.full_name,
+                    type: 'person',
+                    voiceType: teacher.voice_type,
+                    birthYear: teacher.birth_year,
+                    deathYear: teacher.death_year,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${teacher.full_name}-${node.name}-taught`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: teacher.full_name,
+                    target: node.name,
+                    type: 'taught',
+                    label: 'taught'
+                  });
+                }
+              });
+            }
+            
+            if (relationshipType === 'taught' && data.students) {
+              data.students.forEach(student => {
+                if (!existingNodes.has(student.full_name)) {
+                  newNodes.push({
+                    id: student.full_name,
+                    name: student.full_name,
+                    type: 'person',
+                    voiceType: student.voice_type,
+                    birthYear: student.birth_year,
+                    deathYear: student.death_year,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${node.name}-${student.full_name}-taught`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: node.name,
+                    target: student.full_name,
+                    type: 'taught',
+                    label: 'taught'
+                  });
+                }
+              });
+            }
+            
+            if ((relationshipType === 'parent' || relationshipType === 'parentOf' || 
+                 relationshipType === 'spouse' || relationshipType === 'spouseOf' ||
+                 relationshipType === 'grandparent' || relationshipType === 'grandparentOf' ||
+                 relationshipType === 'sibling') && data.family) {
+              data.family.forEach(relative => {
+                const relType = relative.relationship_type?.toLowerCase() || '';
+                let shouldInclude = false;
+                
+                if (relationshipType === 'parent' && relType.includes('parent') && !relType.includes('of')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'parentOf' && relType.includes('parent') && relType.includes('of')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'spouse' && relType.includes('spouse')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'spouseOf' && relType.includes('spouse')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'grandparent' && relType.includes('grandparent') && !relType.includes('of')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'grandparentOf' && relType.includes('grandparent') && relType.includes('of')) {
+                  shouldInclude = true;
+                } else if (relationshipType === 'sibling' && relType.includes('sibling')) {
+                  shouldInclude = true;
+                }
+                
+                if (shouldInclude) {
+                  if (!existingNodes.has(relative.full_name)) {
+                    newNodes.push({
+                      id: relative.full_name,
+                      name: relative.full_name,
+                      type: 'person',
+                      voiceType: relative.voice_type,
+                      birthYear: relative.birth_year,
+                      deathYear: relative.death_year,
+                      x: Math.random() * 800,
+                      y: Math.random() * 600
+                    });
+                  }
+                  
+                  const linkKey = `${node.name}-${relative.full_name}-family`;
+                  if (!existingLinks.has(linkKey)) {
+                    newLinks.push({
+                      source: node.name,
+                      target: relative.full_name,
+                      type: 'family',
+                      label: relative.relationship_type || 'family'
+                    });
+                  }
+                }
+              });
+            }
+            
+            if (relationshipType === 'authored' && data.works && data.works.books) {
+              data.works.books.forEach(book => {
+                const bookId = `book_${book.title}`;
+                if (!existingNodes.has(bookId)) {
+                  newNodes.push({
+                    id: bookId,
+                    name: book.title,
+                    type: 'book',
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${node.name}-${bookId}-authored`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: node.name,
+                    target: bookId,
+                    type: 'authored',
+                    label: 'authored'
+                  });
+                }
+              });
+            }
+            
+            if (relationshipType === 'premieredRoleIn' && data.works && data.works.operas) {
+              data.works.operas.forEach(opera => {
+                const operaId = `opera_${opera.title}`;
+                if (!existingNodes.has(operaId)) {
+                  newNodes.push({
+                    id: operaId,
+                    name: opera.title,
+                    type: 'opera',
+                    role: opera.role,
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${node.name}-${operaId}-premiered`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: node.name,
+                    target: operaId,
+                    type: 'premiered',
+                    label: 'premiered role in'
+                  });
+                }
+              });
+            }
+          } else if (node.type === 'opera') {
+            if ((relationshipType === 'wrote' || relationshipType === 'wroteBy') && data.premieredRoles) {
+              data.premieredRoles.forEach(role => {
+                const singerId = role.singer;
+                if (!existingNodes.has(singerId)) {
+                  newNodes.push({
+                    id: singerId,
+                    name: singerId,
+                    type: 'person',
+                    x: Math.random() * 800,
+                    y: Math.random() * 600
+                  });
+                }
+                
+                const linkKey = `${singerId}-${node.name}-premiered`;
+                if (!existingLinks.has(linkKey)) {
+                  newLinks.push({
+                    source: singerId,
+                    target: node.name,
+                    type: 'premiered',
+                    label: 'premiered role in'
+                  });
+                }
+              });
+            }
+          } else if (node.type === 'book') {
+            if ((relationshipType === 'authored' || relationshipType === 'authoredBy') && data.book && data.book.author) {
+              const authorId = data.book.author;
+              if (!existingNodes.has(authorId)) {
+                newNodes.push({
+                  id: authorId,
+                  name: authorId,
+                  type: 'person',
+                  x: Math.random() * 800,
+                  y: Math.random() * 600
+                });
+              }
+              
+              const linkKey = `${authorId}-${node.name}-authored`;
+              if (!existingLinks.has(linkKey)) {
+                newLinks.push({
+                  source: authorId,
+                  target: node.name,
+                  type: 'authored',
+                  label: 'authored'
+                });
+              }
+            }
+          }
+          
+          // Update network data with new nodes and links
+          setNetworkData({
+            nodes: [...networkData.nodes, ...newNodes],
+            links: [...networkData.links, ...newLinks]
+          });
+          setShouldRunSimulation(true);
+        } else {
+          setError(data.error);
+        }
+      }
+    } catch (err) {
+      setError('Failed to expand specific relationship');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Function to dismiss other nodes (keep only the selected node, no relationships)
+  const dismissOtherNodes = (selectedNode) => {
+    const filteredNodes = networkData.nodes.filter(node => node.id === selectedNode.id);
+    
+    // Remove all relationships - this creates a new visualization starting from this node
+    setNetworkData({
+      nodes: filteredNodes,
+      links: [] // No relationships - clean slate
+    });
+  };
+
+  // Function to dismiss the selected node
+  const dismissNode = (nodeToRemove) => {
+    const filteredNodes = networkData.nodes.filter(node => node.id !== nodeToRemove.id);
+    const filteredLinks = networkData.links.filter(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source?.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target?.id;
+      return sourceId !== nodeToRemove.id && targetId !== nodeToRemove.id;
+    });
+    
+    setNetworkData({
+      nodes: filteredNodes,
+      links: filteredLinks
+    });
+  };
+
   const getItemDetails = async (item) => {
     try {
       setLoading(true);
@@ -595,12 +1197,52 @@ const ClassicalMusicGenealogy = () => {
         })
         .on("contextmenu", (event, d) => {
           event.preventDefault();
+          event.stopPropagation();
+          
+          // Calculate position 20px to the right of the node's right edge
+          const nodeRadius = 40;
+          const menuOffset = 20;
+          const containerRect = container.getBoundingClientRect();
+          
+          // Position relative to the container
+          const nodeX = d.x + nodeRadius + menuOffset;
+          const nodeY = d.y - nodeRadius; // Align with top of the node
+          
+          // Calculate absolute position
+          const absoluteX = containerRect.left + nodeX;
+          const absoluteY = containerRect.top + nodeY;
+          
+          // Keep menu within container bounds
+          const menuWidth = 250; // estimated menu width
+          const menuHeight = 300; // estimated menu height
+          
+          let finalX = absoluteX;
+          let finalY = absoluteY;
+          
+          // Adjust if menu would go outside container
+          if (absoluteX + menuWidth > containerRect.right) {
+            finalX = containerRect.left + d.x - nodeRadius - menuOffset - menuWidth;
+          }
+          
+          if (absoluteY + menuHeight > containerRect.bottom) {
+            finalY = containerRect.bottom - menuHeight;
+          }
+          
+          if (finalY < containerRect.top) {
+            finalY = containerRect.top;
+          }
+          
           setContextMenu({
             show: true,
-            x: event.pageX,
-            y: event.pageY,
+            x: finalX,
+            y: finalY,
             node: d
           });
+          setExpandSubmenu(null); // Reset submenu state
+          // Clear any pending submenu timeout
+          if (submenuTimeoutRef.current) {
+            clearTimeout(submenuTimeoutRef.current);
+          }
         })
         .call(d3.drag()
           .on("start", dragstarted)
@@ -922,11 +1564,12 @@ const ClassicalMusicGenealogy = () => {
       };
     }, [networkData, visualizationHeight, selectedNode, shouldRunSimulation]);
 
-    return (
-      <div style={{ position: 'relative' }}>
-        <div ref={containerRef} style={{ width: '100%', height: `${visualizationHeight}px`, border: '1px solid #ddd', borderRadius: '8px' }}>
-          <svg ref={svgRef}></svg>
-        </div>
+          return (
+        <div style={{ position: 'relative' }}>
+          <div ref={containerRef} style={{ width: '100%', height: `${visualizationHeight}px`, border: '1px solid #ddd', borderRadius: '8px' }}>
+            <svg ref={svgRef}></svg>
+            <ProfileCard />
+          </div>
         
         <div
           onMouseDown={handleResizeStart}
@@ -992,10 +1635,379 @@ const ClassicalMusicGenealogy = () => {
     );
   };
 
-  const ContextMenu = () => {
+  // Function to fetch actual relationship counts from database
+  const fetchActualCounts = async (node) => {
+    if (actualCounts[node.id]) {
+      return actualCounts[node.id];
+    }
+
+    try {
+      let response, data;
+      
+      if (node.type === 'person') {
+        response = await fetch(`${API_BASE}/singer/network`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ singerName: node.name, depth: 1 })
+        });
+      } else if (node.type === 'opera') {
+        response = await fetch(`${API_BASE}/opera/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ operaName: node.name })
+        });
+      } else if (node.type === 'book') {
+        response = await fetch(`${API_BASE}/book/details`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ bookTitle: node.name })
+        });
+      }
+
+      if (response && response.ok) {
+        data = await response.json();
+        
+        const counts = {
+          taughtBy: 0,
+          taught: 0,
+          authored: 0,
+          premieredRoleIn: 0,
+          wrote: 0,
+          parent: 0,
+          parentOf: 0,
+          spouse: 0,
+          grandparent: 0,
+          grandparentOf: 0,
+          sibling: 0,
+          edited: 0,
+          editedBy: 0
+        };
+
+        if (node.type === 'person') {
+          if (data.teachers) counts.taughtBy = data.teachers.length;
+          if (data.students) counts.taught = data.students.length;
+          if (data.family) {
+            data.family.forEach(relative => {
+              const relType = relative.relationship_type?.toLowerCase() || '';
+              if (relType.includes('parent') && relType.includes('of')) counts.parentOf++;
+              else if (relType.includes('parent')) counts.parent++;
+              else if (relType.includes('spouse')) counts.spouse++;
+              else if (relType.includes('grandparent') && relType.includes('of')) counts.grandparentOf++;
+              else if (relType.includes('grandparent')) counts.grandparent++;
+              else if (relType.includes('sibling')) counts.sibling++;
+            });
+          }
+          if (data.works) {
+            if (data.works.operas) counts.premieredRoleIn = data.works.operas.length;
+            if (data.works.books) counts.authored = data.works.books.length;
+          }
+        } else if (node.type === 'opera') {
+          if (data.premieredRoles) counts.wrote = data.premieredRoles.length;
+        } else if (node.type === 'book') {
+          if (data.book && data.book.author) counts.authored = 1;
+        }
+
+        // Cache the counts
+        setActualCounts(prev => ({ ...prev, [node.id]: counts }));
+        return counts;
+      }
+    } catch (err) {
+      console.error('Failed to fetch actual counts:', err);
+    }
+
+    return {
+      taughtBy: 0,
+      taught: 0,
+      authored: 0,
+      premieredRoleIn: 0,
+      wrote: 0,
+      parent: 0,
+      parentOf: 0,
+      spouse: 0,
+      grandparent: 0,
+      grandparentOf: 0,
+      sibling: 0,
+      edited: 0,
+      editedBy: 0
+    };
+  };
+
+  // Helper function to get relationship counts for a node
+  const getRelationshipCounts = (node) => {
+    const counts = {
+      taughtBy: 0,
+      taught: 0,
+      authored: 0,
+      premieredRoleIn: 0,
+      wrote: 0,
+      parent: 0,
+      parentOf: 0,
+      spouse: 0,
+      grandparent: 0,
+      grandparentOf: 0,
+      sibling: 0,
+      edited: 0,
+      editedBy: 0
+    };
+
+    if (!networkData.links) return counts;
+
+    // Count relationships based on links
+    networkData.links.forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source?.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target?.id;
+      const isSource = sourceId === node.id;
+      const isTarget = targetId === node.id;
+
+      if (isSource) {
+        switch (link.type) {
+          case 'taught':
+            counts.taught++;
+            break;
+          case 'authored':
+            counts.authored++;
+            break;
+          case 'premiered':
+            counts.premieredRoleIn++;
+            break;
+          case 'wrote':
+            counts.wrote++;
+            break;
+          case 'family':
+            // Parse family relationship types
+            const label = link.label?.toLowerCase() || '';
+            if (label.includes('parent')) counts.parent++;
+            else if (label.includes('spouse')) counts.spouse++;
+            else if (label.includes('grandparent')) counts.grandparent++;
+            else if (label.includes('sibling')) counts.sibling++;
+            break;
+          case 'edited':
+            counts.edited++;
+            break;
+        }
+      }
+
+      if (isTarget) {
+        switch (link.type) {
+          case 'taught':
+            counts.taughtBy++;
+            break;
+          case 'authored':
+            // Count books that were authored by others
+            break;
+          case 'premiered':
+            // Count performers who premiered in this work
+            break;
+          case 'wrote':
+            counts.wrote++;
+            break;
+          case 'family':
+            // Parse family relationship types for reverse
+            const label = link.label?.toLowerCase() || '';
+            if (label.includes('parent')) counts.parentOf++;
+            else if (label.includes('spouse')) counts.spouse++;
+            else if (label.includes('grandparent')) counts.grandparentOf++;
+            else if (label.includes('sibling')) counts.sibling++;
+            break;
+          case 'edited':
+            counts.editedBy++;
+            break;
+        }
+      }
+    });
+
+    return counts;
+  };
+
+    const ContextMenu = () => {
     if (!contextMenu.show) return null;
 
-    return (
+    const node = contextMenu.node;
+    
+    // Check if node is alone (no other nodes or no relationships)
+    const isNodeAlone = networkData.nodes.length === 1 || networkData.links.length === 0;
+    
+    // Use actual counts for isolated nodes, network counts otherwise
+    const counts = isNodeAlone ? (actualCounts[node.id] || {
+      taughtBy: 0, taught: 0, authored: 0, premieredRoleIn: 0, wrote: 0,
+      parent: 0, parentOf: 0, spouse: 0, grandparent: 0, grandparentOf: 0,
+      sibling: 0, edited: 0, editedBy: 0
+    }) : getRelationshipCounts(node);
+    
+    const menuItems = [
+      {
+        label: 'Full information',
+        action: () => {
+          showFullInformation(node);
+          setContextMenu({ show: false, x: 0, y: 0, node: null });
+        }
+      },
+      {
+        label: 'Expand',
+        hasSubmenu: true,
+                submenu: [
+          // Only show "All" if node is not alone
+          ...(!isNodeAlone ? [{
+            label: 'All',
+            action: () => {
+              expandAllRelationships(node);
+              setContextMenu({ show: false, x: 0, y: 0, node: null });
+            }
+          }] : []),
+          ...(node?.type === 'person' ? [
+            // Only show relationships that actually exist (count > 0)
+            ...(counts.taughtBy > 0 ? [{
+              label: `← Taught - (${counts.taughtBy} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'taughtBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.authored > 0 ? [{
+              label: `- Authored -> (${counts.authored} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'authored');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.premieredRoleIn > 0 ? [{
+              label: `- Premiered role in -> (${counts.premieredRoleIn} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'premieredRoleIn');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.taught > 0 ? [{
+              label: `- Taught -> (${counts.taught} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'taught');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.parent > 0 ? [{
+              label: `- Parent -> (${counts.parent} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'parent');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.parentOf > 0 ? [{
+              label: `← Parent - (${counts.parentOf} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'parentOf');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.spouse > 0 ? [{
+              label: `- Spouse -> (${counts.spouse} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'spouse');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.spouse > 0 ? [{
+              label: `← Spouse - (${counts.spouse} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'spouseOf');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.grandparent > 0 ? [{
+              label: `- Grandparent -> (${counts.grandparent} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'grandparent');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.grandparentOf > 0 ? [{
+              label: `← Grandparent - (${counts.grandparentOf} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'grandparentOf');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.sibling > 0 ? [{
+              label: `- Sibling - (${counts.sibling} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'sibling');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : [])
+          ] : []),
+          ...(node?.type === 'opera' ? [
+            ...(counts.wrote > 0 ? [{
+              label: `- Wrote -> (${counts.wrote} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'wrote');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.wrote > 0 ? [{
+              label: `← Wrote - (${counts.wrote} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'wroteBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : [])
+          ] : []),
+          ...(node?.type === 'book' ? [
+            ...(counts.authored > 0 ? [{
+              label: `- Authored -> (${counts.authored} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'authored');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.authored > 0 ? [{
+              label: `← Authored - (${counts.authored} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'authoredBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.edited > 0 ? [{
+              label: `- Edited -> (${counts.edited} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'edited');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.editedBy > 0 ? [{
+              label: `← Edited - (${counts.editedBy} nodes)`,
+              action: () => {
+                expandSpecificRelationship(node, 'editedBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : [])
+          ] : [])
+        ]
+      },
+             {
+         label: 'Dismiss other nodes',
+         action: () => {
+           dismissOtherNodes(node);
+           setContextMenu({ show: false, x: 0, y: 0, node: null });
+         }
+       },
+       {
+         label: 'Dismiss',
+         action: () => {
+           dismissNode(node);
+           setContextMenu({ show: false, x: 0, y: 0, node: null });
+         }
+              }
+     ];
+
+     return (
       <div
         style={{
           position: 'fixed',
@@ -1003,62 +2015,293 @@ const ClassicalMusicGenealogy = () => {
           left: contextMenu.x,
           backgroundColor: 'white',
           border: '1px solid #ccc',
-          borderRadius: '4px',
-          padding: '8px',
-          boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-          zIndex: 1000
+          borderRadius: '6px',
+          padding: '4px 0',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+          zIndex: 1000,
+          minWidth: '220px',
+          maxWidth: '300px',
+          fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+          fontSize: '14px'
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>
-          {contextMenu.node?.name}
+        {/* Header */}
+        <div style={{ 
+          padding: '8px 12px', 
+          fontWeight: '600', 
+          borderBottom: '1px solid #e5e7eb',
+          color: '#1f2937',
+          fontSize: '13px'
+        }}>
+          {node?.name}
         </div>
-        <div 
-          style={{ 
-            padding: '4px 8px', 
-            cursor: 'pointer',
-            borderRadius: '2px'
-          }}
-          onMouseOver={(e) => e.target.style.backgroundColor = '#f0f0f0'}
-          onMouseOut={(e) => e.target.style.backgroundColor = 'transparent'}
-          onClick={() => {
-            if (contextMenu.node?.type === 'person') {
-              searchForPerson(contextMenu.node.name);
-            }
-            setContextMenu({ show: false, x: 0, y: 0, node: null });
-          }}
-        >
-          View Details
+
+        {/* Menu Items */}
+        {menuItems.map((item, index) => (
+          <div key={index} style={{ position: 'relative' }}>
+            <div
+              style={{
+                padding: '8px 12px',
+                cursor: 'pointer',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                color: '#374151',
+                transition: 'background-color 0.1s'
+              }}
+                             onMouseEnter={(e) => {
+                 e.target.style.backgroundColor = '#f3f4f6';
+                 if (item.hasSubmenu) {
+                   // Clear any existing timeout
+                   if (submenuTimeoutRef.current) {
+                     clearTimeout(submenuTimeoutRef.current);
+                   }
+                   setExpandSubmenu(index);
+                 }
+               }}
+               onMouseLeave={(e) => {
+                 e.target.style.backgroundColor = 'transparent';
+                 if (item.hasSubmenu) {
+                   // Set timeout to close submenu
+                   submenuTimeoutRef.current = setTimeout(() => {
+                     setExpandSubmenu(null);
+                   }, 300);
+                 }
+               }}
+              onClick={() => {
+                if (!item.hasSubmenu) {
+                  item.action();
+                }
+              }}
+            >
+              <span>{item.label}</span>
+              {item.hasSubmenu && <span style={{ color: '#9ca3af' }}>▶</span>}
+            </div>
+
+                        {/* Submenu */}
+            {item.hasSubmenu && expandSubmenu === index && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '100%',
+                  top: '0',
+                  backgroundColor: 'white',
+                  border: '2px solid #333',
+                  borderRadius: '6px',
+                  padding: '8px 0',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                  minWidth: '280px',
+                  maxWidth: '400px',
+                  zIndex: 1001,
+                  fontSize: '14px'
+                }}
+                onMouseEnter={() => {
+                  // Clear any existing timeout when entering submenu
+                  if (submenuTimeoutRef.current) {
+                    clearTimeout(submenuTimeoutRef.current);
+                  }
+                  setExpandSubmenu(index);
+                }}
+                onMouseLeave={() => {
+                  // Set timeout to close submenu when leaving
+                  submenuTimeoutRef.current = setTimeout(() => {
+                    setExpandSubmenu(null);
+                  }, 300);
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {item.submenu.map((subItem, subIndex) => (
+                  <div
+                    key={subIndex}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      color: '#374151',
+                      fontSize: '14px',
+                      fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+                      whiteSpace: 'nowrap',
+                      minHeight: '24px',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}
+                    onMouseEnter={(e) => e.target.style.backgroundColor = '#f3f4f6'}
+                    onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
+                    onClick={() => {
+                      subItem.action();
+                    }}
+                                      >
+                      {subItem.label}
+                    </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const ProfileCard = () => {
+    if (!profileCard.show || !profileCard.data) return null;
+
+    const data = profileCard.data;
+
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          bottom: '20px',
+          left: '20px',
+          width: '300px',
+          maxHeight: '400px',
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+          border: '1px solid #e5e7eb',
+          zIndex: 1000,
+          fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+          overflow: 'hidden'
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          padding: '16px',
+          backgroundColor: '#f9fafb',
+          borderBottom: '1px solid #e5e7eb',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <h3 style={{
+            margin: 0,
+            fontSize: '16px',
+            fontWeight: '600',
+            color: '#1f2937'
+          }}>
+            👤 Singer Profile
+          </h3>
+          <button
+            onClick={() => setProfileCard({ show: false, data: null })}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontSize: '18px',
+              cursor: 'pointer',
+              color: '#6b7280',
+              padding: '0',
+              width: '24px',
+              height: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            ×
+          </button>
         </div>
-        <div 
-          style={{ 
-            padding: '4px 8px', 
-            cursor: 'pointer',
-            borderRadius: '2px'
-          }}
-          onMouseOver={(e) => e.target.style.backgroundColor = '#f0f0f0'}
-          onMouseOut={(e) => e.target.style.backgroundColor = 'transparent'}
-          onClick={() => {
-            console.log('Expand network for:', contextMenu.node?.name);
-            setContextMenu({ show: false, x: 0, y: 0, node: null });
-          }}
-        >
-          Expand Network
-        </div>
-        <div 
-          style={{ 
-            padding: '4px 8px', 
-            cursor: 'pointer',
-            borderRadius: '2px'
-          }}
-          onMouseOver={(e) => e.target.style.backgroundColor = '#f0f0f0'}
-          onMouseOut={(e) => e.target.style.backgroundColor = 'transparent'}
-          onClick={() => {
-            console.log('Add to comparison:', contextMenu.node?.name);
-            setContextMenu({ show: false, x: 0, y: 0, node: null });
-          }}
-        >
-          Add to Comparison
+
+        {/* Content */}
+        <div style={{
+          padding: '16px',
+          maxHeight: '340px',
+          overflowY: 'auto'
+        }}>
+          <div style={{ marginBottom: '12px' }}>
+            <strong style={{ color: '#1f2937' }}>Name:</strong>
+            <div style={{ color: '#374151', marginTop: '2px' }}>
+              {data.full_name}
+            </div>
+          </div>
+
+          {data.voice_type && (
+            <div style={{ marginBottom: '12px' }}>
+              <strong style={{ color: '#1f2937' }}>Voice type:</strong>
+              <div style={{ color: '#374151', marginTop: '2px' }}>
+                {data.voice_type}
+              </div>
+            </div>
+          )}
+
+          {(data.birth_year || data.death_year) && (
+            <div style={{ marginBottom: '12px' }}>
+              <strong style={{ color: '#1f2937' }}>Dates:</strong>
+              <div style={{ color: '#374151', marginTop: '2px' }}>
+                {data.birth_year && data.death_year
+                  ? `${data.birth_year} - ${data.death_year}`
+                  : data.birth_year
+                  ? `${data.birth_year} - `
+                  : data.death_year
+                  ? ` - ${data.death_year}`
+                  : ''}
+              </div>
+            </div>
+          )}
+
+          {data.citizen && (
+            <div style={{ marginBottom: '12px' }}>
+              <strong style={{ color: '#1f2937' }}>Birthplace:</strong>
+              <div style={{ color: '#374151', marginTop: '2px' }}>
+                {data.citizen}
+              </div>
+            </div>
+          )}
+
+          {data.underrepresented_group && (
+            <div style={{ marginBottom: '12px' }}>
+              <strong style={{ color: '#1f2937' }}>Underrepresented group:</strong>
+              <div style={{ color: '#374151', marginTop: '2px' }}>
+                {data.underrepresented_group}
+              </div>
+            </div>
+          )}
+
+          {/* Sources section */}
+          <div style={{ 
+            marginTop: '16px', 
+            paddingTop: '16px', 
+            borderTop: '1px solid #e5e7eb' 
+          }}>
+            <strong style={{ color: '#1f2937', fontSize: '14px' }}>Sources:</strong>
+            <div style={{ marginTop: '8px' }}>
+              {data.spelling_source && (
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#6b7280', 
+                  marginBottom: '4px' 
+                }}>
+                  <strong>Spelling:</strong> {data.spelling_source}
+                </div>
+              )}
+              {data.voice_type_source && (
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#6b7280', 
+                  marginBottom: '4px' 
+                }}>
+                  <strong>Voice type:</strong> {data.voice_type_source}
+                </div>
+              )}
+              {data.dates_source && (
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#6b7280', 
+                  marginBottom: '4px' 
+                }}>
+                  <strong>Dates:</strong> {data.dates_source}
+                </div>
+              )}
+              {data.citizenship_source && (
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#6b7280', 
+                  marginBottom: '4px' 
+                }}>
+                  <strong>Birthplace:</strong> {data.citizenship_source}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     );
