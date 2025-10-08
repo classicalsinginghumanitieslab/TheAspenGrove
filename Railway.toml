@@ -1,0 +1,7 @@
+[service]
+name = "classical-music-genealogy"
+start = "npm start"
+build = "npm run build"
+healthcheck_path = "/health"
+healthcheck_interval = 30
+healthcheck_timeout = 10

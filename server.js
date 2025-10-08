@@ -3,9 +3,10 @@ const express = require('express');
 const neo4j = require('neo4j-driver');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const rateLimit = require('express-rate-limit');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -31,8 +32,14 @@ const checkAPOCAvailability = async () => {
 };
 
 // Middleware
+const allowedOrigins = (process.env.CLIENT_ORIGINS && process.env.CLIENT_ORIGINS.split(',').map(origin => origin.trim())) || [
+  'http://localhost:3000',
+  'http://localhost:3002',
+  'http://localhost:5173'
+];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3002'],
+  origin: allowedOrigins,
   credentials: true
 }));
 app.use(express.json());
@@ -750,6 +757,22 @@ app.get('/subscription/status', authenticateToken, (req, res) => {
     resetDate: userSub?.resetDate
   });
 });
+
+const distPath = path.join(__dirname, 'frontend', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+
+  app.get('*', (req, res, next) => {
+    const requestPath = req.path || '';
+    const apiPrefixes = ['/auth', '/search', '/singer', '/opera', '/book', '/health', '/subscription'];
+
+    if (apiPrefixes.some(prefix => requestPath.startsWith(prefix))) {
+      return next();
+    }
+
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
