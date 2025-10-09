@@ -21,32 +21,44 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 // Security middleware
 app.set('trust proxy', 1);
 app.use(helmet());
+const rawClientOrigins = process.env.CLIENT_ORIGINS;
+console.log('[CORS] raw CLIENT_ORIGINS:', rawClientOrigins);
+const normalizeOrigin = (origin = '') => origin.trim().replace(/\/$/, '');
 const allowedOrigins =
-  (process.env.CLIENT_ORIGINS &&
-    process.env.CLIENT_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)) || [
+  (rawClientOrigins &&
+    rawClientOrigins
+      .split(',')
+      .map((origin) => normalizeOrigin(origin))
+      .filter(Boolean)) || [
     'http://localhost:3000',
     'http://localhost:3002',
     'http://localhost:5173',
-    'https://aspengrove.netlify.app',
+    'https://aspengrove.netlify.app'
   ];
-console.log('[CORS] Allowed origins:', allowedOrigins);
+const allowedOriginsSet = new Set(allowedOrigins.map(normalizeOrigin));
+console.log('[CORS] Allowed origins:', Array.from(allowedOriginsSet));
 
 // Allow typical private-LAN hostnames like http://192.168.x.x:PORT, http://10.x.x.x:PORT
 const privateLan = [/^http:\/\/(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}:\d+$/];
 
-app.use(cors({
+const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true); // allow non-browser clients / curl
-    const ok = allowedOrigins.includes(origin) || privateLan.some(rx => rx.test(origin));
-    return ok ? cb(null, true) : cb(new Error(`Not allowed by CORS: ${origin}`));
+    const normalized = normalizeOrigin(origin);
+    const ok = allowedOriginsSet.has(normalized) || privateLan.some((rx) => rx.test(origin));
+    if (ok) {
+      return cb(null, true);
+    }
+    console.warn(`[CORS] Blocked origin: ${origin} (normalized: ${normalized})`);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
+};
 
-// Explicitly handle OPTIONS preflight requests for all routes
-app.options('*', cors());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Rate limiting
 const limiter = rateLimit({
