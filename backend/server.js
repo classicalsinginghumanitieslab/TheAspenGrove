@@ -21,11 +21,15 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 // Security middleware
 app.set('trust proxy', 1);
 app.use(helmet());
-const allowedOrigins = [
-  process.env.FRONTEND_URL,                 // e.g. http://192.168.1.23:3000
-  'http://localhost:3000',
-  'http://127.0.0.1:3000'
-].filter(Boolean);
+const allowedOrigins =
+  (process.env.CLIENT_ORIGINS &&
+    process.env.CLIENT_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)) || [
+    'http://localhost:3000',
+    'http://localhost:3002',
+    'http://localhost:5173',
+    'https://aspengrove.netlify.app',
+  ];
+console.log('[CORS] Allowed origins:', allowedOrigins);
 
 // Allow typical private-LAN hostnames like http://192.168.x.x:PORT, http://10.x.x.x:PORT
 const privateLan = [/^http:\/\/(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}:\d+$/];
