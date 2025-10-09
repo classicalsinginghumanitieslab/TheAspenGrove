@@ -18,7 +18,8 @@ export default defineConfig({
       '/opera': 'http://localhost:3001',
       '/book': 'http://localhost:3001',
       '/subscription': 'http://localhost:3001',
-      '/health': 'http://localhost:3001'
+      '/health': 'http://localhost:3001',
+      '/views': 'http://localhost:3001'
     }
   },
   resolve: {

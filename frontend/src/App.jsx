@@ -631,39 +631,81 @@ const ClassicalMusicGenealogy = () => {
     }
   };
 
-  const loadViewByToken = async (tokenToLoad) => {
+  const loadViewByToken = async (tokenToLoad, options = {}) => {
     try {
       const resp = await fetchWithRetry(`${API_BASE}/views/${encodeURIComponent(tokenToLoad)}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       }, { retries: 2, baseDelay: 600 });
-      const text = await resp.text();
+      const textResp = await resp.text();
       let data;
-      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
+      try { data = textResp ? JSON.parse(textResp) : {}; } catch (_) { data = { error: textResp || 'Invalid response' }; }
       if (!resp.ok) throw new Error(data.error || `Failed (${resp.status})`);
       if (!data.snapshot) throw new Error('Invalid snapshot');
-      applySnapshot(data.snapshot.details ? {
-        nodes: data.snapshot.graph?.nodes || [],
-        links: (data.snapshot.graph?.links || []).map(l => ({ ...l })),
-        currentView: data.snapshot.view?.currentView,
-        searchType: data.snapshot.view?.searchType,
-        selectedNodeId: data.snapshot.view?.selectedNodeId,
-        currentCenterNode: data.snapshot.view?.currentCenterNode,
-        visualizationHeight: data.snapshot.ui?.visualizationHeight,
-        itemDetails: data.snapshot.details?.itemDetails,
-        selectedItem: data.snapshot.details?.selectedItem,
-        zoom: data.snapshot.ui?.zoom
-      } : data.snapshot);
+
+      const snapshot = data.snapshot || {};
+      const graph = snapshot.graph || {};
+      const view = snapshot.view || {};
+      const filters = view.filters || {};
+      const details = snapshot.details || {};
+      const ui = snapshot.ui || {};
+      const center = details.itemDetails?.center || null;
+      const centerName = center?.full_name || view.currentCenterNode || snapshot.currentCenterNode || '';
+      const searchQueryFromSnapshot = snapshot.searchQuery || view.searchQuery || centerName || '';
+      const snapshotSearchResults = Array.isArray(snapshot.searchResults) ? snapshot.searchResults : [];
+      const viewSearchResults = Array.isArray(view.searchResults) ? view.searchResults : [];
+      const derivedSearchResults = snapshotSearchResults.length ? snapshotSearchResults
+        : (viewSearchResults.length ? viewSearchResults
+        : (centerName ? [{ name: centerName, properties: center ? { ...center } : {} }] : []));
+
+      const snapshotToApply = {
+        nodes: (graph.nodes || snapshot.nodes || []).map(n => ({ ...n })),
+        links: (graph.links || snapshot.links || []).map(l => ({ ...l })),
+        currentView: view.currentView || snapshot.currentView || 'network',
+        searchType: view.searchType || snapshot.searchType || 'singers',
+        searchQuery: searchQueryFromSnapshot,
+        searchResults: derivedSearchResults,
+        originalSearchResults: snapshot.originalSearchResults || derivedSearchResults,
+        selectedNodeId: view.selectedNodeId ?? snapshot.selectedNodeId ?? null,
+        currentCenterNode: (view.currentCenterNode ?? snapshot.currentCenterNode ?? centerName) || null,
+        selectedVoiceTypes: snapshot.selectedVoiceTypes || filters.selectedVoiceTypes || [],
+        selectedBirthplaces: snapshot.selectedBirthplaces || filters.selectedBirthplaces || [],
+        birthYearRange: snapshot.birthYearRange || filters.birthYearRange || [1534, 2005],
+        deathYearRange: snapshot.deathYearRange || filters.deathYearRange || [1575, 2025],
+        showFilterPanel: snapshot.showFilterPanel ?? false,
+        showPathPanel: snapshot.showPathPanel ?? false,
+        pathInfo: snapshot.pathInfo || null,
+        itemDetails: details.itemDetails || snapshot.itemDetails || null,
+        selectedItem: details.selectedItem || snapshot.selectedItem || null,
+        zoom: (ui.zoom || snapshot.zoom || null),
+        visualizationHeight: ui.visualizationHeight || snapshot.visualizationHeight || visualizationHeight,
+        ui
+      };
+
+      applySnapshot(snapshotToApply);
+
+      if (options.treatAsSearch) {
+        setCurrentView('network');
+        setSearchQuery(snapshotToApply.searchQuery || (snapshotToApply.itemDetails?.center?.full_name || ''));
+        setProfileCard({ show: false, data: null });
+      } else {
+        setCurrentView(snapshotToApply.currentView || 'network');
+      }
+
+      setHistoryCounts({
+        past: historyRef.current.past.length,
+        future: historyRef.current.future.length
+      });
     } catch (e) {
       setError(e.message || 'Failed to load view');
     }
   };
 
-  const attemptLoadSavedView = async () => {
+const attemptLoadSavedView = async () => {
     if (!token || !loadToken || isLoadingViewRef.current) return;
     try {
       setIsLoadingView(true);
       isLoadingViewRef.current = true;
-      await loadViewByToken(loadToken);
+      await loadViewByToken(loadToken, { treatAsSearch: true });
     } finally {
       setIsLoadingView(false);
       isLoadingViewRef.current = false;
@@ -677,7 +719,7 @@ const ClassicalMusicGenealogy = () => {
       const view = params.get('view');
       if (view && token) {
         setLoadToken(view);
-        loadViewByToken(view);
+        loadViewByToken(view, { treatAsSearch: true });
       }
     } catch (_) {}
   }, [token]);
@@ -1746,7 +1788,7 @@ const ClassicalMusicGenealogy = () => {
   useLayoutEffect(() => {
     try {
       // Measure placeholder text to size the input exactly like a button: text width + horizontal padding + borders
-      let desiredWidth = 220;
+      let desiredWidth = 240;
       // Removed text measurement for paste input (no longer displayed)
       const finalWidth = Math.max(200, desiredWidth);
       if (Number.isFinite(finalWidth) && finalWidth > 0) setSavedInputBelowWidth(finalWidth);
@@ -7847,19 +7889,19 @@ const ClassicalMusicGenealogy = () => {
             </div>
           )}
 
-          {data.youtube_search && (
+          {(data.spotify_link || data.youtube_search) && (
             <div style={{ marginBottom: '12px' }}>
-              <strong style={{ color: '#1f2937' }}>YouTube search:</strong>
+              <strong style={{ color: '#1f2937' }}>Spotify:</strong>
               <div style={{ marginTop: '2px' }}>
                 <a
-                  href={data.youtube_search}
+                  href={data.spotify_link || data.youtube_search}
                   target="_blank"
                   rel="noopener noreferrer"
-                      style={{ color: '#2563eb', textDecoration: 'underline', fontSize: '16px' }}
-                  onMouseOver={(e) => e.target.style.color = '#1d4ed8'}
-                  onMouseOut={(e) => e.target.style.color = '#2563eb'}
+                  style={{ color: '#2563eb', textDecoration: 'underline', fontSize: '16px', overflowWrap: 'anywhere', wordBreak: 'break-word', display: 'inline-block' }}
+                  onMouseOver={(e) => (e.target.style.color = '#1d4ed8')}
+                  onMouseOut={(e) => (e.target.style.color = '#2563eb')}
                 >
-                  Search on YouTube
+                  {data.spotify_link || data.youtube_search}
                 </a>
               </div>
             </div>
@@ -8241,7 +8283,7 @@ const ClassicalMusicGenealogy = () => {
                 <div className="mobile-sheet__handle" />
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                   <h3 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: '#0f172a' }}>
-                    The Opera Singer Aspen Grove, Disclaimer
+                    The Aspen Grove of Opera Singers, Disclaimer
                   </h3>
                   <button
                     onClick={() => setShowTerms(false)}
@@ -8267,7 +8309,7 @@ const ClassicalMusicGenealogy = () => {
               </div>
               <div className="mobile-sheet__content" style={{ paddingTop: 12 }}>
                 <p className="mobile-auth-note">
-                  Welcome to The Opera Singer Aspen Grove, and thank you for your interest in this project.
+                  Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
                 </p>
                 <p className="mobile-auth-note">
                   I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
@@ -8329,9 +8371,9 @@ const ClassicalMusicGenealogy = () => {
         ) : (
           <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
             <div style={{ backgroundColor: 'white', width: 'min(720px, 92vw)', maxHeight: '80vh', overflowY: 'auto', borderRadius: 10, boxShadow: '0 20px 40px rgba(0,0,0,0.25)', padding: 20 }}>
-              <h3 style={{ margin: 0, marginBottom: 10, fontSize: 18, color: '#111' }}>The Opera Singer Aspen Grove, Disclaimer</h3>
+              <h3 style={{ margin: 0, marginBottom: 10, fontSize: 18, color: '#111' }}>The Aspen Grove of Opera Singers, Disclaimer</h3>
               <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
-                Welcome to The Opera Singer Aspen Grove, and thank you for your interest in this project.
+                Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
               </p>
               <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
                 I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
@@ -8375,7 +8417,7 @@ const ClassicalMusicGenealogy = () => {
         padding: '15px 0'
       }}>
         <div style={{
-          maxWidth: '1200px',
+          maxWidth: '1240px',
           margin: '0 auto',
           padding: '0 20px',
           display: 'flex',
@@ -8561,7 +8603,7 @@ const ClassicalMusicGenealogy = () => {
       <SavedViewDialog />
       <main
         style={{
-          maxWidth: '1200px',
+          maxWidth: '1240px',
           margin: '0 auto',
           padding: '30px 20px',
           paddingBottom: isMobileViewport
@@ -8574,7 +8616,7 @@ const ClassicalMusicGenealogy = () => {
           ref={headerContainerRef}
           className={isHeaderMobile ? 'mobile-header-card' : undefined}
           style={{
-            backgroundColor: '#ffffff',
+            backgroundColor: 'rgba(255,255,255,0.9)',
             padding: isHeaderMobile
               ? 'calc(var(--cmg-mobile-block-padding) + 12px) max(16px, var(--cmg-mobile-inline-padding-end)) 20px max(16px, var(--cmg-mobile-inline-padding))'
               : '12px 16px',
@@ -8583,14 +8625,14 @@ const ClassicalMusicGenealogy = () => {
             position: 'relative',
             boxShadow: isHeaderMobile ? '0 14px 32px rgba(15, 23, 42, 0.18)' : undefined,
             border: isHeaderMobile ? '2px solid #3e96e2' : undefined,
-            paddingRight: isHeaderMobile ? undefined : 480,
+            paddingRight: isHeaderMobile ? undefined : 440,
             minHeight: isHeaderMobile ? 'auto' : 140
           }}
         >
           <div
             className={isHeaderMobile ? 'mobile-stack' : undefined}
             style={{
-              maxWidth: '1200px',
+              maxWidth: '1240px',
               margin: '0 auto',
               padding: isHeaderMobile ? '0 calc(var(--cmg-mobile-inline-padding-end) + 32px) 0 0' : '0 20px',
               display: 'flex',
@@ -8624,7 +8666,7 @@ const ClassicalMusicGenealogy = () => {
                   lineHeight: isHeaderMobile ? undefined : 1.2
                 }}
               >
-                The Opera Singer Aspen Grove
+                The Aspen Grove of Opera Singers
               </h1>
               <h2
                 className={isHeaderMobile ? 'mobile-subheading mobile-muted' : undefined}
@@ -8766,7 +8808,7 @@ const ClassicalMusicGenealogy = () => {
                       value={loadToken}
                       onChange={e => setLoadToken(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { attemptLoadSavedView(); } }}
-                      style={{ padding: '6px 8px', border: '2px solid #3e96e2', backgroundColor: '#ffffff', color: '#374151', borderRadius: 8, width: savedInputBelowWidth, height: '48px', boxSizing: 'border-box', fontSize: '16px' }}
+                    style={{ padding: '6px 8px', border: '2px solid #3e96e2', backgroundColor: '#ffffff', color: '#374151', borderRadius: 8, width: savedInputBelowWidth, height: '48px', boxSizing: 'border-box', fontSize: '16px', textAlign: 'center' }}
                     />
                     <button
                       ref={openBtnBelowRef}
@@ -8778,9 +8820,9 @@ const ClassicalMusicGenealogy = () => {
                     </button>
                   </div>
                 )}
-                {!hasSearchResults && currentView === 'network' && (
+                {currentView === 'network' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button onClick={() => setCurrentView('search')} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>Search</button>
+                    <button onClick={() => setCurrentView('search')} style={{ padding: '8px 16px', backgroundColor: '#f3f4f6', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>Search</button>
                     <button onClick={() => { goBack(); }} disabled={historyCounts.past === 0} title={historyCounts.past ? `Back (${historyCounts.past})` : 'Back'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.past ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
                       <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
                         <span>Back</span>
@@ -9057,22 +9099,22 @@ const ClassicalMusicGenealogy = () => {
                     key: 'ailyn',
                     label: 'Ailyn Pérez',
                     image: '/Ailyn.png',
-                    token: '4c1ff7c7-43a9-4147-afb4-1dd89070031a'
+                    token: 'd4240ab6-d2a5-4199-8e06-6d24c01e3ad7'
                   }, {
                     key: 'longest',
                     label: 'Longest Path',
                     image: '/Longest.png',
-                    token: '75ca37a5-c114-44cc-b0ce-f27256ad4f3e'
+                    token: '97a81f43-ac2f-4b1b-9403-326f2453b4fb'
                   }, {
                     key: 'books-premieres',
                     label: 'Books &\nPremieres',
                     image: '/BnP.png',
-                    token: '8560375c-b1a3-4b1c-adb0-67648c0f104e'
+                    token: 'b5715a67-28a4-4add-975b-7a682bc64f4a'
                   }].map(example => (
                     <button
                       key={example.key}
                       type="button"
-                      onClick={() => loadViewByToken(example.token)}
+                      onClick={() => loadViewByToken(example.token, { treatAsSearch: true })}
                       style={{
                         width: isHeaderMobile ? '100%' : 250,
                         height: isHeaderMobile ? 200 : 170,
@@ -9341,7 +9383,7 @@ const ClassicalMusicGenealogy = () => {
                     From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who these incredible teachers were. Like <a href="https://www.songhelix.com" target="_blank">SongHelix</a> (released in 2019), I wanted to make a useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. When Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequenlty another language's version will have different information from the English version.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, and using python scripts. While Artificial Intlligence has helped me gather information (and to code the entire website(!)), no information has been <i>created</i> through the use of AI.
+                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been <i>created</i> through the use of AI.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
                     For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
@@ -9655,21 +9697,24 @@ const ClassicalMusicGenealogy = () => {
                       <strong>Underrepresented group:</strong> {itemDetails.center.underrepresented_group}
                     </p>
                   )}
-                  {itemDetails.center.youtube_search && (
+                  {(itemDetails.center.spotify_link || itemDetails.center.youtube_search) && (
                     <p style={{ margin: '8px 0' }}>
-                      <strong>YouTube search:</strong>{' '}
+                      <strong>Spotify:</strong>{' '}
                       <a
-                        href={itemDetails.center.youtube_search}
+                        href={itemDetails.center.spotify_link || itemDetails.center.youtube_search}
                         target="_blank"
                         rel="noopener noreferrer"
                         style={{
                           color: '#2563eb',
-                          textDecoration: 'underline'
+                          textDecoration: 'underline',
+                          overflowWrap: 'anywhere',
+                          wordBreak: 'break-word',
+                          display: 'inline-block'
                         }}
-                        onMouseOver={(e) => e.target.style.color = '#1d4ed8'}
-                        onMouseOut={(e) => e.target.style.color = '#2563eb'}
+                        onMouseOver={(e) => (e.target.style.color = '#1d4ed8')}
+                        onMouseOut={(e) => (e.target.style.color = '#2563eb')}
                       >
-                        Search on YouTube
+                        {itemDetails.center.spotify_link || itemDetails.center.youtube_search}
                       </a>
                     </p>
                   )}
