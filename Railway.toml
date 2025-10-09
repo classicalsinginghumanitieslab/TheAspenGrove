@@ -1,12 +1,7 @@
-[build]
-builder = "NIXPACKS"
-buildCommand = "cd backend && npm install && npm run build"
-watchPatterns = ["backend/**"]
-
-[deploy]
-startCommand = "cd backend && npm start"
-healthcheckPath = "/health"
-healthcheckTimeout = 10
-
 [service]
 name = "classical-music-genealogy"
+start = "npm start"
+build = "npm run build"
+healthcheck_path = "/health"
+healthcheck_interval = 30
+healthcheck_timeout = 10
