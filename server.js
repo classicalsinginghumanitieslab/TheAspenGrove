@@ -32,16 +32,26 @@ const checkAPOCAvailability = async () => {
 };
 
 // Middleware
-const allowedOrigins = (process.env.CLIENT_ORIGINS && process.env.CLIENT_ORIGINS.split(',').map(origin => origin.trim())) || [
+const allowedOrigins = (process.env.CLIENT_ORIGINS && process.env.CLIENT_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)) || [
   'http://localhost:3000',
   'http://localhost:3002',
   'http://localhost:5173'
 ];
+console.log('[CORS] Allowed origins:', allowedOrigins);
 
-app.use(cors({
-  origin: allowedOrigins,
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
-}));
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // Neo4j connection
