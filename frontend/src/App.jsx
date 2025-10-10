@@ -3901,11 +3901,22 @@ const attemptLoadSavedView = async () => {
           }
           // Only honor primary-button drag or wheel changes; ignore any other source
           const e = event.sourceEvent;
-          const isWheel = e && e.type === 'wheel';
+          if (!e) {
+            g.attr("transform", event.transform);
+            zoomTransformRef.current = event.transform;
+            uiZoomRef.current = event.transform;
+            hasAppliedInitialFitRef.current = true;
+            return;
+          }
+          const isWheel = e.type === 'wheel';
           const isPointerMove = e && (e.type === 'pointermove' || e.type === 'mousemove');
-          const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch'));
-          // Ignore if the originating pointer is right or middle button
-          if (e && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
+          const isTouchEvent = e && (
+            (typeof e.type === 'string' && e.type.startsWith('touch')) ||
+            e.pointerType === 'touch'
+          );
+          const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch')) || isTouchEvent;
+          // Ignore if the originating pointer is right or middle button (but allow touch)
+          if (e && !isTouchEvent && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
             return;
           }
