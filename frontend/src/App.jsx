@@ -3876,29 +3876,12 @@ const attemptLoadSavedView = async () => {
       // Create zoom behavior
       const minZoom = viewportIsPhone ? 0.2 : 0.1;
       const maxZoom = viewportIsPhone ? 3 : 4;
-      const resolveTouchList = (evt) => {
-        let source = evt;
-        while (source) {
-          const touches = source.touches || source.targetTouches || source.changedTouches;
-          if (touches && typeof touches.length === 'number') {
-            return touches;
-          }
-          source = source.sourceEvent;
-        }
-        return null;
-      };
-
       const zoom = d3.zoom()
         .filter((event) => {
           // Allow wheel zoom always; block double-click zoom entirely
           if (event.type === 'wheel') return true;
           if (event.type === 'dblclick') return false;
           if (event.pointerType === 'touch' || (typeof event.type === 'string' && event.type.startsWith('touch'))) {
-            const touches = resolveTouchList(event) || resolveTouchList(event.sourceEvent);
-            if (touches) {
-              return touches.length >= 1;
-            }
-            // Pointer events on some browsers won't expose touches; treat as single-touch pan
             return true;
           }
           // Explicitly block context menu/right-click and middle-click from initiating zoom/pan
@@ -3921,28 +3904,12 @@ const attemptLoadSavedView = async () => {
           const isWheel = e && e.type === 'wheel';
           const isPointerMove = e && (e.type === 'pointermove' || e.type === 'mousemove');
           const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch'));
-          const isTouchEvent = e && (
-            e.type === 'touchmove' ||
-            e.type === 'touchstart' ||
-            e.type === 'touchend' ||
-            (e.type === 'pointermove' && e.pointerType === 'touch') ||
-            (e.type === 'pointerdown' && e.pointerType === 'touch') ||
-            (e.type === 'pointerup' && e.pointerType === 'touch')
-          );
-          if (isTouchEvent) {
-            const touches = resolveTouchList(e) || resolveTouchList(e.sourceEvent);
-            const touchCount = touches ? touches.length : (e && e.pointerType === 'touch' ? 1 : 0);
-            if (touchCount === 0) {
-              applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
-              return;
-            }
-          }
           // Ignore if the originating pointer is right or middle button
           if (e && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
             return;
           }
-          if (!isWheel && !isPrimaryDrag && !isTouchGesture) {
+          if (!isWheel && !isPrimaryDrag) {
             // Reassert previous transform to avoid unintended resets (e.g., right-click)
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
             return;
