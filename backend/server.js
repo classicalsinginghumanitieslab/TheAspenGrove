@@ -955,7 +955,8 @@ const userDir = async (email) => {
 };
 
 const SAMPLE_VIEW_DIRS = [
-  path.resolve(process.cwd(), 'backend', 'data', 'views', 'test%40example.com')
+  path.resolve(process.cwd(), 'backend', 'data', 'views', 'test%40example.com'),
+  path.resolve(process.cwd(), 'backend', 'sample-views')
 ].filter((dir) => fs.existsSync(dir));
 
 const readSnapshotFromDir = async (dir, token) => {

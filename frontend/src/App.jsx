@@ -1239,6 +1239,40 @@ const attemptLoadSavedView = async () => {
     setDeathYearRange(newRange);
   };
 
+  const extendDateRangesForNodes = (nodesList = []) => {
+    if (!Array.isArray(nodesList) || nodesList.length === 0) return;
+    let [birthMin, birthMax] = birthYearRange;
+    let [deathMin, deathMax] = deathYearRange;
+    let birthChanged = false;
+    let deathChanged = false;
+
+    nodesList.forEach((node) => {
+      if (node && node.type === 'person') {
+        const birthValue = node.birthYear ?? node.birth_year ?? (node.birth ? (node.birth.low ?? node.birth) : null);
+        const deathValue = node.deathYear ?? node.death_year ?? (node.death ? (node.death.low ?? node.death) : null);
+
+        const birthYear = birthValue != null ? parseInt(birthValue, 10) : NaN;
+        if (!Number.isNaN(birthYear)) {
+          if (birthYear < birthMin) { birthMin = birthYear; birthChanged = true; }
+          if (birthYear > birthMax) { birthMax = birthYear; birthChanged = true; }
+        }
+
+        const deathYear = deathValue != null ? parseInt(deathValue, 10) : NaN;
+        if (!Number.isNaN(deathYear)) {
+          if (deathYear < deathMin) { deathMin = deathYear; deathChanged = true; }
+          if (deathYear > deathMax) { deathMax = deathYear; deathChanged = true; }
+        }
+      }
+    });
+
+    if (birthChanged) {
+      updateBirthYearRange([birthMin, birthMax]);
+    }
+    if (deathChanged) {
+      updateDeathYearRange([deathMin, deathMax]);
+    }
+  };
+
   // Filter helper functions
   const toggleVoiceTypeFilter = (voiceType) => {
     const newSelection = new Set(selectedVoiceTypes);
@@ -1304,7 +1338,7 @@ const attemptLoadSavedView = async () => {
   };
 
   const clearFiltersForNewSearch = (nodesList = []) => {
-    const nextNodes = Array.isArray(nodesList) ? nodesList : [];
+    const nextNodes = (Array.isArray(nodesList) && nodesList.length > 0) ? nodesList : networkData.nodes;
     resetFiltersForNodeSet(nextNodes);
     setShowFilterPanel(false);
   };
@@ -3074,10 +3108,15 @@ const attemptLoadSavedView = async () => {
           }
           
           // Update network data with new nodes and links
+          const updatedNodes = [...networkData.nodes, ...newNodes];
           setNetworkData({
-            nodes: [...networkData.nodes, ...newNodes],
+            nodes: updatedNodes,
             links: [...networkData.links, ...newLinks]
           });
+
+          if (newNodes.length > 0) {
+            extendDateRangesForNodes(newNodes);
+          }
           
           // Handle spacing for the expansion after a short delay to ensure network data is updated
           if (newNodes.length > 0) {
@@ -3887,13 +3926,27 @@ const attemptLoadSavedView = async () => {
       // Create zoom behavior
       const minZoom = viewportIsPhone ? 0.2 : 0.1;
       const maxZoom = viewportIsPhone ? 3 : 4;
+      const resolveTouchList = (evt) => {
+        let source = evt;
+        while (source) {
+          const touches = source.touches || source.targetTouches || source.changedTouches;
+          if (touches && typeof touches.length === 'number') {
+            return touches;
+          }
+          source = source.sourceEvent;
+        }
+        return null;
+      };
+
       const zoom = d3.zoom()
         .filter((event) => {
           // Allow wheel zoom always; block double-click zoom entirely
           if (event.type === 'wheel') return true;
           if (event.type === 'dblclick') return false;
-          if (event.pointerType === 'touch') return true;
-          if (typeof event.type === 'string' && event.type.startsWith('touch')) return true;
+          if (event.pointerType === 'touch' || (typeof event.type === 'string' && event.type.startsWith('touch'))) {
+            const touches = resolveTouchList(event) || resolveTouchList(event.sourceEvent);
+            return touches && touches.length >= 2; // require two-finger gesture
+          }
           // Explicitly block context menu/right-click and middle-click from initiating zoom/pan
           if (event.button === 2 || event.buttons === 2) return false;
           if (event.button === 1 || event.buttons === 4) return false;
@@ -3920,6 +3973,13 @@ const attemptLoadSavedView = async () => {
             (e.type === 'pointermove' && e.pointerType === 'touch') ||
             (e.type === 'pointerdown' && e.pointerType === 'touch')
           );
+          if (isTouchGesture) {
+            const touches = resolveTouchList(e) || resolveTouchList(e.sourceEvent);
+            if (!touches || touches.length < 2) {
+              applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
+              return;
+            }
+          }
           // Ignore if the originating pointer is right or middle button
           if (e && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
@@ -6127,6 +6187,7 @@ const attemptLoadSavedView = async () => {
                   // Mark nodes in path
                   mergedNodes.forEach(n => { if (pathNodeIds.has(n.id)) n.isPath = true; });
                   setNetworkData({ nodes: mergedNodes, links: mergedLinks });
+                  extendDateRangesForNodes(data.nodes || []);
                   // Enrich newly added path person nodes so CSV has full details
                   const newPersonNames = (data.nodes || [])
                     .filter(n => n && n.type === 'person')

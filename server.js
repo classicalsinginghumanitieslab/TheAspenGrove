@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -740,6 +741,128 @@ app.post('/book/details', authenticateToken, checkSubscription, applyRateLimit, 
   }
 });
 
+// View snapshot storage (file-based per-user)
+const VIEWS_DIR = path.resolve(process.cwd(), 'data', 'views');
+const ensureDir = async (dir) => {
+  await fs.promises.mkdir(dir, { recursive: true });
+};
+const userDir = async (email) => {
+  const safe = encodeURIComponent(email || 'unknown');
+  const dir = path.join(VIEWS_DIR, safe);
+  await ensureDir(dir);
+  return dir;
+};
+
+const SAMPLE_VIEW_DIRS = [
+  path.resolve(process.cwd(), 'backend', 'data', 'views', 'test%40example.com'),
+  path.resolve(process.cwd(), 'backend', 'sample-views')
+].filter((dir) => fs.existsSync(dir));
+
+const readSnapshotFromDir = async (dir, token) => {
+  const file = path.join(dir, `${token}.json`);
+  try {
+    const raw = await fs.promises.readFile(file, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+};
+
+// Save a snapshot and return a token
+app.post('/views', authenticateToken, async (req, res) => {
+  try {
+    const { snapshot, label = '' } = req.body || {};
+    if (!snapshot || typeof snapshot !== 'object') {
+      return res.status(400).json({ error: 'snapshot required' });
+    }
+    const token = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const payload = { token, user: req.user.email, label, createdAt, snapshot };
+    const dir = await userDir(req.user.email);
+    const file = path.join(dir, `${token}.json`);
+    await fs.promises.writeFile(file, JSON.stringify(payload, null, 2), 'utf8');
+    return res.json({ token, label, createdAt });
+  } catch (err) {
+    console.error('Save view error:', err);
+    return res.status(500).json({ error: 'Failed to save view' });
+  }
+});
+
+// List snapshots for current user
+app.get('/views', authenticateToken, async (req, res) => {
+  try {
+    const dir = await userDir(req.user.email);
+    const files = await fs.promises.readdir(dir).catch(() => []);
+    const items = [];
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      const full = path.join(dir, f);
+      try {
+        const data = JSON.parse(await fs.promises.readFile(full, 'utf8'));
+        items.push({ token: data.token, label: data.label || '', createdAt: data.createdAt || null });
+      } catch (_) {}
+    }
+    items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return res.json({ views: items });
+  } catch (err) {
+    console.error('List views error:', err);
+    return res.status(500).json({ error: 'Failed to list views' });
+  }
+});
+
+// Load a snapshot by token (user-scoped with shared fallbacks)
+app.get('/views/:token', authenticateToken, async (req, res) => {
+  try {
+    const { token } = req.params || {};
+    if (!token) return res.status(400).json({ error: 'token required' });
+
+    let data = null;
+
+    try {
+      const dir = await userDir(req.user.email);
+      data = await readSnapshotFromDir(dir, token);
+      if (data && data.user && data.user !== req.user.email) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } catch (err) {
+      if (!(err && err.code === 'ENOENT')) {
+        throw err;
+      }
+    }
+
+    if (!data) {
+      for (const fallbackDir of SAMPLE_VIEW_DIRS) {
+        try {
+          const fallback = await readSnapshotFromDir(fallbackDir, token);
+          if (fallback) {
+            data = fallback;
+            break;
+          }
+        } catch (err) {
+          if (!(err && err.code === 'ENOENT')) {
+            throw err;
+          }
+        }
+      }
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    return res.json({
+      token: data.token,
+      label: data.label || '',
+      createdAt: data.createdAt || null,
+      snapshot: data.snapshot
+    });
+  } catch (err) {
+    console.error('Load view error:', err);
+    return res.status(500).json({ error: 'Failed to load view' });
+  }
+});
+
 // Health check
 app.get('/health', async (req, res) => {
   try {
@@ -774,7 +897,7 @@ if (fs.existsSync(distPath)) {
 
   app.get('*', (req, res, next) => {
     const requestPath = req.path || '';
-    const apiPrefixes = ['/auth', '/search', '/singer', '/opera', '/book', '/health', '/subscription'];
+    const apiPrefixes = ['/auth', '/search', '/singer', '/opera', '/book', '/health', '/subscription', '/views'];
 
     if (apiPrefixes.some(prefix => requestPath.startsWith(prefix))) {
       return next();
