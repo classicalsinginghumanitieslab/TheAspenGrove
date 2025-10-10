@@ -1,10 +1,6 @@
 {
   "token": "d4240ab6-d2a5-4199-8e06-6d24c01e3ad7",
-  "user": "test@example.com",
-  "label": "",
-  "createdAt": "2025-10-09T20:09:47.885Z",
   "snapshot": {
-    "version": 1,
     "graph": {
       "nodes": [
         {
@@ -1206,32 +1202,6 @@
         }
       ]
     },
-    "ui": {
-      "zoom": {
-        "k": 0.7022224378689995,
-        "x": 192.20927386995675,
-        "y": 121.13403204228572
-      },
-      "visualizationHeight": 550
-    },
-    "view": {
-      "currentView": "network",
-      "searchType": "singers",
-      "selectedNodeId": null,
-      "currentCenterNode": "Ailyn Pérez",
-      "filters": {
-        "selectedVoiceTypes": [],
-        "selectedBirthplaces": [],
-        "birthYearRange": [
-          1805,
-          1979
-        ],
-        "deathYearRange": [
-          1906,
-          1990
-        ]
-      }
-    },
     "details": {
       "itemDetails": {
         "center": {
@@ -1324,10 +1294,6 @@
           "voice_type_source": "Wikipedia"
         }
       }
-    },
-    "meta": {
-      "savedAt": "2025-10-09T20:09:47.863Z",
-      "label": ""
     }
   }
 }

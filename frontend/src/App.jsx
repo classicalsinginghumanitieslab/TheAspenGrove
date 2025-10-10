@@ -56,6 +56,8 @@ const ClassicalMusicGenealogy = () => {
   const [selectedBirthplaces, setSelectedBirthplaces] = useState(new Set()); // Selected birthplace filters
   const [birthYearRange, setBirthYearRange] = useState([1534, 2005]); // Birth year range filter
   const [deathYearRange, setDeathYearRange] = useState([1575, 2025]); // Death year range filter
+  const [birthRangeIsUserSet, setBirthRangeIsUserSet] = useState(false);
+  const [deathRangeIsUserSet, setDeathRangeIsUserSet] = useState(false);
   // Reverted: only force-directed layout
   const [filterSectionsOpen, setFilterSectionsOpen] = useState({ voice: false, birth: false, death: false, birthplaces: false });
   // Disable global click outside handlers while any path input is focused
@@ -1335,6 +1337,8 @@ const attemptLoadSavedView = async () => {
     const { birthRange, deathRange } = computeRangesFromNodes(nodesList ?? networkData.nodes);
     updateBirthYearRange(birthRange);
     updateDeathYearRange(deathRange);
+    setBirthRangeIsUserSet(false);
+    setDeathRangeIsUserSet(false);
   };
 
   const clearFiltersForNewSearch = (nodesList = []) => {
@@ -1396,8 +1400,7 @@ const attemptLoadSavedView = async () => {
         if (!match) return false;
       }
 
-      // Birth year filter (always enforce against current range)
-      if (node.birthYear) {
+      if (birthRangeIsUserSet && node.birthYear) {
         const birthYear = parseInt(node.birthYear);
         if (!isNaN(birthYear)) {
           if (birthYear < birthYearRange[0] || birthYear > birthYearRange[1]) {
@@ -1406,8 +1409,7 @@ const attemptLoadSavedView = async () => {
         }
       }
 
-      // Death year filter (always enforce against current range)
-      if (node.deathYear) {
+      if (deathRangeIsUserSet && node.deathYear) {
         const deathYear = parseInt(node.deathYear);
         if (!isNaN(deathYear)) {
           if (deathYear < deathYearRange[0] || deathYear > deathYearRange[1]) {
@@ -1430,8 +1432,7 @@ const attemptLoadSavedView = async () => {
         if (!voiceTypeMatch) return false;
       }
 
-      // Birth year filter
-      if (node.birthYear) {
+      if (birthRangeIsUserSet && node.birthYear) {
         const birthYear = parseInt(node.birthYear);
         if (!isNaN(birthYear)) {
           if (birthYear < birthYearRange[0] || birthYear > birthYearRange[1]) {
@@ -1440,8 +1441,7 @@ const attemptLoadSavedView = async () => {
         }
       }
 
-      // Death year filter
-      if (node.deathYear) {
+      if (deathRangeIsUserSet && node.deathYear) {
         const deathYear = parseInt(node.deathYear);
         if (!isNaN(deathYear)) {
           if (deathYear < deathYearRange[0] || deathYear > deathYearRange[1]) {
@@ -1474,6 +1474,8 @@ const attemptLoadSavedView = async () => {
     const { birthRange, deathRange } = getDateRanges();
     updateBirthYearRange(birthRange);
     updateDeathYearRange(deathRange);
+    setBirthRangeIsUserSet(false);
+    setDeathRangeIsUserSet(false);
   };
 
   const isNodeVisible = (node) => {
@@ -1494,8 +1496,7 @@ const attemptLoadSavedView = async () => {
         if (!match) return false;
       }
       
-      // Birth year filter (always enforce against current range)
-      if (node.birthYear) {
+      if (birthRangeIsUserSet && node.birthYear) {
         const birthYear = parseInt(node.birthYear);
         if (!isNaN(birthYear)) {
           if (birthYear < birthYearRange[0] || birthYear > birthYearRange[1]) {
@@ -1504,8 +1505,7 @@ const attemptLoadSavedView = async () => {
         }
       }
       
-      // Death year filter (always enforce against current range)
-      if (node.deathYear) {
+      if (deathRangeIsUserSet && node.deathYear) {
         const deathYear = parseInt(node.deathYear);
         if (!isNaN(deathYear)) {
           if (deathYear < deathYearRange[0] || deathYear > deathYearRange[1]) {
@@ -2437,6 +2437,171 @@ const attemptLoadSavedView = async () => {
       setLoading(false);
     }
   };
+  const normalizeNodeId = (value) => {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/\s+/g, ' ').trim();
+  };
+
+  const mergeNodeAttributes = (base, incoming) => {
+    if (!incoming) return base;
+    const result = { ...base };
+    Object.entries(incoming).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (key === 'id') {
+        result.id = normalizeNodeId(value);
+        return;
+      }
+      if (key === 'name') {
+        const name = String(value).trim();
+        if (!String(result.name || '').trim()) {
+          result.name = name || result.id || '';
+        }
+        return;
+      }
+      if (key === 'x' || key === 'y' || key === 'vx' || key === 'vy' || key === 'fx' || key === 'fy' || key === 'homeX' || key === 'homeY') {
+        if (!Number.isFinite(result[key])) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (typeof value === 'boolean') {
+        if (result[key] === undefined) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (typeof value === 'number') {
+        if (!Number.isFinite(result[key])) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (typeof value === 'string') {
+        if (!String(result[key] ?? '').trim()) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        if (!Array.isArray(result[key]) || result[key].length === 0) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (typeof value === 'object') {
+        if (!result[key]) {
+          result[key] = value;
+        }
+        return;
+      }
+      if (result[key] === undefined) {
+        result[key] = value;
+      }
+    });
+    return result;
+  };
+
+  const finalizeNodeCandidate = (candidate) => {
+    if (!candidate) return null;
+    const normalizedId = normalizeNodeId(candidate.id ?? candidate.name);
+    if (!normalizedId) return null;
+    const normalizedName = candidate.name ? String(candidate.name).trim() : normalizedId;
+    const nodeObj = { ...candidate, id: normalizedId, name: normalizedName };
+    if (!Number.isFinite(nodeObj.x)) nodeObj.x = undefined;
+    if (!Number.isFinite(nodeObj.y)) nodeObj.y = undefined;
+    return nodeObj;
+  };
+
+  const normalizeLinkForMerge = (link) => {
+    if (!link) return { key: '', link: null };
+    const resolveEndpoint = (endpoint) => {
+      if (endpoint === null || endpoint === undefined) return '';
+      if (typeof endpoint === 'string') return normalizeNodeId(endpoint);
+      if (typeof endpoint === 'object') {
+        return normalizeNodeId(endpoint.id ?? endpoint.name);
+      }
+      return normalizeNodeId(endpoint);
+    };
+    const sourceId = resolveEndpoint(link.source);
+    const targetId = resolveEndpoint(link.target);
+    if (!sourceId || !targetId) return { key: '', link: null };
+    const typeKey = String(link.type || '').toLowerCase();
+    const normalizedLink = { ...link, source: sourceId, target: targetId };
+    return {
+      key: `${sourceId}|${targetId}|${typeKey}`,
+      link: normalizedLink
+    };
+  };
+
+  const mergeNetworkUpdates = (prev, nodesToAdd = [], linksToAdd = [], nodeUpdates) => {
+    const updatesMap = new Map();
+    const registerUpdate = (key, payload) => {
+      const normalizedKey = normalizeNodeId(key);
+      if (!normalizedKey) return;
+      const candidate = finalizeNodeCandidate({ id: normalizedKey, ...payload });
+      if (!candidate) return;
+      const current = updatesMap.get(normalizedKey) || { id: normalizedKey };
+      updatesMap.set(normalizedKey, mergeNodeAttributes(current, candidate));
+    };
+
+    if (nodeUpdates) {
+      if (nodeUpdates instanceof Map) {
+        nodeUpdates.forEach((value, key) => registerUpdate(key, value));
+      } else {
+        Object.entries(nodeUpdates).forEach(([key, value]) => registerUpdate(key, value));
+      }
+    }
+
+    const updatedNodes = (prev.nodes || []).map(node => {
+      const key = normalizeNodeId(node.id ?? node.name);
+      if (!key) return node;
+      const patch = updatesMap.get(key);
+      if (!patch) return node;
+      return mergeNodeAttributes(node, patch);
+    });
+
+    const existingIds = new Set(updatedNodes.map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean));
+    const pendingNewMap = new Map();
+
+    (nodesToAdd || []).forEach(node => {
+      const candidate = finalizeNodeCandidate(node);
+      if (!candidate) return;
+      if (existingIds.has(candidate.id)) {
+        const idx = updatedNodes.findIndex(n => normalizeNodeId(n.id ?? n.name) === candidate.id);
+        if (idx !== -1) {
+          updatedNodes[idx] = mergeNodeAttributes(updatedNodes[idx], candidate);
+        }
+        return;
+      }
+      if (pendingNewMap.has(candidate.id)) {
+        pendingNewMap.set(candidate.id, mergeNodeAttributes(pendingNewMap.get(candidate.id), candidate));
+      } else {
+        pendingNewMap.set(candidate.id, candidate);
+      }
+    });
+
+    const existingLinkKeys = new Set();
+    (prev.links || []).forEach(link => {
+      const { key } = normalizeLinkForMerge(link);
+      if (key) existingLinkKeys.add(key);
+    });
+
+    const mergedLinks = [...(prev.links || [])];
+    const pendingLinkKeys = new Set();
+    (linksToAdd || []).forEach(link => {
+      const normalized = normalizeLinkForMerge(link);
+      if (!normalized.key || !normalized.link) return;
+      if (existingLinkKeys.has(normalized.key) || pendingLinkKeys.has(normalized.key)) return;
+      pendingLinkKeys.add(normalized.key);
+      mergedLinks.push(normalized.link);
+    });
+
+    return {
+      nodes: [...updatedNodes, ...pendingNewMap.values()],
+      links: mergedLinks
+    };
+  };
+
   // Function to expand all relationships for a node
   const expandAllRelationships = async (node) => {
     try {
@@ -2480,48 +2645,78 @@ const attemptLoadSavedView = async () => {
         data = await response.json();
         if (response.ok) {
           // Merge new data with existing network
-          const existingNodes = new Set(networkData.nodes.map(n => n.id));
-          const existingLinks = new Set(networkData.links.map(l => {
-            const sourceId = typeof l.source === 'string' ? l.source : l.source?.id;
-            const targetId = typeof l.target === 'string' ? l.target : l.target?.id;
-            return `${sourceId}-${targetId}-${l.type}`;
-          }));
+          const existingNodes = new Set(
+            (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
+          );
+          const existingLinks = new Set(
+            (networkData.links || []).map(l => {
+              const sourceId = normalizeNodeId(typeof l.source === 'string' ? l.source : l.source?.id);
+              const targetId = normalizeNodeId(typeof l.target === 'string' ? l.target : l.target?.id);
+              if (!sourceId || !targetId) return null;
+              return `${sourceId}-${targetId}-${String(l.type || '').toLowerCase()}`;
+            }).filter(Boolean)
+          );
           
           const newNodes = [];
           const newLinks = [];
+          const anchorId = normalizeNodeId(node.id ?? node.name);
+          const anchorX = Number.isFinite(node?.x) ? node.x : 400;
+          const anchorY = Number.isFinite(node?.y) ? node.y : 300;
+
+          const registerNode = (payload) => {
+            const candidate = finalizeNodeCandidate({
+              ...payload,
+              x: Number.isFinite(payload?.x) ? payload.x : anchorX,
+              y: Number.isFinite(payload?.y) ? payload.y : anchorY
+            });
+            if (!candidate) return null;
+            const key = candidate.id;
+            if (existingNodes.has(key)) {
+              return key;
+            }
+            existingNodes.add(key);
+            newNodes.push(candidate);
+            return key;
+          };
+
+          const addLink = (sourceIdRaw, targetIdRaw, type, extra = {}) => {
+            const sourceId = normalizeNodeId(sourceIdRaw);
+            const targetId = normalizeNodeId(targetIdRaw);
+            if (!sourceId || !targetId) return;
+            const linkTypeKey = String(type || '').toLowerCase();
+            const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
+            if (existingLinks.has(linkKey)) return;
+            existingLinks.add(linkKey);
+            newLinks.push({
+              source: sourceId,
+              target: targetId,
+              type,
+              ...extra
+            });
+          };
           
           // Handle different node types and their data structures
           if (node.type === 'person') {
             // Add new nodes from the expanded data for people
             if (data.teachers) {
               data.teachers.forEach(teacher => {
-                if (!existingNodes.has(teacher.full_name)) {
-                  newNodes.push({
-                    id: teacher.full_name,
-                    name: teacher.full_name,
-                    type: 'person',
-                    voiceType: teacher.voice_type,
-                    spelling_source: teacher.spelling_source || null,
-                    voice_type_source: teacher.voice_type_source || null,
-                    dates_source: teacher.dates_source || null,
-                    birthplace_source: teacher.birthplace_source || null,
-                    birthYear: teacher.birth_year,
-                    deathYear: teacher.death_year,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${teacher.full_name}-${node.name}-taught`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: teacher.full_name,
-                    target: node.name,
-                    type: 'taught',
-                    label: 'taught',
-                    sourceInfo: teacher.teacher_rel_source || ''
-                  });
-                }
+                const teacherId = registerNode({
+                  id: teacher.full_name || teacher.name,
+                  name: teacher.full_name || teacher.name,
+                  type: 'person',
+                  voiceType: teacher.voice_type,
+                  spelling_source: teacher.spelling_source || null,
+                  voice_type_source: teacher.voice_type_source || null,
+                  dates_source: teacher.dates_source || null,
+                  birthplace_source: teacher.birthplace_source || null,
+                  birthYear: teacher.birth_year,
+                  deathYear: teacher.death_year
+                });
+                if (!teacherId) return;
+                addLink(teacherId, anchorId, 'taught', {
+                  label: 'taught',
+                  sourceInfo: teacher.teacher_rel_source || ''
+                });
               });
               // Enrich teacher nodes with full details for CSV immediately
               enrichPersonNodes((data.teachers || []).map(t => t.full_name));
@@ -2529,33 +2724,23 @@ const attemptLoadSavedView = async () => {
             
             if (data.students) {
               data.students.forEach(student => {
-                if (!existingNodes.has(student.full_name)) {
-                  newNodes.push({
-                    id: student.full_name,
-                    name: student.full_name,
-                    type: 'person',
-                    voiceType: student.voice_type,
-                    spelling_source: student.spelling_source || null,
-                    voice_type_source: student.voice_type_source || null,
-                    dates_source: student.dates_source || null,
-                    birthplace_source: student.birthplace_source || null,
-                    birthYear: student.birth_year,
-                    deathYear: student.death_year,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${node.name}-${student.full_name}-taught`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: node.name,
-                    target: student.full_name,
-                    type: 'taught',
-                    label: 'taught',
-                    sourceInfo: student.teacher_rel_source || ''
-                  });
-                }
+                const studentId = registerNode({
+                  id: student.full_name || student.name,
+                  name: student.full_name || student.name,
+                  type: 'person',
+                  voiceType: student.voice_type,
+                  spelling_source: student.spelling_source || null,
+                  voice_type_source: student.voice_type_source || null,
+                  dates_source: student.dates_source || null,
+                  birthplace_source: student.birthplace_source || null,
+                  birthYear: student.birth_year,
+                  deathYear: student.death_year
+                });
+                if (!studentId) return;
+                addLink(anchorId, studentId, 'taught', {
+                  label: 'taught',
+                  sourceInfo: student.teacher_rel_source || ''
+                });
               });
               // Enrich student nodes with full details for CSV immediately
               enrichPersonNodes((data.students || []).map(s => s.full_name));
@@ -2564,42 +2749,32 @@ const attemptLoadSavedView = async () => {
             {
               const familyList = (data.family || data.center?.family || []);
               if (familyList && familyList.length > 0) familyList.forEach(relative => {
-                const relName = relative.full_name || relative.name;
-                if (!existingNodes.has(relative.full_name)) {
-                  newNodes.push({
-                    id: relName,
-                    name: relName,
-                    type: 'person',
-                    voiceType: relative.voice_type,
-                    spelling_source: relative.spelling_source || null,
-                    voice_type_source: relative.voice_type_source || null,
-                    dates_source: relative.dates_source || null,
-                    birthplace_source: relative.birthplace_source || null,
-                    birthYear: relative.birth_year,
-                    deathYear: relative.death_year,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
+                const relId = registerNode({
+                  id: relative.full_name || relative.name,
+                  name: relative.full_name || relative.name,
+                  type: 'person',
+                  voiceType: relative.voice_type,
+                  spelling_source: relative.spelling_source || null,
+                  voice_type_source: relative.voice_type_source || null,
+                  dates_source: relative.dates_source || null,
+                  birthplace_source: relative.birthplace_source || null,
+                  birthYear: relative.birth_year,
+                  deathYear: relative.death_year
+                });
+                if (!relId) return;
                 
                 const relType = (relative.relationship_type || '').toLowerCase();
-                let src = node.name;
-                let tgt = relName;
+                let src = anchorId;
+                let tgt = relId;
                 if ((relType.includes('parent') && !relType.includes('of')) ||
                     (relType.includes('grandparent') && !relType.includes('of'))) {
-                  src = relName; // relative is ancestor
-                  tgt = node.name;
+                  src = relId;
+                  tgt = anchorId;
                 }
-                const linkKey = `${src}-${tgt}-family`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: src,
-                    target: tgt,
-                    type: 'family',
-                    label: relative.relationship_type || 'family',
-                    sourceInfo: relative.teacher_rel_source || relative.source || ''
-                  });
-                }
+                addLink(src, tgt, 'family', {
+                  label: relative.relationship_type || 'family',
+                  sourceInfo: relative.teacher_rel_source || relative.source || ''
+                });
               });
               // Enrich family person nodes for CSV immediately
               if (familyList && familyList.length > 0) enrichPersonNodes(familyList.map(r => r.full_name));
@@ -2608,136 +2783,78 @@ const attemptLoadSavedView = async () => {
             if (data.works) {
               if (data.works.operas) {
                 data.works.operas.forEach(opera => {
-                  const operaId = opera.opera_name || opera.title || `Unknown Opera`;
-                  const operaName = opera.opera_name || opera.title || `Unknown Opera`;
-                  if (!existingNodes.has(operaId)) {
-                    newNodes.push({
-                      id: operaId,
-                      name: operaName,
-                      type: 'opera',
-                      role: opera.role,
-                      composer: opera.composer,
-                      source: opera.source,
-                      x: Math.random() * 800,
-                      y: Math.random() * 600
-                    });
-                  }
-                  
-                  const linkKey = `${node.name}-${operaId}-premiered`;
-                  if (!existingLinks.has(linkKey)) {
-                    newLinks.push({
-                      source: node.name,
-                      target: operaId,
-                      type: 'premiered',
-                      label: 'premiered role in',
-                      role: opera.role,
-                      sourceInfo: opera.source
-                    });
-                  }
+                  const operaId = registerNode({
+                    id: opera.opera_name || opera.title || 'Unknown Opera',
+                    name: opera.opera_name || opera.title || 'Unknown Opera',
+                    type: 'opera',
+                    role: opera.role,
+                    composer: opera.composer,
+                    source: opera.source
+                  });
+                  if (!operaId) return;
+                  addLink(anchorId, operaId, 'premiered', {
+                    label: 'premiered role in',
+                    role: opera.role,
+                    sourceInfo: opera.source
+                  });
                 });
               }
               
               if (data.works.books) {
                 data.works.books.forEach(book => {
-                  const bookId = book.title; // Use just the title for consistency
-                  if (!existingNodes.has(bookId)) {
-                    newNodes.push({
-                      id: bookId,
-                      name: book.title,
-                      type: 'book',
-                      x: Math.random() * 800,
-                      y: Math.random() * 600
-                    });
-                  }
-                  
-                  const linkKey = `${node.name}-${bookId}-authored`;
-                  if (!existingLinks.has(linkKey)) {
-                    newLinks.push({
-                      source: node.name,
-                      target: bookId,
-                      type: 'authored',
-                      label: 'authored',
-                      sourceInfo: ''
-                    });
-                  }
+                  const bookId = registerNode({
+                    id: book.title,
+                    name: book.title,
+                    type: 'book'
+                  });
+                  if (!bookId) return;
+                  addLink(anchorId, bookId, 'authored', {
+                    label: 'authored',
+                    sourceInfo: ''
+                  });
                 });
               }
             }
           } else if (node.type === 'opera') {
-
-            
-            // Handle opera expansion - add performers and composer
             if (data.premieredRoles) {
               data.premieredRoles.forEach(role => {
-                const singerId = role.singer;
-                if (!existingNodes.has(singerId)) {
-                  newNodes.push({
-                    id: singerId,
-                    name: singerId,
-                    type: 'person',
-                    voiceType: role.voice_type,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                                  const linkKey = `${singerId}-${node.name}-premiered`;
-                  
-                  if (!existingLinks.has(linkKey)) {
-                    newLinks.push({
-                      source: singerId,
-                      target: node.name,
-                      type: 'premiered',
-                      label: 'premiered role in'
-                    });
-                  }
-              });
-                          }
-            
-            // Add composer if available
-            if (data.opera && data.opera.composer) {
-              const composerId = data.opera.composer;
-              if (!existingNodes.has(composerId)) {
-                newNodes.push({
-                  id: composerId,
-                  name: composerId,
+                const singerId = registerNode({
+                  id: role.singer,
+                  name: role.singer,
                   type: 'person',
-                  voiceType: 'Composer', // Set voice type for proper styling
-                  x: Math.random() * 800,
-                  y: Math.random() * 600
+                  voiceType: role.voice_type
                 });
-              }
-              
-              const linkKey = `${composerId}-${node.name}-wrote`;
-              if (!existingLinks.has(linkKey)) {
-                newLinks.push({
-                  source: composerId,
-                  target: node.name,
-                  type: 'wrote',
+                if (!singerId) return;
+                addLink(singerId, anchorId, 'premiered', {
+                  label: 'premiered role in',
+                  role: role.role,
+                  sourceInfo: role.source
+                });
+              });
+            }
+            
+            if (data.opera && data.opera.composer) {
+              const composerId = registerNode({
+                id: data.opera.composer,
+                name: data.opera.composer,
+                type: 'person',
+                voiceType: 'Composer'
+              });
+              if (composerId) {
+                addLink(composerId, anchorId, 'wrote', {
                   label: 'wrote'
                 });
               }
             }
           } else if (node.type === 'book') {
-            // Handle book expansion - add authors, editors, etc.
             if (data.book && data.book.author) {
-              const authorId = data.book.author;
-              if (!existingNodes.has(authorId)) {
-                newNodes.push({
-                  id: authorId,
-                  name: authorId,
-                  type: 'person',
-                  x: Math.random() * 800,
-                  y: Math.random() * 600
-                });
-              }
-              
-              const linkKey = `${authorId}-${node.name}-authored`;
-              if (!existingLinks.has(linkKey)) {
-                newLinks.push({
-                  source: authorId,
-                  target: node.name,
-                  type: 'authored',
+              const authorId = registerNode({
+                id: data.book.author,
+                name: data.book.author,
+                type: 'person'
+              });
+              if (authorId) {
+                addLink(authorId, anchorId, 'authored', {
                   label: 'authored',
                   sourceInfo: ''
                 });
@@ -2745,26 +2862,26 @@ const attemptLoadSavedView = async () => {
             }
           }
           
-          // Update network data with new nodes and links
-          setNetworkData({
-            nodes: [...networkData.nodes, ...newNodes],
-            links: [...networkData.links, ...newLinks]
-          });
+          if (newNodes.length > 0) {
+            const radius = Math.max(180, Math.min(400, 100 + newNodes.length * 30));
+            newNodes.forEach((n, idx) => {
+              if (!n) return;
+              const angle = (idx / newNodes.length) * Math.PI * 2;
+              n.x = anchorX + radius * Math.cos(angle);
+              n.y = anchorY + radius * Math.sin(angle);
+            });
+            extendDateRangesForNodes(newNodes);
+          }
+
+          setNetworkData(prev => mergeNetworkUpdates(prev, newNodes, newLinks));
           // Refresh counts for the expanded node to keep context menu accurate
           try {
             const updatedCounts = await fetchActualCounts(node);
             setActualCounts(prev => ({ ...prev, [node.id]: updatedCounts }));
           } catch (e) {}
-          
-          // Handle spacing for the expansion after a short delay to ensure network data is updated
-          if (newNodes.length > 0) {
-            setTimeout(() => {
-              handleExpansionSpacing(node.id, newNodes);
-            }, 100);
-          } else {
-            setIsExpansionSimulation(true);
-            setShouldRunSimulation(true);
-          }
+
+          setIsExpansionSimulation(true);
+          setShouldRunSimulation(true);
 
           // Keep hierarchy root unchanged to ensure additive expansion
         } else {
@@ -2820,12 +2937,17 @@ const attemptLoadSavedView = async () => {
         data = await response.json();
         if (response.ok) {
           // Merge new data with existing network
-          const existingNodes = new Set(networkData.nodes.map(n => n.id));
-          const existingLinks = new Set(networkData.links.map(l => {
-            const sourceId = typeof l.source === 'string' ? l.source : l.source?.id;
-            const targetId = typeof l.target === 'string' ? l.target : l.target?.id;
-            return `${sourceId}-${targetId}-${l.type}`;
-          }));
+          const existingNodes = new Set(
+            (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
+          );
+          const existingLinks = new Set(
+            (networkData.links || []).map(l => {
+              const sourceId = normalizeNodeId(typeof l.source === 'string' ? l.source : l.source?.id);
+              const targetId = normalizeNodeId(typeof l.target === 'string' ? l.target : l.target?.id);
+              if (!sourceId || !targetId) return null;
+              return `${sourceId}-${targetId}-${String(l.type || '').toLowerCase()}`;
+            }).filter(Boolean)
+          );
           
           console.log(`🔍 Expanding "${relationshipType}" for "${node.name}"`);
           console.log(`📊 Current network: ${networkData.nodes.length} nodes, ${networkData.links.length} links`);
@@ -2833,71 +2955,86 @@ const attemptLoadSavedView = async () => {
           
           const newNodes = [];
           const newLinks = [];
+          const anchorId = normalizeNodeId(node.id ?? node.name);
+          const anchorX = Number.isFinite(node?.x) ? node.x : 400;
+          const anchorY = Number.isFinite(node?.y) ? node.y : 300;
+
+          const registerNode = (payload) => {
+            const candidate = finalizeNodeCandidate({
+              ...payload,
+              x: Number.isFinite(payload?.x) ? payload.x : anchorX,
+              y: Number.isFinite(payload?.y) ? payload.y : anchorY
+            });
+            if (!candidate) return null;
+            const key = candidate.id;
+            if (existingNodes.has(key)) {
+              return key;
+            }
+            existingNodes.add(key);
+            newNodes.push(candidate);
+            return key;
+          };
+
+          const addLink = (sourceIdRaw, targetIdRaw, type, extra = {}) => {
+            const sourceId = normalizeNodeId(sourceIdRaw);
+            const targetId = normalizeNodeId(targetIdRaw);
+            if (!sourceId || !targetId) return;
+            const linkTypeKey = String(type || '').toLowerCase();
+            const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
+            if (existingLinks.has(linkKey)) return;
+            existingLinks.add(linkKey);
+            newLinks.push({
+              source: sourceId,
+              target: targetId,
+              type,
+              ...extra
+            });
+          };
           
           // Handle specific relationship types for people
           if (node.type === 'person') {
             if (relationshipType === 'taughtBy' && data.teachers) {
               data.teachers.forEach(teacher => {
-                if (!existingNodes.has(teacher.full_name)) {
-                  newNodes.push({
-                    id: teacher.full_name,
-                    name: teacher.full_name,
-                    type: 'person',
-                    voiceType: teacher.voice_type,
-                    spelling_source: teacher.spelling_source || null,
-                    voice_type_source: teacher.voice_type_source || null,
-                    dates_source: teacher.dates_source || null,
-                    birthplace_source: teacher.birthplace_source || null,
-                    birthYear: teacher.birth_year,
-                    deathYear: teacher.death_year,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${teacher.full_name}-${node.name}-taught`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: teacher.full_name,
-                    target: node.name,
-                    type: 'taught',
-                    label: 'taught',
-                    sourceInfo: teacher.teacher_rel_source || ''
-                  });
-                }
+                const teacherId = registerNode({
+                  id: teacher.full_name || teacher.name,
+                  name: teacher.full_name || teacher.name,
+                  type: 'person',
+                  voiceType: teacher.voice_type,
+                  spelling_source: teacher.spelling_source || null,
+                  voice_type_source: teacher.voice_type_source || null,
+                  dates_source: teacher.dates_source || null,
+                  birthplace_source: teacher.birthplace_source || null,
+                  birthYear: teacher.birth_year,
+                  deathYear: teacher.death_year
+                });
+                if (!teacherId) return;
+                addLink(teacherId, anchorId, 'taught', {
+                  label: 'taught',
+                  sourceInfo: teacher.teacher_rel_source || ''
+                });
               });
               enrichPersonNodes((data.teachers || []).map(t => t.full_name));
             }
             
             if (relationshipType === 'taught' && data.students) {
               data.students.forEach(student => {
-                if (!existingNodes.has(student.full_name)) {
-                  newNodes.push({
-                    id: student.full_name,
-                    name: student.full_name,
-                    type: 'person',
-                    voiceType: student.voice_type,
-                    spelling_source: student.spelling_source || null,
-                    voice_type_source: student.voice_type_source || null,
-                    dates_source: student.dates_source || null,
-                    birthplace_source: student.birthplace_source || null,
-                    birthYear: student.birth_year,
-                    deathYear: student.death_year,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${node.name}-${student.full_name}-taught`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: node.name,
-                    target: student.full_name,
-                    type: 'taught',
-                    label: 'taught',
-                    sourceInfo: student.teacher_rel_source || ''
-                  });
-                }
+                const studentId = registerNode({
+                  id: student.full_name || student.name,
+                  name: student.full_name || student.name,
+                  type: 'person',
+                  voiceType: student.voice_type,
+                  spelling_source: student.spelling_source || null,
+                  voice_type_source: student.voice_type_source || null,
+                  dates_source: student.dates_source || null,
+                  birthplace_source: student.birthplace_source || null,
+                  birthYear: student.birth_year,
+                  deathYear: student.death_year
+                });
+                if (!studentId) return;
+                addLink(anchorId, studentId, 'taught', {
+                  label: 'taught',
+                  sourceInfo: student.teacher_rel_source || ''
+                });
               });
               enrichPersonNodes((data.students || []).map(s => s.full_name));
             }
@@ -2927,41 +3064,32 @@ const attemptLoadSavedView = async () => {
                 }
                 
                 if (shouldInclude) {
-                  if (!existingNodes.has(relative.full_name)) {
-                    newNodes.push({
-                      id: relative.full_name,
-                      name: relative.full_name,
-                      type: 'person',
-                      voiceType: relative.voice_type,
-                      spelling_source: relative.spelling_source || null,
-                      voice_type_source: relative.voice_type_source || null,
-                      dates_source: relative.dates_source || null,
-                      birthplace_source: relative.birthplace_source || null,
-                      birthYear: relative.birth_year,
-                      deathYear: relative.death_year,
-                      x: Math.random() * 800,
-                      y: Math.random() * 600
-                    });
-                  }
+                  const relId = registerNode({
+                    id: relative.full_name || relative.name,
+                    name: relative.full_name || relative.name,
+                    type: 'person',
+                    voiceType: relative.voice_type,
+                    spelling_source: relative.spelling_source || null,
+                    voice_type_source: relative.voice_type_source || null,
+                    dates_source: relative.dates_source || null,
+                    birthplace_source: relative.birthplace_source || null,
+                    birthYear: relative.birth_year,
+                    deathYear: relative.death_year
+                  });
+                  if (!relId) return;
                   
                   const dirType = (relative.relationship_type || '').toLowerCase();
-                  let src = node.name;
-                  let tgt = relative.full_name;
+                  let src = anchorId;
+                  let tgt = relId;
                   if ((dirType.includes('parent') && !dirType.includes('of')) ||
                       (dirType.includes('grandparent') && !dirType.includes('of'))) {
-                    src = relative.full_name; // relative is ancestor
-                    tgt = node.name;
+                    src = relId;
+                    tgt = anchorId;
                   }
-                  const linkKey = `${src}-${tgt}-family`;
-                  if (!existingLinks.has(linkKey)) {
-                    newLinks.push({
-                      source: src,
-                      target: tgt,
-                      type: 'family',
-                      label: relative.relationship_type || 'family',
-                      sourceInfo: relative.teacher_rel_source || relative.source || ''
-                    });
-                  }
+                  addLink(src, tgt, 'family', {
+                    label: relative.relationship_type || 'family',
+                    sourceInfo: relative.teacher_rel_source || relative.source || ''
+                  });
                 }
               });
               enrichPersonNodes((data.family || []).map(r => r.full_name));
@@ -2969,137 +3097,79 @@ const attemptLoadSavedView = async () => {
             
             if (relationshipType === 'authored' && data.works && data.works.books) {
               data.works.books.forEach(book => {
-                const bookId = book.title; // Use just the title, not book_ prefix
-                if (!existingNodes.has(bookId)) {
-                  newNodes.push({
-                    id: bookId,
-                    name: book.title,
-                    type: 'book',
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${node.name}-${bookId}-authored`;
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: node.name,
-                    target: bookId,
-                    type: 'authored',
-                    label: 'authored',
-                    sourceInfo: ''
-                  });
-                }
+                const bookId = registerNode({
+                  id: book.title,
+                  name: book.title,
+                  type: 'book'
+                });
+                if (!bookId) return;
+                addLink(anchorId, bookId, 'authored', {
+                  label: 'authored',
+                  sourceInfo: ''
+                });
               });
             }
             
             if (relationshipType === 'premieredRoleIn' && data.works && data.works.operas) {
               data.works.operas.forEach(opera => {
-                const operaId = opera.opera_name || opera.title || `Unknown Opera`;
-                const operaName = opera.opera_name || opera.title || `Unknown Opera`;
-                
-                if (!existingNodes.has(operaId)) {
-                  newNodes.push({
-                    id: operaId,
-                    name: operaName,
-                    type: 'opera',
-                    role: opera.role,
-                    composer: opera.composer,
-                    source: opera.source,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${node.name}-${operaId}-premiered`;
-                
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: node.name,
-                    target: operaId,
-                    type: 'premiered',
-                    label: 'premiered role in',
-                    role: opera.role,
-                    sourceInfo: opera.source
-                  });
-                }
+                const operaId = registerNode({
+                  id: opera.opera_name || opera.title || 'Unknown Opera',
+                  name: opera.opera_name || opera.title || 'Unknown Opera',
+                  type: 'opera',
+                  role: opera.role,
+                  composer: opera.composer,
+                  source: opera.source
+                });
+                if (!operaId) return;
+                addLink(anchorId, operaId, 'premiered', {
+                  label: 'premiered role in',
+                  role: opera.role,
+                  sourceInfo: opera.source
+                });
               });
             }
           } else if (node.type === 'opera') {
             // Handle singers who premiered roles in this opera
             if (relationshipType === 'premieredRoleIn' && data.premieredRoles) {
               data.premieredRoles.forEach(role => {
-                const singerId = role.singer;
-                
-                if (!existingNodes.has(singerId)) {
-                  newNodes.push({
-                    id: singerId,
-                    name: singerId,
-                    type: 'person',
-                    voiceType: role.voice_type,
-                    x: Math.random() * 800,
-                    y: Math.random() * 600
-                  });
-                }
-                
-                const linkKey = `${singerId}-${node.name}-premiered`;
-                
-                if (!existingLinks.has(linkKey)) {
-                  newLinks.push({
-                    source: singerId,
-                    target: node.name,
-                    type: 'premiered',
-                    label: 'premiered role in',
-                    role: role.role,
-                    sourceInfo: role.source
-                  });
-                }
+                const singerId = registerNode({
+                  id: role.singer,
+                  name: role.singer,
+                  type: 'person',
+                  voiceType: role.voice_type
+                });
+                if (!singerId) return;
+                addLink(singerId, anchorId, 'premiered', {
+                  label: 'premiered role in',
+                  role: role.role,
+                  sourceInfo: role.source
+                });
               });
             }
             
             // Handle composer who wrote this opera
             if (relationshipType === 'wrote' && data.opera && data.opera.composer) {
-              const composerId = data.opera.composer;
-              if (!existingNodes.has(composerId)) {
-                newNodes.push({
-                  id: composerId,
-                  name: composerId,
-                  type: 'person',
-                  voiceType: 'Composer', // Set voice type for proper styling
-                  x: Math.random() * 800,
-                  y: Math.random() * 600
-                });
-              }
-              
-              const linkKey = `${composerId}-${node.name}-composed`;
-              if (!existingLinks.has(linkKey)) {
-                newLinks.push({
-                  source: composerId,
-                  target: node.name,
-                  type: 'composed',
+              const composerId = registerNode({
+                id: data.opera.composer,
+                name: data.opera.composer,
+                type: 'person',
+                voiceType: 'Composer'
+              });
+              if (composerId) {
+                addLink(composerId, anchorId, 'composed', {
                   label: 'composed'
                 });
               }
             }
           } else if (node.type === 'book') {
             if ((relationshipType === 'authored' || relationshipType === 'authoredBy') && data.book && data.book.author) {
-              const authorId = data.book.author;
-              if (!existingNodes.has(authorId)) {
-                newNodes.push({
-                  id: authorId,
-                  name: authorId,
-                  type: 'person',
-                  x: Math.random() * 800,
-                  y: Math.random() * 600
-                });
-              }
-              
-              const linkKey = `${authorId}-${node.name}-authored`;
-              if (!existingLinks.has(linkKey)) {
-                newLinks.push({
-                  source: authorId,
-                  target: node.name,
-                  type: 'authored',
+              const authorId = registerNode({
+                id: data.book.author,
+                name: data.book.author,
+                type: 'person'
+              });
+              if (authorId) {
+                addLink(authorId, anchorId, 'authored', {
                   label: 'authored',
                   sourceInfo: ''
                 });
@@ -3107,26 +3177,100 @@ const attemptLoadSavedView = async () => {
             }
           }
           
-          // Update network data with new nodes and links
-          const updatedNodes = [...networkData.nodes, ...newNodes];
-          setNetworkData({
-            nodes: updatedNodes,
-            links: [...networkData.links, ...newLinks]
-          });
+          if (newNodes.length > 0 && anchorId) {
+            const attachedToAnchor = new Set();
+            (networkData.links || []).forEach(link => {
+              const sourceId = normalizeNodeId(typeof link.source === 'string' ? link.source : link.source?.id);
+              const targetId = normalizeNodeId(typeof link.target === 'string' ? link.target : link.target?.id);
+              if (sourceId === anchorId && targetId) attachedToAnchor.add(targetId);
+              if (targetId === anchorId && sourceId) attachedToAnchor.add(sourceId);
+            });
+            newLinks.forEach(link => {
+              const sourceId = normalizeNodeId(link.source);
+              const targetId = normalizeNodeId(link.target);
+              if (sourceId === anchorId && targetId) attachedToAnchor.add(targetId);
+              if (targetId === anchorId && sourceId) attachedToAnchor.add(sourceId);
+            });
 
-          if (newNodes.length > 0) {
+            const relationshipLabel = typeof relationshipType === 'string' ? relationshipType : 'related';
+            const normalizedLabel = relationshipLabel.toLowerCase();
+            const fallbackType = normalizedLabel.includes('parent') || normalizedLabel.includes('sibling') || normalizedLabel.includes('grandparent')
+              ? 'family'
+              : 'related';
+
+            newNodes.forEach(n => {
+              const nodeId = normalizeNodeId(n.id);
+              if (!nodeId || attachedToAnchor.has(nodeId)) return;
+              addLink(anchorId, nodeId, fallbackType, {
+                label: relationshipLabel,
+                sourceInfo: ''
+              });
+              attachedToAnchor.add(nodeId);
+            });
+
+            const simNodeMap = new Map();
+            const simNodes = [];
+            const register = (id, x, y, pin = false) => {
+              const simNode = { id, x, y };
+              if (pin) {
+                simNode.fx = x;
+                simNode.fy = y;
+              }
+              simNodes.push(simNode);
+              simNodeMap.set(id, simNode);
+              return simNode;
+            };
+
+            register(anchorId, anchorX, anchorY, true);
+            const initialRadius = Math.max(60, Math.min(120, 40 + newNodes.length * 10));
+            newNodes.forEach((n, idx) => {
+              const angle = (idx / newNodes.length) * Math.PI * 2;
+              const px = anchorX + Math.cos(angle) * initialRadius;
+              const py = anchorY + Math.sin(angle) * initialRadius;
+              register(n.id, px, py, false);
+            });
+
+            const simLinks = newLinks
+              .map(link => ({
+                source: typeof link.source === 'string' ? link.source : link.source?.id,
+                target: typeof link.target === 'string' ? link.target : link.target?.id
+              }))
+              .filter(l => simNodeMap.has(l.source) && simNodeMap.has(l.target))
+              .map(l => ({
+                source: simNodeMap.get(l.source),
+                target: simNodeMap.get(l.target)
+              }));
+
+            if (simLinks.length > 0) {
+              const sim = d3.forceSimulation(simNodes)
+                .force('link', d3.forceLink(simLinks).distance(220).strength(1))
+                .force('charge', d3.forceManyBody().strength(-260))
+                .force('collision', d3.forceCollide().radius(75))
+                .force('center', d3.forceCenter(anchorX, anchorY))
+                .stop();
+
+              for (let i = 0; i < 200; i += 1) sim.tick();
+              sim.stop();
+            }
+
+            newNodes.forEach(n => {
+              const simNode = simNodeMap.get(n.id);
+              if (simNode) {
+                n.x = simNode.x;
+                n.y = simNode.y;
+              } else {
+                n.x = anchorX;
+                n.y = anchorY;
+              }
+            });
+
             extendDateRangesForNodes(newNodes);
           }
-          
-          // Handle spacing for the expansion after a short delay to ensure network data is updated
-          if (newNodes.length > 0) {
-            setTimeout(() => {
-              handleExpansionSpacing(node.id, newNodes);
-            }, 100);
-          } else {
-            setIsExpansionSimulation(true);
-            setShouldRunSimulation(true);
-          }
+
+          setNetworkData(prev => mergeNetworkUpdates(prev, newNodes, newLinks));
+
+          setIsExpansionSimulation(true);
+          setShouldRunSimulation(true);
         } else {
           setError(data.error);
         }
@@ -3400,274 +3544,7 @@ const attemptLoadSavedView = async () => {
     return result;
   };
   // Function to handle expansion spacing - called when new nodes are added to network
-  const handleExpansionSpacing = (expandedNodeId, newNodesData) => {
-    // Handle both array of nodes and count for backward compatibility
-    const passedNewNodes = Array.isArray(newNodesData) ? newNodesData : [];
-    const newNodesCount = Array.isArray(newNodesData) ? newNodesData.length : newNodesData;
-    
-    if (newNodesCount === 0) return;
-    
-    // Get container dimensions - use a reasonable default if not available
-    const width = 800;
-    const height = 600;
-    
-    // Find the expanded node
-    const expandedNode = networkData.nodes.find(node => node.id === expandedNodeId);
-    if (!expandedNode) return;
-    
-    // Use passed nodes if available, otherwise try to detect them
-    let targetNodes = passedNewNodes;
-    
-    if (targetNodes.length === 0) {
-      // Fallback: try to identify new nodes by their random positions
-      const existingNodeIds = new Set();
-      
-      networkData.nodes.forEach(node => {
-        if (node.x < 50 || node.x > 750 || node.y < 50 || node.y > 550) {
-          // These are likely new nodes with random positions
-          return;
-        }
-        existingNodeIds.add(node.id);
-      });
-      
-      targetNodes = networkData.nodes.filter(node => 
-        !existingNodeIds.has(node.id) && node.id !== expandedNodeId
-      );
-    }
-    
-    if (targetNodes.length === 0) return;
-    
-    // Calculate optimal direction to place the new subgroup
-    const angles = [0, Math.PI/2, Math.PI, 3*Math.PI/2, Math.PI/4, 3*Math.PI/4, 5*Math.PI/4, 7*Math.PI/4];
-    let bestAngle = 0;
-    let maxClearance = 0;
-    
-         angles.forEach(angle => {
-       const testDistance = 400; // Increased distance to place new subgroup
-       const testX = expandedNode.x + Math.cos(angle) * testDistance;
-       const testY = expandedNode.y + Math.sin(angle) * testDistance;
-       
-       // Advanced collision detection with safety zones
-       let minDist = Infinity;
-       let hasCollision = false;
-       const safetyZone = 150; // Minimum safe distance from any existing node
-       
-       networkData.nodes.forEach(node => {
-         if (targetNodes.includes(node) || node.id === expandedNodeId) return;
-         
-         const dist = Math.sqrt(
-           Math.pow(testX - node.x, 2) + 
-           Math.pow(testY - node.y, 2)
-         );
-         minDist = Math.min(minDist, dist);
-         
-         // Mark as collision if too close
-         if (dist < safetyZone) {
-           hasCollision = true;
-         }
-       });
-       
-       // Enhanced boundary checking with larger margins
-       const margin = 200;
-       const withinBounds = testX > margin && testX < width - margin && 
-                           testY > margin && testY < height - margin;
-       
-       // Only consider positions with no collisions and good clearance
-       if (withinBounds && !hasCollision && minDist > maxClearance) {
-         maxClearance = minDist;
-         bestAngle = angle;
-       }
-     });
-     
-          // Calculate movement to create separation between original and new clusters
-     const separationDistance = 350; // Increased distance to move each cluster from the expanded node
-     
-     // New cluster position (in the optimal direction)
-     const newClusterCenterX = expandedNode.x + Math.cos(bestAngle) * separationDistance;
-     const newClusterCenterY = expandedNode.y + Math.sin(bestAngle) * separationDistance;
-     
-     // Original cluster position (in the opposite direction)
-     const originalClusterCenterX = expandedNode.x - Math.cos(bestAngle) * separationDistance;
-     const originalClusterCenterY = expandedNode.y - Math.sin(bestAngle) * separationDistance;
-     
-     // Find all nodes connected to the expanded node (original cluster)
-     const connectedNodeIds = new Set();
-     connectedNodeIds.add(expandedNodeId); // Include the expanded node itself
-     
-     // Find nodes connected via links
-     networkData.links.forEach(link => {
-       const sourceId = typeof link.source === 'string' ? link.source : link.source?.id;
-       const targetId = typeof link.target === 'string' ? link.target : link.target?.id;
-       
-       if (sourceId === expandedNodeId && !targetNodes.find(n => n.id === targetId)) {
-         connectedNodeIds.add(targetId);
-       } else if (targetId === expandedNodeId && !targetNodes.find(n => n.id === sourceId)) {
-         connectedNodeIds.add(sourceId);
-       }
-     });
-     
-     // Move original cluster nodes
-     const originalClusterNodes = networkData.nodes.filter(node => 
-       connectedNodeIds.has(node.id) && !targetNodes.find(n => n.id === node.id)
-     );
-     
-     // Calculate offset to move original cluster
-     const originalOffsetX = originalClusterCenterX - expandedNode.x;
-     const originalOffsetY = originalClusterCenterY - expandedNode.y;
-     
-     originalClusterNodes.forEach(node => {
-       node.x += originalOffsetX;
-       node.y += originalOffsetY;
-       
-       // Ensure within bounds
-       node.x = Math.max(100, Math.min(width - 100, node.x));
-       node.y = Math.max(100, Math.min(height - 100, node.y));
-     });
-     
-     // Analyze relationships within the new cluster to create sub-clusters
-     const newClusterSubgroups = [];
-     const processedNodes = new Set();
-     
-     // Group new nodes by their internal connections
-     targetNodes.forEach(node => {
-       if (processedNodes.has(node.id)) return;
-       
-       const subgroup = [node];
-       processedNodes.add(node.id);
-       
-       // Find nodes connected to this one within the new cluster
-       const findConnectedInNewCluster = (nodeId, currentSubgroup) => {
-         networkData.links.forEach(link => {
-           const sourceId = typeof link.source === 'string' ? link.source : link.source?.id;
-           const targetId = typeof link.target === 'string' ? link.target : link.target?.id;
-           
-           if (sourceId === nodeId && !processedNodes.has(targetId)) {
-             const targetNode = targetNodes.find(n => n.id === targetId);
-             if (targetNode) {
-               currentSubgroup.push(targetNode);
-               processedNodes.add(targetId);
-               findConnectedInNewCluster(targetId, currentSubgroup); // Recursive search
-             }
-           } else if (targetId === nodeId && !processedNodes.has(sourceId)) {
-             const sourceNode = targetNodes.find(n => n.id === sourceId);
-             if (sourceNode) {
-               currentSubgroup.push(sourceNode);
-               processedNodes.add(sourceId);
-               findConnectedInNewCluster(sourceId, currentSubgroup); // Recursive search
-             }
-           }
-         });
-       };
-       
-       findConnectedInNewCluster(node.id, subgroup);
-       newClusterSubgroups.push(subgroup);
-     });
-     
-     // Position each subgroup separately around the new cluster center with aggressive spacing
-     const subgroupRadius = 180; // Increased distance of subgroups from new cluster center
-     
-     newClusterSubgroups.forEach((subgroup, subgroupIndex) => {
-       if (newClusterSubgroups.length > 1) {
-         // Multiple subgroups - spread them around the cluster center
-         const subgroupAngle = (subgroupIndex / newClusterSubgroups.length) * 2 * Math.PI;
-         const subgroupCenterX = newClusterCenterX + Math.cos(subgroupAngle) * subgroupRadius;
-         const subgroupCenterY = newClusterCenterY + Math.sin(subgroupAngle) * subgroupRadius;
-         
-         // Arrange nodes within this subgroup in a small circle
-         subgroup.forEach((node, nodeIndex) => {
-           if (subgroup.length === 1) {
-             // Single node - place at subgroup center
-             node.x = subgroupCenterX;
-             node.y = subgroupCenterY;
-                        } else {
-               // Multiple nodes - arrange in circle around subgroup center with increased spacing
-               const nodeAngle = (nodeIndex / subgroup.length) * 2 * Math.PI;
-               const nodeRadius = 60 + (subgroup.length > 3 ? 25 : 0); // Increased radius
-               
-               node.x = subgroupCenterX + Math.cos(nodeAngle) * nodeRadius;
-               node.y = subgroupCenterY + Math.sin(nodeAngle) * nodeRadius;
-             }
-           
-           // Ensure within bounds
-           node.x = Math.max(100, Math.min(width - 100, node.x));
-           node.y = Math.max(100, Math.min(height - 100, node.y));
-         });
-                } else {
-           // Single subgroup - arrange directly around new cluster center with generous spacing
-           subgroup.forEach((node, nodeIndex) => {
-             const nodeAngle = (nodeIndex / subgroup.length) * 2 * Math.PI;
-             const radius = 120 + (subgroup.length > 4 ? 40 : 0); // Significantly increased radius
-             
-             node.x = newClusterCenterX + Math.cos(nodeAngle) * radius;
-             node.y = newClusterCenterY + Math.sin(nodeAngle) * radius;
-           
-           // Ensure within bounds
-           node.x = Math.max(100, Math.min(width - 100, node.x));
-           node.y = Math.max(100, Math.min(height - 100, node.y));
-         });
-       }
-     });
-    
-         // Final overlap detection and resolution
-     const resolveOverlaps = () => {
-       const minDistance = 100; // Minimum distance between any two nodes
-       let hasOverlaps = true;
-       let iterations = 0;
-       const maxIterations = 5;
-       
-       while (hasOverlaps && iterations < maxIterations) {
-         hasOverlaps = false;
-         iterations++;
-         
-         // Check all node pairs for overlaps
-         for (let i = 0; i < networkData.nodes.length; i++) {
-           for (let j = i + 1; j < networkData.nodes.length; j++) {
-             const nodeA = networkData.nodes[i];
-             const nodeB = networkData.nodes[j];
-             
-             const distance = Math.sqrt(
-               Math.pow(nodeA.x - nodeB.x, 2) + 
-               Math.pow(nodeA.y - nodeB.y, 2)
-             );
-             
-             if (distance < minDistance) {
-               hasOverlaps = true;
-               
-               // Calculate push direction
-               const angle = Math.atan2(nodeB.y - nodeA.y, nodeB.x - nodeA.x);
-               const pushDistance = (minDistance - distance) / 2 + 10; // Extra margin
-               
-               // Push both nodes apart
-               nodeA.x -= Math.cos(angle) * pushDistance;
-               nodeA.y -= Math.sin(angle) * pushDistance;
-               nodeB.x += Math.cos(angle) * pushDistance;
-               nodeB.y += Math.sin(angle) * pushDistance;
-               
-               // Keep within bounds
-               nodeA.x = Math.max(100, Math.min(width - 100, nodeA.x));
-               nodeA.y = Math.max(100, Math.min(height - 100, nodeA.y));
-               nodeB.x = Math.max(100, Math.min(width - 100, nodeB.x));
-               nodeB.y = Math.max(100, Math.min(height - 100, nodeB.y));
-             }
-           }
-         }
-       }
-     };
-     
-     resolveOverlaps();
-     
-     // Update network data with positioned nodes
-     setNetworkData(prevData => ({
-       ...prevData,
-       nodes: [...prevData.nodes] // Trigger re-render
-     }));
-     
-     // Trigger longer simulation for expansion to better settle positions
-     setTimeout(() => {
-       setIsExpansionSimulation(true);
-       setShouldRunSimulation(true);
-     }, 100);
-  };
+  ;
   // Network visualization using D3
   const NetworkVisualization = ({ viewport: viewportInfo = {} }) => {
     const viewportIsPhone = !!viewportInfo.isPhone;
@@ -7237,8 +7114,8 @@ const attemptLoadSavedView = async () => {
     const { totalNodes, visibleNodes } = getFilterCounts();
     const { birthRange, deathRange } = getDateRanges();
     const hasVoiceFilters = selectedVoiceTypes.size > 0;
-    const hasBirthFilter = birthYearRange[0] !== birthRange[0] || birthYearRange[1] !== birthRange[1];
-    const hasDeathFilter = deathYearRange[0] !== deathRange[0] || deathYearRange[1] !== deathRange[1];
+    const hasBirthFilter = birthRangeIsUserSet;
+    const hasDeathFilter = deathRangeIsUserSet;
     const hasBirthplaceFilters = selectedBirthplaces.size > 0;
     const hasAnyFilters = hasVoiceFilters || hasBirthFilter || hasDeathFilter || hasBirthplaceFilters;
 
@@ -7275,6 +7152,7 @@ const attemptLoadSavedView = async () => {
       let nextMax = isNaN(parsedMax) ? birthYearRange[1] : clamp(parsedMax, minBound, maxBound);
       if (nextMax < nextMin) nextMax = nextMin;
       updateBirthYearRange([nextMin, nextMax]);
+      setBirthRangeIsUserSet(true);
       setBirthMinInput(String(nextMin));
       setBirthMaxInput(String(nextMax));
       if (prevTop !== null && scrollEl) {
@@ -7301,6 +7179,7 @@ const attemptLoadSavedView = async () => {
       let nextMax = isNaN(parsedMax) ? deathYearRange[1] : clamp(parsedMax, minBound, maxBound);
       if (nextMax < nextMin) nextMax = nextMin;
       updateDeathYearRange([nextMin, nextMax]);
+      setDeathRangeIsUserSet(true);
       setDeathMinInput(String(nextMin));
       setDeathMaxInput(String(nextMax));
       if (prevTop !== null && scrollEl) {
