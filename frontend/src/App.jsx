@@ -1241,7 +1241,68 @@ const attemptLoadSavedView = async () => {
     setDeathYearRange(newRange);
   };
 
-  const extendDateRangesForNodes = (nodesList = []) => {
+  const parseYearValue = (value) => {
+    if (value === null || value === undefined) return NaN;
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : NaN;
+    }
+    if (typeof value === 'string') {
+      const match = value.match(/-?\d{3,4}/);
+      return match ? parseInt(match[0], 10) : NaN;
+    }
+    if (typeof value === 'object') {
+      if (Number.isFinite(value.year)) return value.year;
+      if (typeof value.year === 'string') {
+        const match = value.year.match(/-?\d{3,4}/);
+        if (match) return parseInt(match[0], 10);
+      }
+      if (Number.isFinite(value.low)) return value.low;
+      if (Number.isFinite(value.high)) return value.high;
+    }
+    return NaN;
+  };
+
+  const normalizePersonNode = (node) => {
+    if (!node || node.type !== 'person') return node;
+    let normalized = node;
+    const ensureClone = () => {
+      if (normalized === node) {
+        normalized = { ...node };
+      }
+    };
+    if (normalized.voiceType === undefined && normalized.voice_type) {
+      ensureClone();
+      normalized.voiceType = normalized.voice_type;
+    }
+    if (normalized.birthplace === undefined && normalized.birth_place) {
+      ensureClone();
+      normalized.birthplace = normalized.birth_place;
+    }
+    const birthCandidate =
+      normalized.birthYear ??
+      normalized.birth_year ??
+      (normalized.birth && (normalized.birth.year ?? normalized.birth.low ?? normalized.birth.high)) ??
+      null;
+    const deathCandidate =
+      normalized.deathYear ??
+      normalized.death_year ??
+      (normalized.death && (normalized.death.year ?? normalized.death.low ?? normalized.death.high)) ??
+      null;
+    const birthYear = parseYearValue(birthCandidate);
+    const deathYear = parseYearValue(deathCandidate);
+    if (Number.isFinite(birthYear) && normalized.birthYear !== birthYear) {
+      ensureClone();
+      normalized.birthYear = birthYear;
+    }
+    if (Number.isFinite(deathYear) && normalized.deathYear !== deathYear) {
+      ensureClone();
+      normalized.deathYear = deathYear;
+    }
+    return normalized;
+  };
+
+  const extendDateRangesForNodes = (nodesList = [], options = {}) => {
+    const { resetUserRangeFlags = false } = options;
     if (!Array.isArray(nodesList) || nodesList.length === 0) return;
     let [birthMin, birthMax] = birthYearRange;
     let [deathMin, deathMax] = deathYearRange;
@@ -1250,16 +1311,22 @@ const attemptLoadSavedView = async () => {
 
     nodesList.forEach((node) => {
       if (node && node.type === 'person') {
-        const birthValue = node.birthYear ?? node.birth_year ?? (node.birth ? (node.birth.low ?? node.birth) : null);
-        const deathValue = node.deathYear ?? node.death_year ?? (node.death ? (node.death.low ?? node.death) : null);
+        const birthValue =
+          node.birthYear ??
+          node.birth_year ??
+          (node.birth ? (node.birth.year ?? node.birth.low ?? node.birth.high ?? node.birth) : null);
+        const deathValue =
+          node.deathYear ??
+          node.death_year ??
+          (node.death ? (node.death.year ?? node.death.low ?? node.death.high ?? node.death) : null);
 
-        const birthYear = birthValue != null ? parseInt(birthValue, 10) : NaN;
+        const birthYear = parseYearValue(birthValue);
         if (!Number.isNaN(birthYear)) {
           if (birthYear < birthMin) { birthMin = birthYear; birthChanged = true; }
           if (birthYear > birthMax) { birthMax = birthYear; birthChanged = true; }
         }
 
-        const deathYear = deathValue != null ? parseInt(deathValue, 10) : NaN;
+        const deathYear = parseYearValue(deathValue);
         if (!Number.isNaN(deathYear)) {
           if (deathYear < deathMin) { deathMin = deathYear; deathChanged = true; }
           if (deathYear > deathMax) { deathMax = deathYear; deathChanged = true; }
@@ -1269,9 +1336,15 @@ const attemptLoadSavedView = async () => {
 
     if (birthChanged) {
       updateBirthYearRange([birthMin, birthMax]);
+      if (resetUserRangeFlags && birthRangeIsUserSet) {
+        setBirthRangeIsUserSet(false);
+      }
     }
     if (deathChanged) {
       updateDeathYearRange([deathMin, deathMax]);
+      if (resetUserRangeFlags && deathRangeIsUserSet) {
+        setDeathRangeIsUserSet(false);
+      }
     }
   };
 
@@ -3822,7 +3895,11 @@ const attemptLoadSavedView = async () => {
           if (event.type === 'dblclick') return false;
           if (event.pointerType === 'touch' || (typeof event.type === 'string' && event.type.startsWith('touch'))) {
             const touches = resolveTouchList(event) || resolveTouchList(event.sourceEvent);
-            return touches && touches.length >= 2; // require two-finger gesture
+            if (touches) {
+              return touches.length >= 1;
+            }
+            // Pointer events on some browsers won't expose touches; treat as single-touch pan
+            return true;
           }
           // Explicitly block context menu/right-click and middle-click from initiating zoom/pan
           if (event.button === 2 || event.buttons === 2) return false;
@@ -3844,15 +3921,18 @@ const attemptLoadSavedView = async () => {
           const isWheel = e && e.type === 'wheel';
           const isPointerMove = e && (e.type === 'pointermove' || e.type === 'mousemove');
           const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch'));
-          const isTouchGesture = e && (
+          const isTouchEvent = e && (
             e.type === 'touchmove' ||
             e.type === 'touchstart' ||
+            e.type === 'touchend' ||
             (e.type === 'pointermove' && e.pointerType === 'touch') ||
-            (e.type === 'pointerdown' && e.pointerType === 'touch')
+            (e.type === 'pointerdown' && e.pointerType === 'touch') ||
+            (e.type === 'pointerup' && e.pointerType === 'touch')
           );
-          if (isTouchGesture) {
+          if (isTouchEvent) {
             const touches = resolveTouchList(e) || resolveTouchList(e.sourceEvent);
-            if (!touches || touches.length < 2) {
+            const touchCount = touches ? touches.length : (e && e.pointerType === 'touch' ? 1 : 0);
+            if (touchCount === 0) {
               applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
               return;
             }
@@ -5864,7 +5944,18 @@ const attemptLoadSavedView = async () => {
                   if (!resp.ok) throw new Error(data.error || 'Failed');
                   setPathInfo({ nodes: data.nodes, links: data.links, steps: data.steps || [] });
                   // Show the path on the graph by merging nodes/links and highlighting the path
-                  const existingNodeMap = new Map(networkData.nodes.map(n => [n.id, n]));
+                  const existingNodeMap = new Map();
+                  networkData.nodes.forEach(existingNode => {
+                    if (existingNode && existingNode.type === 'person') {
+                      const normalized = normalizePersonNode(existingNode);
+                      if (normalized !== existingNode) {
+                        Object.assign(existingNode, normalized);
+                      }
+                    }
+                    if (existingNode?.id) {
+                      existingNodeMap.set(existingNode.id, existingNode);
+                    }
+                  });
                   const existingLinkKeys = new Set(
                     networkData.links.map(l => `${typeof l.source === 'string' ? l.source : l.source?.id}-${typeof l.target === 'string' ? l.target : l.target?.id}-${l.type}`)
                   );
@@ -5923,9 +6014,11 @@ const attemptLoadSavedView = async () => {
                     const radius = 90;
                     return { x: (neighbor.x || 300) + Math.cos(angle) * radius, y: (neighbor.y || 300) + Math.sin(angle) * radius };
                   };
-                  data.nodes.forEach(n => {
-                    if (!existingNodeMap.has(n.id)) {
-                      const neighbors = Array.from(pathNeighbors.get(n.id) || []);
+                  data.nodes.forEach(rawNode => {
+                    const canonicalNode = normalizePersonNode(rawNode);
+                    if (!canonicalNode?.id) return;
+                    if (!existingNodeMap.has(canonicalNode.id)) {
+                      const neighbors = Array.from(pathNeighbors.get(canonicalNode.id) || []);
                       const existingNeighbor = neighbors.find(id => existingNodeMap.has(id));
                       let x = 300, y = 300;
                       if (existingNeighbor) {
@@ -5937,13 +6030,14 @@ const attemptLoadSavedView = async () => {
                       if (x > width - pad) x = width - pad;
                       if (y < pad) y = pad;
                       if (y > height - pad) height = Math.ceil(y + 60);
-                      const newNode = { ...n, x, y, isPath: true, wasAddedByPath: true };
+                      const newNode = normalizePersonNode({ ...canonicalNode, x, y, isPath: true, wasAddedByPath: true });
                       mergedNodes.push(newNode);
-                      existingNodeMap.set(n.id, newNode);
-                      pathOverlayRef.current.addedNodeIds.add(n.id);
+                      existingNodeMap.set(newNode.id, newNode);
+                      pathOverlayRef.current.addedNodeIds.add(newNode.id);
                     } else {
-                      const ex = existingNodeMap.get(n.id);
-                      ex.isPath = true;
+                      const ex = existingNodeMap.get(canonicalNode.id);
+                      const updated = normalizePersonNode({ ...ex, ...canonicalNode, isPath: true });
+                      Object.assign(ex, updated);
                     }
                   });
                   // Fixed height; do not auto-grow the canvas
@@ -6064,7 +6158,8 @@ const attemptLoadSavedView = async () => {
                   // Mark nodes in path
                   mergedNodes.forEach(n => { if (pathNodeIds.has(n.id)) n.isPath = true; });
                   setNetworkData({ nodes: mergedNodes, links: mergedLinks });
-                  extendDateRangesForNodes(data.nodes || []);
+                  const pathPersons = mergedNodes.filter(n => n && n.type === 'person' && pathNodeIds.has(n.id));
+                  extendDateRangesForNodes(pathPersons, { resetUserRangeFlags: true });
                   // Enrich newly added path person nodes so CSV has full details
                   const newPersonNames = (data.nodes || [])
                     .filter(n => n && n.type === 'person')
