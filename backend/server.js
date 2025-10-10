@@ -943,7 +943,7 @@ app.get('/test', (req, res) => {
 });
 
 // View snapshot storage (file-based per-user)
-const VIEWS_DIR = path.resolve(process.cwd(), 'data', 'views');
+const VIEWS_DIR = path.resolve(__dirname, 'data', 'views');
 const ensureDir = async (dir) => {
   await fs.promises.mkdir(dir, { recursive: true });
 };
@@ -955,8 +955,8 @@ const userDir = async (email) => {
 };
 
 const SAMPLE_VIEW_DIRS = [
-  path.resolve(process.cwd(), 'backend', 'data', 'views', 'test%40example.com'),
-  path.resolve(process.cwd(), 'backend', 'sample-views')
+  path.resolve(__dirname, 'data', 'views', 'test%40example.com'),
+  path.resolve(__dirname, 'sample-views')
 ].filter((dir) => fs.existsSync(dir));
 
 const readSnapshotFromDir = async (dir, token) => {
