@@ -36,13 +36,15 @@ const checkAPOCAvailability = async () => {
 const allowedOrigins = (process.env.CLIENT_ORIGINS && process.env.CLIENT_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)) || [
   'http://localhost:3000',
   'http://localhost:3002',
-  'http://localhost:5173'
+  'http://localhost:5173',
+  'https://aspengrove.netlify.app'
 ];
-console.log('[CORS] Allowed origins:', allowedOrigins);
+const cloudflareTunnel = /^https?:\/\/[a-z0-9-]+\.trycloudflare\.com$/i;
+console.log('[CORS] Allowed origins:', allowedOrigins, ' + trycloudflare.com');
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.includes(origin) || cloudflareTunnel.test(origin)) {
       return callback(null, true);
     }
     console.warn(`[CORS] Blocked origin: ${origin}`);

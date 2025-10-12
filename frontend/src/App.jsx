@@ -172,7 +172,7 @@ const ClassicalMusicGenealogy = () => {
             opacity: disabledExport ? 0.6 : 1
           }}
         >
-          Export CSV
+          Export text file
         </button>
       </div>
     );
@@ -3630,9 +3630,93 @@ const attemptLoadSavedView = async () => {
     const hasAppliedInitialFitRef = useRef(false);
     const longPressTimeoutRef = useRef(null);
     const touchDragStateRef = useRef(null);
+    const gestureLogRef = useRef([]);
+    const activeGestureRef = useRef(null);
+    const lastZoomLogTsRef = useRef(0);
+    const touchPanStateRef = useRef(null);
+
+    const getNowTs = () => {
+      if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+        return performance.now();
+      }
+      return Date.now();
+    };
+
+    const logGestureEvent = (type, detail = {}) => {
+      if (!viewportIsPhone) return;
+      const entry = {
+        ts: Math.round(getNowTs()),
+        type,
+        ...detail
+      };
+      gestureLogRef.current.push(entry);
+      if (gestureLogRef.current.length > 300) {
+        gestureLogRef.current.shift();
+      }
+      try {
+        window.__cmgGestureLog = gestureLogRef.current;
+      } catch (_) {}
+      const isDevBuild = typeof process !== 'undefined' && process.env && process.env.NODE_ENV !== 'production';
+      if (isDevBuild && typeof console !== 'undefined' && typeof console.log === 'function') {
+        // Provide actionable breadcrumbs while developing/debugging on mobile
+        console.log('[cmg-mobile]', type, detail);
+      }
+    };
+
+    const startGestureSession = (kind, event) => {
+      if (!viewportIsPhone) return;
+      activeGestureRef.current = {
+        kind,
+        pointerId: event.pointerId,
+        startTs: getNowTs(),
+        moves: 0,
+        lastPos: {
+          x: Number.isFinite(event.clientX) ? event.clientX : 0,
+          y: Number.isFinite(event.clientY) ? event.clientY : 0
+        },
+        touchCount: event.touches ? event.touches.length : undefined
+      };
+      logGestureEvent('gesture-start', {
+        kind,
+        pointerId: event.pointerId,
+        x: activeGestureRef.current.lastPos.x,
+        y: activeGestureRef.current.lastPos.y,
+        touchCount: activeGestureRef.current.touchCount
+      });
+    };
+
+    const updateGestureSession = (event) => {
+      if (!viewportIsPhone) return;
+      const session = activeGestureRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      session.moves += 1;
+      session.lastPos = {
+        x: Number.isFinite(event.clientX) ? event.clientX : session.lastPos.x,
+        y: Number.isFinite(event.clientY) ? event.clientY : session.lastPos.y
+      };
+    };
+
+    const endGestureSession = (event, { reason } = {}) => {
+      if (!viewportIsPhone) return;
+      const session = activeGestureRef.current;
+      if (!session) return;
+      if (event && session.pointerId !== event.pointerId) return;
+      const duration = getNowTs() - session.startTs;
+      logGestureEvent('gesture-end', {
+        kind: session.kind,
+        pointerId: session.pointerId,
+        duration: Math.round(duration),
+        moves: session.moves,
+        x: session.lastPos.x,
+        y: session.lastPos.y,
+        reason: reason || (event ? event.type : 'completed')
+      });
+      activeGestureRef.current = null;
+    };
 
     const LONG_PRESS_DELAY_MS = 550;
     const TOUCH_DRAG_DISTANCE_THRESHOLD = 8;
+    const TOUCH_PAN_ACTIVATION_PX = 6;
 
     const clearLongPress = () => {
       if (longPressTimeoutRef.current) {
@@ -3675,16 +3759,20 @@ const attemptLoadSavedView = async () => {
             target: targetElement,
             datum
           };
-          try {
-            targetElement.setPointerCapture(pointerId);
-          } catch (_) {}
           longPressTimeoutRef.current = window.setTimeout(() => {
             const state = touchDragStateRef.current;
             if (!state || state.pointerId !== pointerId || state.hasMoved) {
+              if (state && state.pointerId === pointerId && state.hasMoved) {
+                logGestureEvent('longpress-cancelled', { pointerId, reason: 'movement-exceeded' });
+              }
               return;
             }
             longPressTimeoutRef.current = null;
             state.longPressFired = true;
+            logGestureEvent('longpress-fired', {
+              pointerId,
+              nodeId: state.datum && (state.datum.id || state.datum.name || null)
+            });
             const handler = d3.select(targetElement).on('contextmenu');
             if (typeof handler === 'function') {
               const syntheticEvent = {
@@ -3712,11 +3800,16 @@ const attemptLoadSavedView = async () => {
               if (!state.hasMoved && Math.sqrt((dx * dx) + (dy * dy)) > TOUCH_DRAG_DISTANCE_THRESHOLD) {
                 state.hasMoved = true;
                 clearLongPress();
+                logGestureEvent('longpress-cancelled', { pointerId: event.pointerId, reason: 'drag-started' });
               }
             }
           }
         })
         .on('pointerup.longpress pointercancel.longpress pointerleave.longpress', function(event) {
+          const state = touchDragStateRef.current;
+          if (event.pointerType === 'touch' && state && state.pointerId === event.pointerId && !state.longPressFired) {
+            logGestureEvent('longpress-cancelled', { pointerId: event.pointerId, reason: event.type });
+          }
           if (event.pointerType === 'touch') {
             try { this.releasePointerCapture(event.pointerId); } catch (_) {}
             resetTouchTracking(event.pointerId);
@@ -3750,7 +3843,7 @@ const attemptLoadSavedView = async () => {
         .style("background", "transparent")
         .style("user-select", "none")
         .style("-webkit-user-select", "none")
-        .style("touch-action", "none");
+        .style("touch-action", viewportIsPhone ? "manipulation" : "none");
       // Prevent default browser context menu on background to avoid accidental pan/zoom
       svg.on('contextmenu', (event) => {
         event.preventDefault();
@@ -3772,6 +3865,36 @@ const attemptLoadSavedView = async () => {
         }
       });
       svg.on('pointerdown.cmg', (event) => {
+        if (viewportIsPhone && event.pointerType === 'touch') {
+          startGestureSession('touch-pan', event);
+          if (touchPanStateRef.current && touchPanStateRef.current.pointerId !== null && touchPanStateRef.current.pointerId !== event.pointerId) {
+            return;
+          }
+          const baseTransform = zoomTransformRef.current || uiZoomRef.current || d3.zoomIdentity;
+          const clientX = Number.isFinite(event.clientX)
+            ? event.clientX
+            : (event.touches && event.touches[0]?.clientX) || (event.targetTouches && event.targetTouches[0]?.clientX) || 0;
+          const clientY = Number.isFinite(event.clientY)
+            ? event.clientY
+            : (event.touches && event.touches[0]?.clientY) || (event.targetTouches && event.targetTouches[0]?.clientY) || 0;
+          touchPanStateRef.current = {
+            pointerId: typeof event.pointerId === 'number' ? event.pointerId : null,
+            startX: clientX,
+            startY: clientY,
+            startTransform: baseTransform,
+            active: false,
+            startK: Number.isFinite(baseTransform.k) ? baseTransform.k : 1,
+            latestTransform: baseTransform,
+            lastClientX: clientX,
+            lastClientY: clientY
+          };
+          logGestureEvent('touch-pan-init', {
+            pointerId: touchPanStateRef.current.pointerId,
+            x: clientX,
+            y: clientY,
+            touches: 1
+          });
+        }
         if (event.pointerType !== 'touch' && event.buttons && event.buttons !== 1) {
           event.preventDefault();
           if (event.stopImmediatePropagation) event.stopImmediatePropagation();
@@ -3780,6 +3903,14 @@ const attemptLoadSavedView = async () => {
         }
       });
       svg.on('touchstart.cmg', (event) => {
+        if (viewportIsPhone) {
+          const touchCount = event.touches ? event.touches.length : 0;
+          logGestureEvent('raw-touchstart', { touchCount });
+          if (touchCount > 1) {
+            event.preventDefault();
+          }
+          return;
+        }
         event.preventDefault();
       });
       svg.on('mouseup', (event) => {
@@ -3790,12 +3921,27 @@ const attemptLoadSavedView = async () => {
           try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
         }
       });
+      svg.on('pointermove.mobileLog', (event) => {
+        if (viewportIsPhone && event.pointerType === 'touch') {
+          updateGestureSession(event);
+        }
+      });
       svg.on('pointerup', (event) => {
+        if (viewportIsPhone && event.pointerType === 'touch') {
+          endGestureSession(event, { reason: 'pointerup' });
+          touchPanStateRef.current = null;
+        }
         if (event.pointerType !== 'touch' && event.button && event.button !== 0) {
           event.preventDefault();
           if (event.stopImmediatePropagation) event.stopImmediatePropagation();
           event.stopPropagation();
           try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
+        }
+      });
+      svg.on('pointercancel.mobileLog', (event) => {
+        if (viewportIsPhone && event.pointerType === 'touch') {
+          endGestureSession(event, { reason: 'pointercancel' });
+          touchPanStateRef.current = null;
         }
       });
       svg.on('auxclick', (event) => {
@@ -3806,6 +3952,7 @@ const attemptLoadSavedView = async () => {
 
       // Background left-click: anchor all nodes to prevent any drift
       const anchorAllNodes = (event) => {
+        if (viewportIsPhone) return;
         if (event.button !== 0) return;
         // Ignore clicks on nodes/links/labels
         const target = event.target;
@@ -3831,6 +3978,27 @@ const attemptLoadSavedView = async () => {
 
       // Create main group for zooming/panning
       const g = svg.append("g");
+      let pendingZoomFrame = null;
+      let queuedZoomTransform = null;
+
+      const applyGroupTransform = (transform, { immediate = false } = {}) => {
+        queuedZoomTransform = transform;
+        if (immediate) {
+          if (pendingZoomFrame) {
+            cancelAnimationFrame(pendingZoomFrame);
+            pendingZoomFrame = null;
+          }
+          g.attr('transform', queuedZoomTransform);
+          return;
+        }
+        if (pendingZoomFrame) return;
+        pendingZoomFrame = requestAnimationFrame(() => {
+          pendingZoomFrame = null;
+          if (queuedZoomTransform) {
+            g.attr('transform', queuedZoomTransform);
+          }
+        });
+      };
       // Also guard the group for safety (in case events bind to inner elements)
       g.on('contextmenu', (event) => {
         event.preventDefault();
@@ -3858,14 +4026,14 @@ const attemptLoadSavedView = async () => {
       try {
         const prev = uiZoomRef.current || d3.zoomIdentity;
         d3.select(svgRef.current).property('__zoom', prev);
-        g.attr('transform', prev);
+        applyGroupTransform(prev, { immediate: true });
       } catch (_) {}
 
       // Helper to apply a zoom transform silently (no zoom event)
       const applyZoomTransformSilently = (t) => {
         try {
           d3.select(svgRef.current).property('__zoom', t);
-          g.attr('transform', t);
+          applyGroupTransform(t, { immediate: true });
           zoomTransformRef.current = t;
           try { window.__cmg_zoomTransform = t; } catch (_) {}
         } catch (_) {}
@@ -3891,6 +4059,7 @@ const attemptLoadSavedView = async () => {
           const isPrimary = (event.buttons === 1) || (event.button === 0);
           return isPrimary && !event.ctrlKey && !event.metaKey;
         })
+        .clickDistance(viewportIsPhone ? 6 : 0)
         .scaleExtent([minZoom, maxZoom])
         .touchable(() => true)
         .on("zoom", (event) => {
@@ -3915,6 +4084,57 @@ const attemptLoadSavedView = async () => {
             e.pointerType === 'touch'
           );
           const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch')) || isTouchEvent;
+          if (viewportIsPhone && isTouchEvent && e) {
+            const panState = touchPanStateRef.current;
+            const touches =
+              (typeof e.touches === 'object' && e.touches !== null ? e.touches.length : undefined) ??
+              (typeof e.targetTouches === 'object' && e.targetTouches !== null ? e.targetTouches.length : undefined) ??
+              (e.sourceEvent && typeof e.sourceEvent.touches === 'object' && e.sourceEvent.touches !== null ? e.sourceEvent.touches.length : undefined);
+            if (typeof e.pointerId !== 'undefined') {
+              updateGestureSession(e);
+            }
+            if (panState) {
+              const firstTouch = (e.touches && e.touches[0]) || (e.targetTouches && e.targetTouches[0]) || null;
+              const clientX = Number.isFinite(e.clientX) ? e.clientX : (firstTouch ? firstTouch.clientX : panState.startX);
+              const clientY = Number.isFinite(e.clientY) ? e.clientY : (firstTouch ? firstTouch.clientY : panState.startY);
+              const dx = clientX - panState.startX;
+              const dy = clientY - panState.startY;
+              const dist = Math.sqrt((dx * dx) + (dy * dy));
+              const scaleChanged = Number.isFinite(event.transform.k) && Number.isFinite(panState.startK)
+                ? Math.abs(event.transform.k - panState.startK) > 1e-3
+                : false;
+              if (!panState.active) {
+                const resolvedTouchCount = typeof touches === 'number'
+                  ? touches
+                  : (typeof activeGestureRef.current?.touchCount === 'number'
+                    ? activeGestureRef.current.touchCount
+                    : 1);
+                if (resolvedTouchCount > 1) {
+                  return;
+                }
+                if (dist < TOUCH_PAN_ACTIVATION_PX && !scaleChanged) {
+                  return;
+                }
+                panState.active = true;
+                logGestureEvent('touch-pan-activated', {
+                  pointerId: panState.pointerId,
+                  distance: Math.round(dist),
+                  touches: resolvedTouchCount
+                });
+              }
+            }
+            const nowTs = getNowTs();
+            if (nowTs - lastZoomLogTsRef.current > 120) {
+              lastZoomLogTsRef.current = nowTs;
+              const zoomSnapshot = {
+                k: Number.isFinite(event.transform.k) ? Number(event.transform.k.toFixed(3)) : event.transform.k,
+                x: Number.isFinite(event.transform.x) ? Math.round(event.transform.x) : event.transform.x,
+                y: Number.isFinite(event.transform.y) ? Math.round(event.transform.y) : event.transform.y,
+                sourceType: e.type
+              };
+              logGestureEvent('zoom-update', zoomSnapshot);
+            }
+          }
           // Ignore if the originating pointer is right or middle button (but allow touch)
           if (e && !isTouchEvent && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
@@ -3925,7 +4145,7 @@ const attemptLoadSavedView = async () => {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
             return;
           }
-          g.attr("transform", event.transform);
+          applyGroupTransform(event.transform);
           zoomTransformRef.current = event.transform;
           uiZoomRef.current = event.transform;
           hasAppliedInitialFitRef.current = true;
@@ -3936,7 +4156,7 @@ const attemptLoadSavedView = async () => {
       try {
         const prev = uiZoomRef.current || d3.zoomIdentity;
         d3.select(svgRef.current).property('__zoom', prev);
-        g.attr('transform', prev);
+        applyGroupTransform(prev, { immediate: true });
       } catch (_) {}
       zoomRef.current = zoom;
 
@@ -5748,6 +5968,10 @@ const attemptLoadSavedView = async () => {
       return () => {
         clearLongPress();
         resetTouchTracking();
+        if (pendingZoomFrame) {
+          cancelAnimationFrame(pendingZoomFrame);
+          pendingZoomFrame = null;
+        }
         if (simulationRef.current) {
           simulationRef.current.stop();
         }
@@ -9435,7 +9659,7 @@ const attemptLoadSavedView = async () => {
               <section>
                 <h3 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a' }}>Acknowledgements</h3>
                 <p style={{ margin: 0, color: '#374151' }}>
-                  Placeholder text for credits, institutional support, and contributor recognition will appear here. Use this space to thank collaborators, data partners, and supporters who make the project possible.
+                  This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thank you to my friends at the Marriott Library, especially Rebekah Cummings of the Digital Matters Lab. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
                 </p>
               </section>
             </div>

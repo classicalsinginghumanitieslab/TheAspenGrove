@@ -44,12 +44,16 @@ console.log('[CORS] Allowed origins:', Array.from(allowedOriginsSet));
 
 // Allow typical private-LAN hostnames like http://192.168.x.x:PORT, http://10.x.x.x:PORT
 const privateLan = [/^http:\/\/(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}:\d+$/];
+const cloudflareTunnel = /^https?:\/\/[a-z0-9-]+\.trycloudflare\.com$/;
 
 const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true); // allow non-browser clients / curl
     const normalized = normalizeOrigin(origin);
-    const ok = allowedOriginsSet.has(normalized) || privateLan.some((rx) => rx.test(origin));
+    const ok =
+      allowedOriginsSet.has(normalized) ||
+      privateLan.some((rx) => rx.test(origin)) ||
+      cloudflareTunnel.test(normalized);
     if (ok) {
       return cb(null, true);
     }

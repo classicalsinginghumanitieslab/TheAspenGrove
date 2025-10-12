@@ -10,7 +10,12 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
+    host: true,
     port: 5173,
+    allowedHosts: [
+      'endorsed-scenario-instantly-emissions.trycloudflare.com',
+      '.trycloudflare.com'
+    ],
     proxy: {
       '/auth': 'http://localhost:3001',
       '/search': 'http://localhost:3001',
