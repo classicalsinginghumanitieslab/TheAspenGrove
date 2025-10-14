@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
 import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
@@ -7,6 +7,291 @@ const SESSION_SNAPSHOT_KEY = 'cmgActiveSession_v1';
 const SESSION_SNAPSHOT_FILTERLESS_KEY = 'cmgActiveSession_filtersReset';
 const TOKEN_LOGIN_TS_KEY = 'cmgTokenLoginTs';
 const LOGIN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+const RELATIONSHIP_SOURCE_FIELDS = [
+  'relationshipSourceDisplay',
+  'relationship_source_display',
+  'teacher_rel_source',
+  'relationship_rel_source',
+  'relationship_source',
+  'relationshipSource',
+  'sourceInfo',
+  'source',
+  'relSource',
+  'reference_source',
+  'referenceSource',
+  'citation',
+  'notes',
+  'text',
+  'label'
+];
+
+const normalizeSourceValue = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const str = String(value).trim();
+    return str;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const candidate = normalizeSourceValue(entry);
+      if (candidate) return candidate;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    for (const key of RELATIONSHIP_SOURCE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const candidate = normalizeSourceValue(value[key]);
+        if (candidate) return candidate;
+      }
+    }
+    for (const candidate of Object.values(value)) {
+      const text = normalizeSourceValue(candidate);
+      if (text) return text;
+    }
+    return '';
+  }
+  return '';
+};
+
+const deriveRelationshipSourceText = (...values) => {
+  for (const value of values) {
+    const candidate = normalizeSourceValue(value);
+    if (candidate) return candidate;
+  }
+  return '';
+};
+
+const URL_DETECT_REGEX = /https?:\/\/[^\s)]+/i;
+const extractFirstUrlFromValue = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const str = String(value);
+    const match = str.match(URL_DETECT_REGEX);
+    if (match && match[0]) {
+      return match[0].replace(/[),.;:]+$/g, '');
+    }
+    return '';
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = extractFirstUrlFromValue(entry);
+      if (found) return found;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    for (const entry of Object.values(value)) {
+      const found = extractFirstUrlFromValue(entry);
+      if (found) return found;
+    }
+  }
+  return '';
+};
+
+const deriveRelationshipSourceUrl = (...values) => {
+  for (const value of values) {
+    const possibleUrl = extractFirstUrlFromValue(value);
+    if (possibleUrl) return possibleUrl;
+  }
+  return '';
+};
+
+const SOURCE_LINK_STYLE = {
+  color: '#2563eb',
+  textDecoration: 'underline',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+  display: 'inline-block'
+};
+
+const formatRelationshipSource = (...values) => {
+  const raw = deriveRelationshipSourceText(...values);
+  const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
+  return text || 'Unknown';
+};
+
+const renderRelationshipSourceLink = (...values) => {
+  const url = deriveRelationshipSourceUrl(...values);
+  const raw = deriveRelationshipSourceText(...values);
+  const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
+  const textContainsUrl = URL_DETECT_REGEX.test(text || '');
+
+  if (url && !textContainsUrl) {
+    const display = text || url;
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={SOURCE_LINK_STYLE}
+        onMouseOver={(e) => {
+          if (e?.target) e.target.style.color = '#1d4ed8';
+        }}
+        onMouseOut={(e) => {
+          if (e?.target) e.target.style.color = '#2563eb';
+        }}
+      >
+        {display}
+      </a>
+    );
+  }
+
+  if (!text) return 'Unknown';
+
+  const urlRegex = /https?:\/\/[^\s)]+/gi;
+  const nodes = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    const { index } = match;
+    if (index > lastIndex) {
+      nodes.push(text.slice(lastIndex, index));
+    }
+    const matchedText = match[0];
+    const url = matchedText.replace(/[),.;:]+$/g, '');
+    const trailing = matchedText.slice(url.length);
+    const anchor = (
+      <a
+        key={`${url}-${index}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={SOURCE_LINK_STYLE}
+        onMouseOver={(e) => {
+          if (e?.target) e.target.style.color = '#1d4ed8';
+        }}
+        onMouseOut={(e) => {
+          if (e?.target) e.target.style.color = '#2563eb';
+        }}
+      >
+        {url}
+      </a>
+    );
+    nodes.push(anchor);
+    if (trailing) {
+      nodes.push(trailing);
+    }
+    lastIndex = index + matchedText.length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  if (nodes.length === 0) {
+    return text;
+  }
+
+  return nodes.map((node, idx) =>
+    typeof node === 'string'
+      ? <React.Fragment key={`text-${idx}`}>{node}</React.Fragment>
+      : node
+  );
+};
+
+const normalizeLinks = (links = []) =>
+  (Array.isArray(links) ? links : []).map((link) => {
+    const sourceText = deriveRelationshipSourceText(
+      link.relationshipSourceDisplay,
+      link.relationship_source_display,
+      link.teacher_rel_source,
+      link.teacher_rel_source_text,
+      link.relationship_source,
+      link.relationshipSource,
+      link.opera_source_text,
+      link.sourceInfo,
+      link.source
+    );
+    return {
+      ...link,
+      relationshipSourceDisplay: sourceText,
+      sourceInfo: sourceText
+    };
+  });
+
+const createLinkContextMenuState = () => ({
+  show: false,
+  x: 0,
+  y: 0,
+  role: '',
+  source: ''
+});
+
+const normalizeDetailsRelationshipSources = (details = {}) => {
+  const clone = { ...details };
+  const normalizeList = (list, priorityFields = [], options = {}) => {
+    const { allowFallback = true } = options;
+    if (!Array.isArray(list)) return [];
+    return list.map((entry) => {
+      const teacherRaw = entry?.teacher_rel_source;
+      const normalizedTeacherValue = (() => {
+        if (teacherRaw == null) return '';
+        if (typeof teacherRaw === 'string') return teacherRaw.trim();
+        return deriveRelationshipSourceText(teacherRaw);
+      })();
+      const prioritizedValues = priorityFields
+        .map((key) => entry?.[key])
+        .filter((val) => val != null && val !== '');
+      const fallbackValues = allowFallback
+        ? [
+            entry.relationshipSourceDisplay,
+            entry.relationship_source_display,
+            entry.teacher_rel_source,
+            entry.relationship_source,
+            entry.relationshipSource,
+            entry.source
+          ]
+        : [];
+      const sourceText = deriveRelationshipSourceText(
+        ...prioritizedValues,
+        ...fallbackValues
+      );
+      const normalizedEntry = {
+        ...entry,
+        relationshipSourceDisplay: sourceText,
+      };
+      if (priorityFields.includes('teacher_rel_source_text')) {
+        const normalizedText = deriveRelationshipSourceText(entry?.teacher_rel_source_text);
+        normalizedEntry.teacher_rel_source_text = normalizedText || sourceText || null;
+      }
+      if (priorityFields.includes('opera_source_text')) {
+        const normalizedOperaText = deriveRelationshipSourceText(entry?.opera_source_text);
+        normalizedEntry.opera_source_text = normalizedOperaText || sourceText || null;
+      }
+      if (priorityFields.includes('teacher_rel_source')) {
+        const normalizedTeacher = normalizedTeacherValue || deriveRelationshipSourceText(...prioritizedValues);
+        normalizedEntry.teacher_rel_source = normalizedTeacher || null;
+        normalizedEntry.teacher_rel_source_display = normalizedTeacher || null;
+        if (!normalizedEntry.teacher_rel_source_text && normalizedTeacher) {
+          normalizedEntry.teacher_rel_source_text = normalizedTeacher;
+        }
+      }
+      if (priorityFields.includes('source')) {
+        const normalizedSource = deriveRelationshipSourceText(...prioritizedValues);
+        normalizedEntry.source = normalizedSource || null;
+      }
+      return normalizedEntry;
+    });
+  };
+
+  clone.teachers = normalizeList(clone.teachers, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
+  clone.students = normalizeList(clone.students, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
+  clone.family = normalizeList(clone.family, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
+  clone.premieredRoles = normalizeList(clone.premieredRoles, ['opera_source_text', 'source']);
+
+  if (clone.works && typeof clone.works === 'object') {
+    const worksClone = { ...clone.works };
+    worksClone.operas = normalizeList(worksClone.operas, ['opera_source_text', 'source']);
+    worksClone.books = normalizeList(worksClone.books, []);
+    worksClone.composedOperas = normalizeList(worksClone.composedOperas, ['opera_source_text', 'source']);
+    clone.works = worksClone;
+  }
+
+  return clone;
+};
 
 const ClassicalMusicGenealogy = () => {
   const viewport = useViewport();
@@ -33,7 +318,7 @@ const ClassicalMusicGenealogy = () => {
   const [networkData, setNetworkData] = useState({ nodes: [], links: [] });
   const [shouldRunSimulation, setShouldRunSimulation] = useState(false);
   const [contextMenu, setContextMenu] = useState({ show: false, x: 0, y: 0, node: null });
-  const [linkContextMenu, setLinkContextMenu] = useState({ show: false, x: 0, y: 0, role: '', source: '' });
+  const [linkContextMenu, setLinkContextMenu] = useState(createLinkContextMenuState);
   const [visualizationHeight, setVisualizationHeight] = useState(550);
   // Visualization height adapts for smaller viewports; defaults to 550px on desktop
   const [selectedNode, setSelectedNode] = useState(null);
@@ -117,6 +402,45 @@ const ClassicalMusicGenealogy = () => {
   const filtersResetRef = useRef(false);
   const headerContainerRef = useRef(null);
   const [headerWidth, setHeaderWidth] = useState(null);
+
+  const centerName = itemDetails?.center?.full_name || itemDetails?.center?.name || '';
+  const { teacherSourcesByName, studentSourcesByName } = useMemo(() => {
+    const normalizeEndpoint = (value) => {
+      if (!value) return '';
+      if (typeof value === 'string') return value;
+      if (typeof value === 'object') {
+        return value.id || value.name || value.full_name || '';
+      }
+      return String(value);
+    };
+    const toText = (value) => {
+      if (value == null) return '';
+      if (typeof value === 'string') return value.trim();
+      try {
+        return String(value).trim();
+      } catch (_) {
+        return '';
+      }
+    };
+    const teacherMap = new Map();
+    const studentMap = new Map();
+    if (!centerName) return { teacherSourcesByName: teacherMap, studentSourcesByName: studentMap };
+    (networkData?.links || []).forEach((link) => {
+      if (!link) return;
+      const type = typeof link.type === 'string' ? link.type.toLowerCase() : '';
+      if (type !== 'taught') return;
+      const sourceId = normalizeEndpoint(link.source);
+      const targetId = normalizeEndpoint(link.target);
+      const text = toText(link.teacher_rel_source);
+      if (!text) return;
+      if (targetId === centerName) {
+        teacherMap.set(sourceId, text);
+      } else if (sourceId === centerName) {
+        studentMap.set(targetId, text);
+      }
+    });
+    return { teacherSourcesByName: teacherMap, studentSourcesByName: studentMap };
+  }, [networkData, centerName]);
 
   const clearStoredToken = () => {
     try { localStorage.removeItem('token'); } catch (_) {}
@@ -374,11 +698,13 @@ const ClassicalMusicGenealogy = () => {
     const clonedNodes = snap.nodes.map(n => ({ ...n }));
     const clonedLinks = snap.links.map(l => ({ ...l }));
     // Normalize link endpoints to string ids to avoid stale object refs
-    const normalizedLinks = clonedLinks.map(l => ({
-      ...l,
-      source: (typeof l.source === 'string' ? l.source : (l.source && l.source.id) || l.source),
-      target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target)
-    }));
+    const normalizedLinks = normalizeLinks(
+      clonedLinks.map(l => ({
+        ...l,
+        source: (typeof l.source === 'string' ? l.source : (l.source && l.source.id) || l.source),
+        target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target)
+      }))
+    );
     setNetworkData({ nodes: clonedNodes, links: normalizedLinks });
     // If the snapshot contains explicit positions, preserve layout and build a dormant sim
     const hasPositions = Array.isArray(clonedNodes) && clonedNodes.length > 0 && clonedNodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y));
@@ -403,7 +729,9 @@ const ClassicalMusicGenealogy = () => {
       svgSel.select('g').attr('transform', dz);
     } catch (_) {}
     // Restore detail cards state
-    try { setItemDetails(snap.itemDetails || null); } catch (_) {}
+    try {
+      setItemDetails(snap.itemDetails ? normalizeDetailsRelationshipSources(snap.itemDetails) : null);
+    } catch (_) {}
     try { setSelectedItem(snap.selectedItem || null); } catch (_) {}
     try {
       if (typeof snap.searchQuery === 'string') {
@@ -1739,7 +2067,7 @@ const attemptLoadSavedView = async () => {
       // Explicitly re-apply current zoom to avoid any external listeners causing recenter
       try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {}
       setContextMenu({ show: false, x: 0, y: 0, node: null });
-      setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' });
+      setLinkContextMenu(createLinkContextMenuState());
       setExpandSubmenu(null);
       // Clear any pending submenu timeout
       if (submenuTimeoutRef.current) {
@@ -1824,7 +2152,7 @@ const attemptLoadSavedView = async () => {
         setContextMenu({ show: false, x: 0, y: 0, node: null });
       }
       if (linkContextMenu.show && !event.target.closest('.context-menu')) {
-        setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' });
+        setLinkContextMenu(createLinkContextMenuState());
       }
     };
 
@@ -2129,7 +2457,7 @@ const attemptLoadSavedView = async () => {
     // Apply anti-overlap positioning to all nodes
     positionNodesWithoutOverlap(nodes);
 
-    setNetworkData({ nodes, links });
+    setNetworkData({ nodes, links: normalizeLinks(links) });
     resetFiltersForNodeSet(nodes);
     setShowFilterPanel(false);
     setCurrentCenterNode(null); // Reset center tracking for search results
@@ -2197,7 +2525,16 @@ const attemptLoadSavedView = async () => {
             nodes.push({ id: composerId, name: composerId, type: 'person', x: 250 + (idx * 40), y: 180 });
             addedNodes.add(composerId);
           }
-          links.push({ source: composerId, target: centerName, type: 'wrote', label: 'wrote', sourceInfo: row.source || '' });
+          const relationshipSource = deriveRelationshipSourceText(row?.source, row?.relationship_source);
+          links.push({
+            source: composerId,
+            target: centerName,
+            type: 'wrote',
+            label: 'wrote',
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: row?.relationship_source || null
+          });
         });
       } else if (details.opera && details.opera.composer) {
         const composerId = details.opera.composer;
@@ -2205,7 +2542,16 @@ const attemptLoadSavedView = async () => {
           nodes.push({ id: composerId, name: composerId, type: 'person', x: 250, y: 180 });
           addedNodes.add(composerId);
         }
-        links.push({ source: composerId, target: centerName, type: 'wrote', label: 'wrote', sourceInfo: '' });
+        const relationshipSource = deriveRelationshipSourceText(details.opera?.source, details.opera?.relationship_source);
+        links.push({
+          source: composerId,
+          target: centerName,
+          type: 'wrote',
+          label: 'wrote',
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: details.opera?.relationship_source || null
+        });
       }
     }
 
@@ -2214,12 +2560,18 @@ const attemptLoadSavedView = async () => {
       details.teachers.forEach((teacher, index) => {
         addPersonNode(teacher, 200 + (index * 50), 150);
         
+        const relationshipSource = deriveRelationshipSourceText(teacher.teacher_rel_source_text, teacher.relationshipSourceDisplay, teacher.teacher_rel_source, teacher.relationship_source, teacher.source);
         links.push({
           source: teacher.full_name,
           target: centerName,
           type: 'taught',
           label: 'taught',
-          sourceInfo: teacher.teacher_rel_source || ''
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          teacher_rel_source: teacher.teacher_rel_source || null,
+          teacher_rel_source_text: teacher.teacher_rel_source_text || relationshipSource || null,
+          teacher_rel_source_url: teacher.teacher_rel_source_url || null,
+          relationship_source: teacher.relationship_source || null
         });
       });
     }
@@ -2229,12 +2581,18 @@ const attemptLoadSavedView = async () => {
       details.students.forEach((student, index) => {
         addPersonNode(student, 200 + (index * 50), 450);
         
+        const relationshipSource = deriveRelationshipSourceText(student.teacher_rel_source_text, student.relationshipSourceDisplay, student.teacher_rel_source, student.relationship_source, student.source);
         links.push({
           source: centerName,
           target: student.full_name,
           type: 'taught',
           label: 'taught',
-          sourceInfo: student.teacher_rel_source || ''
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          teacher_rel_source: student.teacher_rel_source || null,
+          teacher_rel_source_text: student.teacher_rel_source_text || relationshipSource || null,
+          teacher_rel_source_url: student.teacher_rel_source_url || null,
+          relationship_source: student.relationship_source || null
         });
       });
     }
@@ -2260,12 +2618,18 @@ const attemptLoadSavedView = async () => {
           // center is ancestor of relative (already src=center, tgt=relative)
         } // spouse/sibling/default keep center -> relative for determinism
         
+        const relationshipSource = deriveRelationshipSourceText(relative.teacher_rel_source_text, relative.relationshipSourceDisplay, relative.teacher_rel_source, relative.relationship_source, relative.source);
         links.push({
           source: src,
           target: tgt,
           type: 'family',
           label: relative.relationship_type || 'family',
-          sourceInfo: relative.teacher_rel_source || relative.source || ''
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          teacher_rel_source: relative.teacher_rel_source || null,
+          teacher_rel_source_text: relative.teacher_rel_source_text || relationshipSource || null,
+          teacher_rel_source_url: relative.teacher_rel_source_url || null,
+          relationship_source: relative.relationship_source || null
         });
       });
     }
@@ -2288,13 +2652,18 @@ const attemptLoadSavedView = async () => {
             y: 500
           });
           
+          const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
           links.push({
             source: centerName,
             target: operaId,
             type: 'premiered',
             label: 'premiered role in',
             role: opera.role,
-            sourceInfo: opera.source || ''
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: opera.relationship_source || null,
+            opera_source_text: opera.opera_source_text || relationshipSource || null,
+            opera_source_url: opera.opera_source_url || null
           });
         });
       }
@@ -2311,12 +2680,15 @@ const attemptLoadSavedView = async () => {
             y: 500
           });
           
+          const relationshipSource = null;
           links.push({
             source: centerName,
             target: bookId,
             type: 'authored',
             label: 'authored',
-            sourceInfo: ''
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: null
           });
         });
       }
@@ -2334,11 +2706,17 @@ const attemptLoadSavedView = async () => {
             y: 400
           });
           
+          const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
           links.push({
             source: centerName,
             target: operaId,
             type: 'wrote',
-            label: 'wrote'
+            label: 'wrote',
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: opera.relationship_source || null,
+            opera_source_text: opera.opera_source_text || relationshipSource || null,
+            opera_source_url: opera.opera_source_url || null
           });
         });
       }
@@ -2363,13 +2741,18 @@ const attemptLoadSavedView = async () => {
             addedNodes.add(singerId);
           }
           
+          const relationshipSource = deriveRelationshipSourceText(role.opera_source_text, role.relationshipSourceDisplay, role.source, role.relationship_source);
           links.push({
             source: singerId,
             target: centerName,
             type: 'premiered',
             label: 'premiered role in',
             role: role.role,
-            sourceInfo: role.source
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: role.relationship_source || null,
+            opera_source_text: role.opera_source_text || relationshipSource || null,
+            opera_source_url: role.opera_source_url || null
           });
         });
       } else if (type === 'singers') {
@@ -2397,12 +2780,15 @@ const attemptLoadSavedView = async () => {
           addedNodes.add(authorId);
         }
         
+        const relationshipSource = null;
         links.push({
           source: authorId,
           target: centerName,
           type: 'authored',
           label: 'authored',
-          sourceInfo: ''
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: null
         });
       });
     }
@@ -2424,11 +2810,15 @@ const attemptLoadSavedView = async () => {
           addedNodes.add(editorId);
         }
         
+        const relationshipSource = null;
         links.push({
           source: editorId,
           target: centerName,
           type: 'edited',
-          label: 'edited'
+          label: 'edited',
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: null
         });
       });
     }
@@ -2438,7 +2828,7 @@ const attemptLoadSavedView = async () => {
 
     clearFiltersForNewSearch(nodes);
 
-    setNetworkData({ nodes, links });
+    setNetworkData({ nodes, links: normalizeLinks(links) });
     setCurrentCenterNode(centerName); // Set the center node for this network
     setShouldRunSimulation(true); // Trigger force simulation for new network
   };
@@ -2671,7 +3061,7 @@ const attemptLoadSavedView = async () => {
 
     return {
       nodes: [...updatedNodes, ...pendingNewMap.values()],
-      links: mergedLinks
+      links: normalizeLinks(mergedLinks)
     };
   };
 
@@ -2760,12 +3150,30 @@ const attemptLoadSavedView = async () => {
             const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
             if (existingLinks.has(linkKey)) return;
             existingLinks.add(linkKey);
-            newLinks.push({
+            const cleanedExtra = { ...extra };
+            const teacherRelSource = typeof cleanedExtra.teacher_rel_source === 'string' ? cleanedExtra.teacher_rel_source : null;
+            const relationshipSourceProp = typeof cleanedExtra.relationship_source === 'string' ? cleanedExtra.relationship_source : null;
+            const relationshipSourceCandidates = Array.isArray(cleanedExtra.relationshipSourceCandidates)
+              ? cleanedExtra.relationshipSourceCandidates
+              : [];
+            delete cleanedExtra.relationshipSourceCandidates;
+            const linkPayload = {
               source: sourceId,
               target: targetId,
               type,
-              ...extra
-            });
+              ...cleanedExtra
+            };
+            const relationshipSource = deriveRelationshipSourceText(
+              linkPayload.relationshipSourceDisplay,
+              linkPayload.sourceInfo,
+              ...relationshipSourceCandidates
+            );
+            linkPayload.relationshipSourceDisplay = relationshipSource;
+            linkPayload.teacher_rel_source = teacherRelSource;
+            linkPayload.relationship_source = relationshipSourceProp;
+            linkPayload.sourceInfo = relationshipSource;
+            linkPayload.source = relationshipSource || linkPayload.source;
+            newLinks.push(linkPayload);
           };
           
           // Handle different node types and their data structures
@@ -2788,7 +3196,7 @@ const attemptLoadSavedView = async () => {
                 if (!teacherId) return;
                 addLink(teacherId, anchorId, 'taught', {
                   label: 'taught',
-                  sourceInfo: teacher.teacher_rel_source || ''
+                  relationshipSourceCandidates: [teacher.teacher_rel_source, teacher.relationship_source, teacher.source]
                 });
               });
               // Enrich teacher nodes with full details for CSV immediately
@@ -2812,7 +3220,7 @@ const attemptLoadSavedView = async () => {
                 if (!studentId) return;
                 addLink(anchorId, studentId, 'taught', {
                   label: 'taught',
-                  sourceInfo: student.teacher_rel_source || ''
+                  relationshipSourceCandidates: [student.teacher_rel_source, student.relationship_source, student.source]
                 });
               });
               // Enrich student nodes with full details for CSV immediately
@@ -2846,7 +3254,7 @@ const attemptLoadSavedView = async () => {
                 }
                 addLink(src, tgt, 'family', {
                   label: relative.relationship_type || 'family',
-                  sourceInfo: relative.teacher_rel_source || relative.source || ''
+                  relationshipSourceCandidates: [relative.teacher_rel_source, relative.relationship_source, relative.source]
                 });
               });
               // Enrich family person nodes for CSV immediately
@@ -2868,7 +3276,7 @@ const attemptLoadSavedView = async () => {
                   addLink(anchorId, operaId, 'premiered', {
                     label: 'premiered role in',
                     role: opera.role,
-                    sourceInfo: opera.source
+                    relationshipSourceCandidates: [opera.source, opera.relationship_source]
                   });
                 });
               }
@@ -2883,7 +3291,7 @@ const attemptLoadSavedView = async () => {
                   if (!bookId) return;
                   addLink(anchorId, bookId, 'authored', {
                     label: 'authored',
-                    sourceInfo: ''
+                    relationshipSourceCandidates: [book.source, book.relationship_source]
                   });
                 });
               }
@@ -2901,7 +3309,7 @@ const attemptLoadSavedView = async () => {
                 addLink(singerId, anchorId, 'premiered', {
                   label: 'premiered role in',
                   role: role.role,
-                  sourceInfo: role.source
+                  relationshipSourceCandidates: [role.source, role.relationship_source]
                 });
               });
             }
@@ -2915,7 +3323,8 @@ const attemptLoadSavedView = async () => {
               });
               if (composerId) {
                 addLink(composerId, anchorId, 'wrote', {
-                  label: 'wrote'
+                  label: 'wrote',
+                  relationshipSourceCandidates: [data.opera?.source, data.opera?.relationship_source]
                 });
               }
             }
@@ -2929,7 +3338,7 @@ const attemptLoadSavedView = async () => {
               if (authorId) {
                 addLink(authorId, anchorId, 'authored', {
                   label: 'authored',
-                  sourceInfo: ''
+                  relationshipSourceCandidates: [data.book?.source, data.book?.relationship_source]
                 });
               }
             }
@@ -3056,12 +3465,34 @@ const attemptLoadSavedView = async () => {
             const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
             if (existingLinks.has(linkKey)) return;
             existingLinks.add(linkKey);
-            newLinks.push({
+            const cleanedExtra = { ...extra };
+            const teacherRelSource = typeof cleanedExtra.teacher_rel_source === 'string' ? cleanedExtra.teacher_rel_source : null;
+            const relationshipSourceProp = typeof cleanedExtra.relationship_source === 'string' ? cleanedExtra.relationship_source : null;
+            const relationshipSourceCandidates = Array.isArray(cleanedExtra.relationshipSourceCandidates)
+              ? cleanedExtra.relationshipSourceCandidates
+              : [];
+            delete cleanedExtra.relationshipSourceCandidates;
+            delete cleanedExtra.teacher_rel_source;
+            delete cleanedExtra.relationship_source;
+            delete cleanedExtra.source;
+            delete cleanedExtra.sourceInfo;
+            const linkPayload = {
               source: sourceId,
               target: targetId,
               type,
-              ...extra
-            });
+              ...cleanedExtra
+            };
+            const relationshipSource = deriveRelationshipSourceText(
+              linkPayload.relationshipSourceDisplay,
+              linkPayload.sourceInfo,
+              ...relationshipSourceCandidates
+            );
+            linkPayload.relationshipSourceDisplay = relationshipSource;
+            linkPayload.teacher_rel_source = teacherRelSource;
+            linkPayload.relationship_source = relationshipSourceProp;
+            linkPayload.sourceInfo = relationshipSource;
+            linkPayload.source = relationshipSource || linkPayload.source;
+            newLinks.push(linkPayload);
           };
           
           // Handle specific relationship types for people
@@ -3083,7 +3514,7 @@ const attemptLoadSavedView = async () => {
                 if (!teacherId) return;
                 addLink(teacherId, anchorId, 'taught', {
                   label: 'taught',
-                  sourceInfo: teacher.teacher_rel_source || ''
+                  relationshipSourceCandidates: [teacher.teacher_rel_source, teacher.relationship_source, teacher.source]
                 });
               });
               enrichPersonNodes((data.teachers || []).map(t => t.full_name));
@@ -3106,7 +3537,7 @@ const attemptLoadSavedView = async () => {
                 if (!studentId) return;
                 addLink(anchorId, studentId, 'taught', {
                   label: 'taught',
-                  sourceInfo: student.teacher_rel_source || ''
+                  relationshipSourceCandidates: [student.teacher_rel_source, student.relationship_source, student.source]
                 });
               });
               enrichPersonNodes((data.students || []).map(s => s.full_name));
@@ -3161,7 +3592,7 @@ const attemptLoadSavedView = async () => {
                   }
                   addLink(src, tgt, 'family', {
                     label: relative.relationship_type || 'family',
-                    sourceInfo: relative.teacher_rel_source || relative.source || ''
+                    relationshipSourceCandidates: [relative.teacher_rel_source, relative.relationship_source, relative.source]
                   });
                 }
               });
@@ -3178,7 +3609,7 @@ const attemptLoadSavedView = async () => {
                 if (!bookId) return;
                 addLink(anchorId, bookId, 'authored', {
                   label: 'authored',
-                  sourceInfo: ''
+                  relationshipSourceCandidates: [book.source, book.relationship_source]
                 });
               });
             }
@@ -3197,7 +3628,7 @@ const attemptLoadSavedView = async () => {
                 addLink(anchorId, operaId, 'premiered', {
                   label: 'premiered role in',
                   role: opera.role,
-                  sourceInfo: opera.source
+                  relationshipSourceCandidates: [opera.source, opera.relationship_source]
                 });
               });
             }
@@ -3215,7 +3646,7 @@ const attemptLoadSavedView = async () => {
                 addLink(singerId, anchorId, 'premiered', {
                   label: 'premiered role in',
                   role: role.role,
-                  sourceInfo: role.source
+                  relationshipSourceCandidates: [role.source, role.relationship_source]
                 });
               });
             }
@@ -3230,7 +3661,8 @@ const attemptLoadSavedView = async () => {
               });
               if (composerId) {
                 addLink(composerId, anchorId, 'composed', {
-                  label: 'composed'
+                  label: 'composed',
+                  relationshipSourceCandidates: [data.opera?.source, data.opera?.relationship_source]
                 });
               }
             }
@@ -3244,7 +3676,7 @@ const attemptLoadSavedView = async () => {
               if (authorId) {
                 addLink(authorId, anchorId, 'authored', {
                   label: 'authored',
-                  sourceInfo: ''
+                  relationshipSourceCandidates: [data.book?.source, data.book?.relationship_source]
                 });
               }
             }
@@ -3274,10 +3706,7 @@ const attemptLoadSavedView = async () => {
             newNodes.forEach(n => {
               const nodeId = normalizeNodeId(n.id);
               if (!nodeId || attachedToAnchor.has(nodeId)) return;
-              addLink(anchorId, nodeId, fallbackType, {
-                label: relationshipLabel,
-                sourceInfo: ''
-              });
+              addLink(anchorId, nodeId, fallbackType, { label: relationshipLabel });
               attachedToAnchor.add(nodeId);
             });
 
@@ -3401,11 +3830,12 @@ const attemptLoadSavedView = async () => {
 
         const text = await response.text();
         let data; try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
-        if (response.ok) {
-          data = await enrichWithFamily(data, item.name);
-          setItemDetails(data);
+      if (response.ok) {
+        data = await enrichWithFamily(data, item.name);
+        const normalized = normalizeDetailsRelationshipSources(data);
+          setItemDetails(normalized);
           setCurrentView('network');
-          generateNetworkFromDetails(data, item.name, 'singers');
+          generateNetworkFromDetails(normalized, item.name, 'singers');
         } else {
           setError(data.error || `Failed (${response.status})`);
         }
@@ -3423,9 +3853,10 @@ const attemptLoadSavedView = async () => {
         let data; try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
         if (response.ok) {
           data = await enrichWithFamily(data, item.properties.opera_name || item.properties.title);
-          setItemDetails(data);
+          const normalized = normalizeDetailsRelationshipSources(data);
+          setItemDetails(normalized);
           setCurrentView('network');
-          generateNetworkFromDetails(data, item.properties.opera_name || item.properties.title, 'operas');
+          generateNetworkFromDetails(normalized, item.properties.opera_name || item.properties.title, 'operas');
         } else {
           setError(data.error || `Failed (${response.status})`);
         }
@@ -3443,9 +3874,10 @@ const attemptLoadSavedView = async () => {
         let data; try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
         if (response.ok) {
           data = await enrichWithFamily(data, item.properties.title);
-          setItemDetails(data);
+          const normalized = normalizeDetailsRelationshipSources(data);
+          setItemDetails(normalized);
           setCurrentView('network');
-          generateNetworkFromDetails(data, item.properties.title, 'books');
+          generateNetworkFromDetails(normalized, item.properties.title, 'books');
         } else {
           setError(data.error || `Failed (${response.status})`);
         }
@@ -3475,11 +3907,12 @@ const attemptLoadSavedView = async () => {
       const data = await response.json();
       if (response.ok) {
         const withFam = await enrichWithFamily(data, personName);
-        setItemDetails(withFam);
+        const normalized = normalizeDetailsRelationshipSources(withFam);
+        setItemDetails(normalized);
         setSelectedItem({ name: personName });
         setSearchType('singers');
         setCurrentView('network');
-        generateNetworkFromDetails(withFam, personName, 'singers');
+        generateNetworkFromDetails(normalized, personName, 'singers');
         setShouldRunSimulation(true); // Trigger simulation for person search
       } else {
         setError(data.error || 'Person not found');
@@ -3516,11 +3949,12 @@ const attemptLoadSavedView = async () => {
         }
         
         const withFam = await enrichWithFamily(data, personName);
-        setItemDetails(withFam);
+        const normalized = normalizeDetailsRelationshipSources(withFam);
+        setItemDetails(normalized);
         setSelectedItem({ name: personName });
         setSearchType('singers');
         setCurrentView('network');
-        generateNetworkFromDetails(withFam, personName, 'singers');
+        generateNetworkFromDetails(normalized, personName, 'singers');
         setShouldRunSimulation(true); // Trigger simulation for person search
       } else {
         setError(data.error || 'Person not found');
@@ -3851,7 +4285,7 @@ const attemptLoadSavedView = async () => {
         event.stopPropagation();
         // Close any open menus on background right-click
         try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-        try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch (_) {}
+        try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
         // Reassert current transform to ensure no movement occurs on right-click
         try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
       });
@@ -3963,7 +4397,7 @@ const attemptLoadSavedView = async () => {
           try { setShouldRunSimulation(false); } catch (_) {}
         } catch (_) {}
         try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-        try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch (_) {}
+        try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
         setExpandSubmenu(null);
       };
       svg.on('click', anchorAllNodes);
@@ -3972,7 +4406,7 @@ const attemptLoadSavedView = async () => {
         const target = event.target;
         if (target.closest && (target.closest('circle') || target.closest('path') || target.closest('text') || target.closest('rect'))) return;
         try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-        try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch (_) {}
+        try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
         setExpandSubmenu(null);
       });
 
@@ -4006,7 +4440,7 @@ const attemptLoadSavedView = async () => {
         event.stopPropagation();
         // Close any open menus on right-click within main group
         try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-        try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch (_) {}
+        try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
         try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
       });
 
@@ -4292,7 +4726,7 @@ const attemptLoadSavedView = async () => {
             .on('contextmenu', (event, d) => {
               event.preventDefault(); event.stopPropagation();
               try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-              try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+              try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
               const nodeData = nodeById[d.data.id]; if (!nodeData) return;
               const menuOffset = 20; const nodeRadius = 40; const containerRect = container.getBoundingClientRect();
               const ctm = g.node().getScreenCTM(); const pt = svgRef.current.createSVGPoint(); pt.x = d.x; pt.y = -d.y;
@@ -4308,7 +4742,7 @@ const attemptLoadSavedView = async () => {
               event.stopPropagation();
               // Close any open menus when clicking a node
               try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-              try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+              try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
               // Also clear any open Full information card
               try { setProfileCard({ show: false, data: null }); } catch(_) {}
               const node = nodeById[d.data.id]; if (!node) return;
@@ -4438,7 +4872,7 @@ const attemptLoadSavedView = async () => {
               .on('contextmenu', (event, d) => {
                 event.preventDefault(); event.stopPropagation();
                 try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-                try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+                try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
                 const nd = nodeById[d.data.id]; if (!nd) return;
                 const menuOffset = 20; const nodeRadius = 40; const containerRect = container.getBoundingClientRect();
                 const ctm = g.node().getScreenCTM(); const pt = svgRef.current.createSVGPoint(); pt.x = d.x; pt.y = d.y;
@@ -4454,7 +4888,7 @@ const attemptLoadSavedView = async () => {
                 event.stopPropagation();
                 // Close any open menus when clicking a node
                 try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-                try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+                try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
                 // Also clear any open Full information card
                 try { setProfileCard({ show: false, data: null }); } catch(_) {}
                 const nd = nodeById[d.data.id]; if (!nd) return;
@@ -4602,7 +5036,7 @@ const attemptLoadSavedView = async () => {
           .on('contextmenu', (event, d) => {
             event.preventDefault(); event.stopPropagation();
             try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-            try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+            try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
             const nodeData = nodeById[d.data.id]; if (!nodeData) return;
             const menuOffset = 20; const nodeRadius = 40;
             const containerRect = container.getBoundingClientRect();
@@ -4710,7 +5144,7 @@ const attemptLoadSavedView = async () => {
           .on('contextmenu', (event, d) => {
             event.preventDefault(); event.stopPropagation();
             try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-            try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+            try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
             const node = nodeById[d.data.id]; if (!node) return;
             const menuOffset = 20; const nodeRadius = 40; const containerRect = container.getBoundingClientRect();
             // Convert local (d.x, d.y) to screen coordinates
@@ -4791,7 +5225,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Close any open menus before handling link right-click
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
           const linkType = (d && d.type ? String(d.type).toLowerCase() : '');
           if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
             return;
@@ -4803,12 +5237,21 @@ const attemptLoadSavedView = async () => {
             const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
             const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
+            const resolvedSource = formatRelationshipSource(
+              d.relationshipSourceDisplay,
+              d.relationship_source_display,
+              d.sourceInfo,
+              d.teacher_rel_source,
+              d.relationship_source,
+              d.source,
+              d.meta?.source
+            );
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              source: d.sourceInfo || d.target?.source || ''
+              source: resolvedSource
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -4830,7 +5273,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Close any open menus before handling link right-click
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
           const linkType = (d && d.type ? String(d.type).toLowerCase() : '');
           if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
             return;
@@ -4842,12 +5285,21 @@ const attemptLoadSavedView = async () => {
             const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
             const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
+            const resolvedSource = formatRelationshipSource(
+              d.relationshipSourceDisplay,
+              d.relationship_source_display,
+              d.sourceInfo,
+              d.teacher_rel_source,
+              d.relationship_source,
+              d.source,
+              d.meta?.source
+            );
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              source: d.sourceInfo || d.target?.source || ''
+              source: resolvedSource
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -4904,7 +5356,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Close any open menus before handling link-label right-click
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
           const containerRect = container.getBoundingClientRect();
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
@@ -4950,7 +5402,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Close any open menus before handling link-label-hit right-click
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
           const containerRect = container.getBoundingClientRect();
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
@@ -4994,7 +5446,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Close any open menus when clicking a node
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch(_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
           // Also clear any open Full information card
           try { setProfileCard({ show: false, data: null }); } catch(_) {}
           
@@ -5055,7 +5507,7 @@ const attemptLoadSavedView = async () => {
           event.stopPropagation();
           // Ensure any menus are closed when right-clicking a node
           try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-          try { setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' }); } catch (_) {}
+          try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
           
           // Calculate screen position using current zoom/pan transform
           const nodeRadius = 40;
@@ -6079,7 +6531,7 @@ const attemptLoadSavedView = async () => {
               >
                 <button
                   type="button"
-                  onClick={() => setLinkContextMenu({ show: false, x: 0, y: 0, role: '', source: '' })}
+                  onClick={() => setLinkContextMenu(createLinkContextMenuState())}
                   aria-label="Close relationship menu"
                   style={{
                     position: 'absolute',
@@ -6107,7 +6559,7 @@ const attemptLoadSavedView = async () => {
                   </>
                 )}
                 <div style={{ color: '#374151' }}>
-                  <strong>Source:</strong> {linkContextMenu.source || 'Unknown'}
+                  <strong>Source:</strong> {formatRelationshipSource(linkContextMenu.source)}
                 </div>
               </div>
             )}
@@ -6144,7 +6596,27 @@ const attemptLoadSavedView = async () => {
                   }, { retries: 2, baseDelay: 600 });
                   const data = await resp.json();
                   if (!resp.ok) throw new Error(data.error || 'Failed');
-                  setPathInfo({ nodes: data.nodes, links: data.links, steps: data.steps || [] });
+                  const normalizedPathLinks = normalizeLinks(
+                    Array.isArray(data.links) ? data.links.map(link => ({ ...link })) : []
+                  );
+                  const normalizedSteps = Array.isArray(data.steps)
+                    ? data.steps.map(step => {
+                        const sourceText = deriveRelationshipSourceText(
+                          step.relationshipSourceDisplay,
+                          step.sourceInfo,
+                          step.relationship_source,
+                          step.source
+                        );
+                        const sourceUrl = deriveRelationshipSourceUrl(step.sourceUrl);
+                        return {
+                          ...step,
+                          relationshipSourceDisplay: sourceText,
+                          sourceInfo: sourceText,
+                          sourceUrl: sourceUrl || null
+                        };
+                      })
+                    : [];
+                  setPathInfo({ nodes: data.nodes, links: normalizedPathLinks, steps: normalizedSteps });
                   // Show the path on the graph by merging nodes/links and highlighting the path
                   const existingNodeMap = new Map();
                   networkData.nodes.forEach(existingNode => {
@@ -6342,24 +6814,96 @@ const attemptLoadSavedView = async () => {
                     const srcName = src;
                     const trgName = trg;
                     const computedSourceInfo = resolvePathRelSource(srcName, trgName, type);
+                    const pathSourceText = deriveRelationshipSourceText(
+                      l.relationshipSourceDisplay,
+                      l.relationship_source,
+                      l.teacher_rel_source_text,
+                      l.teacher_rel_source,
+                      l.opera_source_text,
+                      l.sourceInfo,
+                      computedSourceInfo
+                    );
+                    const pathSourceUrl = deriveRelationshipSourceUrl(
+                      l.teacher_rel_source_url,
+                      l.opera_source_url,
+                      l.sourceUrl
+                    );
+                    const isTeacherFamily = type === 'taught' || type === 'family';
+                    const isOperaRel = type === 'premiered' || type === 'composed';
 
                     if (existingIdx >= 0) {
                       // Do NOT change existing orientation; just mark as path to match base graph
                       const cur = mergedLinks[existingIdx];
-                      mergedLinks[existingIdx] = {
+                      const updatedSource = deriveRelationshipSourceText(
+                        cur.relationshipSourceDisplay,
+                        cur.sourceInfo,
+                        pathSourceText
+                      );
+                      const updatedUrl = deriveRelationshipSourceUrl(
+                        cur.sourceUrl,
+                        pathSourceUrl
+                      );
+                      const updatedLink = {
                         ...cur,
                         isPath: true,
-                        sourceInfo: cur.sourceInfo || computedSourceInfo || cur.sourceInfo || ''
+                        relationshipSourceDisplay: updatedSource,
+                        sourceInfo: updatedSource,
+                        sourceUrl: updatedUrl || null
                       };
+                      if (isTeacherFamily) {
+                        const teacherText = deriveRelationshipSourceText(
+                          cur.teacher_rel_source_text,
+                          cur.teacher_rel_source,
+                          pathSourceText
+                        );
+                        updatedLink.teacher_rel_source_text = teacherText || null;
+                        updatedLink.teacher_rel_source = teacherText || null;
+                        updatedLink.teacher_rel_source_url = cur.teacher_rel_source_url || pathSourceUrl || null;
+                      }
+                      if (isOperaRel) {
+                        const operaText = deriveRelationshipSourceText(
+                          cur.opera_source_text,
+                          pathSourceText
+                        );
+                        updatedLink.opera_source_text = operaText || null;
+                        updatedLink.opera_source_url = cur.opera_source_url || pathSourceUrl || null;
+                      }
+                      if (updatedSource) {
+                        updatedLink.relationship_source = updatedSource;
+                      }
+                      mergedLinks[existingIdx] = updatedLink;
                     } else {
-                      mergedLinks.push({ ...l, source: src, target: trg, isPath: true, wasAddedByPath: true, sourceInfo: computedSourceInfo });
+                      const newLink = {
+                        ...l,
+                        source: src,
+                        target: trg,
+                        isPath: true,
+                        wasAddedByPath: true,
+                        relationshipSourceDisplay: pathSourceText,
+                        sourceInfo: pathSourceText,
+                        relationship_source: pathSourceText,
+                        sourceUrl: pathSourceUrl || null
+                      };
+                      if (isTeacherFamily) {
+                        newLink.teacher_rel_source = pathSourceText || null;
+                        newLink.teacher_rel_source_text = pathSourceText || null;
+                        newLink.teacher_rel_source_url = pathSourceUrl || null;
+                      }
+                      if (isOperaRel) {
+                        newLink.opera_source_text = pathSourceText || null;
+                        newLink.opera_source_url = pathSourceUrl || null;
+                      }
+                      if (pathSourceText) {
+                        newLink.relationship_source = pathSourceText;
+                      }
+                      mergedLinks.push(newLink);
                       pathOverlayRef.current.addedLinkKeys.add(key);
                     }
                   });
 
                   // Mark nodes in path
                   mergedNodes.forEach(n => { if (pathNodeIds.has(n.id)) n.isPath = true; });
-                  setNetworkData({ nodes: mergedNodes, links: mergedLinks });
+                  setNetworkData({ nodes: mergedNodes, links: normalizeLinks(mergedLinks) });
                   const pathPersons = mergedNodes.filter(n => n && n.type === 'person' && pathNodeIds.has(n.id));
                   extendDateRangesForNodes(pathPersons, { resetUserRangeFlags: true });
                   // Enrich newly added path person nodes so CSV has full details
@@ -6585,32 +7129,40 @@ const attemptLoadSavedView = async () => {
                   <div>Nodes: {pathInfo.nodes.length}, Links: {pathInfo.links.length}</div>
                   {Array.isArray(pathInfo.steps) && pathInfo.steps.length > 0 && (
                     <div style={{ marginTop: 8 }}>
-                      {pathInfo.steps.map((step, idx) => (
-                        <div
-                          key={idx}
-                          style={{
-                            padding: '6px 8px',
-                            borderRadius: 4,
-                            marginBottom: 4,
-                            border: '2px solid #3e96e2',
-                            background: '#fff',
-                            cursor: 'default'
-                          }}
-                          // Hover highlight disabled to keep scroll smooth
-                        >
-                          <div>
-                            <strong>{step.source?.name || step.source?.id}</strong> — {step.label}
-                            {step.type === 'premiered' && (
-                              <>
-                                {' '}(
-                                Role: {step.role || 'Unknown'}; Source: {step.sourceInfo || 'Unknown'}
-                                )
-                              </>
+                      {pathInfo.steps.map((step, idx) => {
+                        const hasSource = !!(step.relationshipSourceDisplay || step.sourceInfo || step.sourceUrl);
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              marginBottom: 4,
+                              border: '2px solid #3e96e2',
+                              background: '#fff',
+                              cursor: 'default'
+                            }}
+                          >
+                            <div>
+                              <strong>{step.source?.name || step.source?.id}</strong> — {step.label}
+                              {step.type === 'premiered' && step.role && (
+                                <> (Role: {step.role})</>
+                              )}
+                              {' '}→ <strong>{step.target?.name || step.target?.id}</strong>
+                            </div>
+                            {hasSource && (
+                              <div style={{ marginTop: 4 }}>
+                                <strong>Source:</strong>{' '}
+                                {renderRelationshipSourceLink(
+                                  step.relationshipSourceDisplay,
+                                  step.sourceUrl,
+                                  step.sourceInfo
+                                )}
+                              </div>
                             )}
-                            {' '}→ <strong>{step.target?.name || step.target?.id}</strong>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -8097,11 +8649,29 @@ const attemptLoadSavedView = async () => {
             </div>
           )}
 
-              {(data.birthplace || data.citizen) && (
+          {(data.birthplace || data.citizen) && (
             <div style={{ marginBottom: '12px' }}>
               <strong style={{ color: '#1f2937' }}>Birthplace:</strong>
               <div style={{ color: '#374151', marginTop: '2px' }}>
                     {data.birthplace || data.citizen}
+              </div>
+            </div>
+          )}
+
+          {(data.spotify_link || data.youtube_search) && (
+            <div style={{ marginBottom: '12px' }}>
+              <strong style={{ color: '#1f2937' }}>Spotify:</strong>
+              <div style={{ marginTop: '2px' }}>
+                <a
+                  href={data.spotify_link || data.youtube_search}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#2563eb', textDecoration: 'underline', fontSize: '16px', overflowWrap: 'anywhere', wordBreak: 'break-word', display: 'inline-block' }}
+                  onMouseOver={(e) => (e.target.style.color = '#1d4ed8')}
+                  onMouseOut={(e) => (e.target.style.color = '#2563eb')}
+                >
+                  {data.spotify_link || data.youtube_search}
+                </a>
               </div>
             </div>
           )}
@@ -8126,45 +8696,57 @@ const attemptLoadSavedView = async () => {
             </div>
           )}
 
-          {(data.spotify_link || data.youtube_search) && (
-            <div style={{ marginBottom: '12px' }}>
-              <strong style={{ color: '#1f2937' }}>Spotify:</strong>
-              <div style={{ marginTop: '2px' }}>
-                <a
-                  href={data.spotify_link || data.youtube_search}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: '#2563eb', textDecoration: 'underline', fontSize: '16px', overflowWrap: 'anywhere', wordBreak: 'break-word', display: 'inline-block' }}
-                  onMouseOver={(e) => (e.target.style.color = '#1d4ed8')}
-                  onMouseOut={(e) => (e.target.style.color = '#2563eb')}
-                >
-                  {data.spotify_link || data.youtube_search}
-                </a>
-              </div>
-            </div>
-          )}
-
               <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e5e7eb' }}>
                 <strong style={{ color: '#1f2937', fontSize: '16px' }}>Sources:</strong>
             <div style={{ marginTop: '8px' }}>
-              {data.spelling_source && (
+              {(data.spelling_source_text || data.spelling_source_url || data.spelling_source) && (
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                  <strong>Spelling:</strong> {data.spelling_source}
+                  <strong>Spelling:</strong>{' '}
+                  {renderRelationshipSourceLink(
+                    data.spelling_source_text,
+                    data.spelling_source_url,
+                    data.spelling_source
+                  )}
                 </div>
               )}
-              {data.voice_type_source && (
+              {(data.voice_type_source_text || data.voice_type_source_url || data.voice_type_source) && (
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                  <strong>Voice type:</strong> {data.voice_type_source}
+                  <strong>Voice type:</strong>{' '}
+                  {renderRelationshipSourceLink(
+                    data.voice_type_source_text,
+                    data.voice_type_source_url,
+                    data.voice_type_source
+                  )}
                 </div>
               )}
-              {data.dates_source && (
+              {(data.dates_source_text || data.dates_source_url || data.dates_source) && (
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                  <strong>Dates:</strong> {data.dates_source}
+                  <strong>Dates:</strong>{' '}
+                  {renderRelationshipSourceLink(
+                    data.dates_source_text,
+                    data.dates_source_url,
+                    data.dates_source
+                  )}
                 </div>
               )}
-                  {data.birthplace_source && (
+                  {(data.birthplace_source_text || data.birthplace_source_url || data.birthplace_source) && (
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                      <strong>Birthplace:</strong> {data.birthplace_source}
+                      <strong>Birthplace:</strong>{' '}
+                      {renderRelationshipSourceLink(
+                        data.birthplace_source_text,
+                        data.birthplace_source_url,
+                        data.birthplace_source
+                      )}
+                </div>
+              )}
+                  {(data.underrepresented_source_text || data.underrepresented_source_url || data.underrepresented_source) && (
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
+                      <strong>Underrepresented group:</strong>{' '}
+                      {renderRelationshipSourceLink(
+                        data.underrepresented_source_text,
+                        data.underrepresented_source_url,
+                        data.underrepresented_source
+                      )}
                 </div>
               )}
             </div>
@@ -9929,11 +10511,6 @@ const attemptLoadSavedView = async () => {
                       <strong>Birthplace:</strong> {itemDetails.center.birthplace || itemDetails.center.citizen}
                     </p>
                   )}
-                  {itemDetails.center.underrepresented_group && (
-                    <p style={{ margin: '8px 0' }}>
-                      <strong>Underrepresented group:</strong> {itemDetails.center.underrepresented_group}
-                    </p>
-                  )}
                   {(itemDetails.center.spotify_link || itemDetails.center.youtube_search) && (
                     <p style={{ margin: '8px 0' }}>
                       <strong>Spotify:</strong>{' '}
@@ -9955,27 +10532,62 @@ const attemptLoadSavedView = async () => {
                       </a>
                     </p>
                   )}
+                  {itemDetails.center.underrepresented_group && (
+                    <p style={{ margin: '8px 0' }}>
+                      <strong>Underrepresented group:</strong> {itemDetails.center.underrepresented_group}
+                    </p>
+                  )}
                   
                   {/* Sources section */}
                   <div style={{ marginTop: '15px', paddingTop: '15px', borderTop: '1px solid #e5e7eb' }}>
-                    {itemDetails.center.spelling_source && (
+                    {(itemDetails.center.spelling_source_text || itemDetails.center.spelling_source_url || itemDetails.center.spelling_source) && (
                       <p style={{ margin: '4px 0', fontSize: '12px', color: '#888'}}>
-                        Spelling source: {itemDetails.center.spelling_source}
+                        Spelling source:{' '}
+                        {renderRelationshipSourceLink(
+                          itemDetails.center.spelling_source_text,
+                          itemDetails.center.spelling_source_url,
+                          itemDetails.center.spelling_source
+                        )}
                       </p>
                     )}
-                    {itemDetails.center.voice_type_source && (
+                    {(itemDetails.center.voice_type_source_text || itemDetails.center.voice_type_source_url || itemDetails.center.voice_type_source) && (
                       <p style={{ margin: '4px 0', fontSize: '12px', color: '#888'}}>
-                        Voice type source: {itemDetails.center.voice_type_source}
+                        Voice type source:{' '}
+                        {renderRelationshipSourceLink(
+                          itemDetails.center.voice_type_source_text,
+                          itemDetails.center.voice_type_source_url,
+                          itemDetails.center.voice_type_source
+                        )}
                       </p>
                     )}
-                    {itemDetails.center.dates_source && (
+                    {(itemDetails.center.dates_source_text || itemDetails.center.dates_source_url || itemDetails.center.dates_source) && (
                       <p style={{ margin: '4px 0', fontSize: '12px', color: '#888'}}>
-                        Dates source: {itemDetails.center.dates_source}
+                        Dates source:{' '}
+                        {renderRelationshipSourceLink(
+                          itemDetails.center.dates_source_text,
+                          itemDetails.center.dates_source_url,
+                          itemDetails.center.dates_source
+                        )}
                       </p>
                     )}
-                    {itemDetails.center.birthplace_source && (
+                    {(itemDetails.center.birthplace_source_text || itemDetails.center.birthplace_source_url || itemDetails.center.birthplace_source) && (
                       <p style={{ margin: '4px 0', fontSize: '12px', color: '#888'}}>
-                        Birthplace source: {itemDetails.center.birthplace_source}
+                        Birthplace source:{' '}
+                        {renderRelationshipSourceLink(
+                          itemDetails.center.birthplace_source_text,
+                          itemDetails.center.birthplace_source_url,
+                          itemDetails.center.birthplace_source
+                        )}
+                      </p>
+                    )}
+                    {(itemDetails.center.underrepresented_source_text || itemDetails.center.underrepresented_source_url || itemDetails.center.underrepresented_source) && (
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888'}}>
+                        Underrepresented group source:{' '}
+                        {renderRelationshipSourceLink(
+                          itemDetails.center.underrepresented_source_text,
+                          itemDetails.center.underrepresented_source_url,
+                          itemDetails.center.underrepresented_source
+                        )}
                       </p>
                     )}
                   </div>
@@ -9995,9 +10607,19 @@ const attemptLoadSavedView = async () => {
                 }}>
                   <div style={{ height: '100%', overflowY: 'auto', padding: '20px 16px 20px 20px' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
-                  👤 Teachers ({itemDetails.teachers.length})
+              👤 Teachers ({itemDetails.teachers.length})
                   </h3>
-                  {itemDetails.teachers.map((teacher, index) => (
+                  {itemDetails.teachers.map((teacher, index) => {
+                    const fallbackSource = teacherSourcesByName.get(teacher.full_name) || '';
+                    const sourceValues = [
+                      teacher.teacher_rel_source_text,
+                      teacher.teacher_rel_source_url,
+                      teacher.teacher_rel_source_display,
+                      teacher.teacher_rel_source,
+                      fallbackSource
+                    ];
+                    const displaySource = deriveRelationshipSourceText(...sourceValues);
+                    return (
                     <div 
                       key={index} 
                       style={{ 
@@ -10037,11 +10659,14 @@ const attemptLoadSavedView = async () => {
                           }
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                        Relationship source: {teacher.teacher_rel_source || 'Unknown'}
-                      </p>
+                      {displaySource && (
+                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                          Relationship source: {renderRelationshipSourceLink(...sourceValues)}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                   </div>
                 </div>
               )}
@@ -10060,7 +10685,17 @@ const attemptLoadSavedView = async () => {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
                   👤 Students ({itemDetails.students.length})
                   </h3>
-                  {itemDetails.students.map((student, index) => (
+                  {itemDetails.students.map((student, index) => {
+                    const fallbackSource = studentSourcesByName.get(student.full_name) || '';
+                    const sourceValues = [
+                      student.teacher_rel_source_text,
+                      student.teacher_rel_source_url,
+                      student.teacher_rel_source_display,
+                      student.teacher_rel_source,
+                      fallbackSource
+                    ];
+                    const displaySource = deriveRelationshipSourceText(...sourceValues);
+                    return (
                     <div 
                       key={index} 
                       style={{ 
@@ -10100,11 +10735,14 @@ const attemptLoadSavedView = async () => {
                           }
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                        Relationship source: {student.teacher_rel_source || 'Unknown'}
-                      </p>
+                      {displaySource && (
+                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                          Relationship source: {renderRelationshipSourceLink(...sourceValues)}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                   </div>
                 </div>
               )}
@@ -10168,11 +10806,9 @@ const attemptLoadSavedView = async () => {
                           }
                         </p>
                       )}
-                      {(relative.teacher_rel_source || relative.source) && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                          Relationship source: {relative.teacher_rel_source || relative.source || 'Unknown'}
-                        </p>
-                      )}
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                        Relationship source: {renderRelationshipSourceLink(relative.teacher_rel_source_text, relative.teacher_rel_source_url, relative.teacher_rel_source, relative.relationshipSourceDisplay, relative.relationship_source, relative.source)}
+                      </p>
                     </div>
                   ))}
                   </div>
@@ -10245,11 +10881,9 @@ const attemptLoadSavedView = async () => {
                           <strong>Role premiered:</strong> {role.role}
                         </p>
                       )}
-                      {role.source && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                          Source: {role.source || 'Unknown'}
-                        </p>
-                      )}
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                        Source: {renderRelationshipSourceLink(role.opera_source_text, role.opera_source_url, role.relationshipSourceDisplay, role.source, role.relationship_source)}
+                      </p>
                     </div>
                   ))}
                   </div>
@@ -10318,11 +10952,6 @@ const attemptLoadSavedView = async () => {
                           }}
                         >
                           <p style={{ margin: '4px 0', fontWeight: '500' }}>{book.title}</p>
-                          {book.source && (
-                            <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                              Source: {book.source || 'Unknown'}
-                            </p>
-                          )}
                         </div>
                       ))}
                       </div>
@@ -10388,11 +11017,9 @@ const attemptLoadSavedView = async () => {
                           }}
                         >
                           <p style={{ margin: '4px 0', fontWeight: '500' }}>{opera.title}</p>
-                          {opera.source && (
-                            <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                              Source: {opera.source || 'Unknown'}
-                            </p>
-                          )}
+                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                            Source: {renderRelationshipSourceLink(opera.opera_source_text, opera.opera_source_url, opera.relationshipSourceDisplay, opera.source, opera.relationship_source)}
+                          </p>
                         </div>
                       ))}
                     </div>
@@ -10542,11 +11169,9 @@ const attemptLoadSavedView = async () => {
                           <strong>Voice type:</strong> {performer.voice_type}
                         </p>
                       )}
-                      {performer.source && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                          Source: {performer.source || 'Unknown'}
-                        </p>
-                      )}
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                        Source: {renderRelationshipSourceLink(performer.opera_source_text, performer.opera_source_url, performer.relationshipSourceDisplay, performer.source, performer.relationship_source)}
+                      </p>
                     </div>
                   ))}
                   </div>
@@ -10682,11 +11307,6 @@ const attemptLoadSavedView = async () => {
                       {editor.voice_type && (
                         <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
                           <strong>Voice type:</strong> {editor.voice_type}
-                        </p>
-                      )}
-                      {editor.source && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
-                          Source: {editor.source || 'Unknown'}
                         </p>
                       )}
                     </div>

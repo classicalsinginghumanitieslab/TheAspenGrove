@@ -79,8 +79,8 @@ app.use(express.json({ limit: '10mb' }));
 
 // Neo4j connection
 const NEO4J_URI = (process.env.NEO4J_URI || 'bolt://localhost:7687').trim();
-const NEO4J_USER = process.env.NEO4J_USER || 'neo4j';
-const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || 'password';
+const NEO4J_USER = process.env.NEO4J_USER || process.env.NEO4J_USERNAME || 'neo4j';
+const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || process.env.NEO4J_PASS || 'password';
 const NEO4J_ENCRYPTION = (process.env.NEO4J_ENCRYPTION || 'off').toLowerCase();
 
 // If URI already encodes encryption (neo4j+s, bolt+s, neo4j+ssc, bolt+ssc),
@@ -122,6 +122,39 @@ const getCachedPath = (from, to, hops) => {
 const setCachedPath = (from, to, hops, data, notFound = false) => {
   const key = `${normalizeNameForKey(from)}|${normalizeNameForKey(to)}|${hops}`;
   pathCache.set(key, { at: Date.now(), data, notFound });
+};
+
+const normalizeRelationshipSourceValue = (value) => {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const normalized = normalizeRelationshipSourceValue(entry);
+      if (normalized) return normalized;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.toString === 'function' && value.toString !== Object.prototype.toString) {
+      const str = String(value).trim();
+      return str || null;
+    }
+    try {
+      const json = JSON.stringify(value);
+      return json || null;
+    } catch (_) {
+      return null;
+    }
+  }
+  const str = String(value).trim();
+  return str || null;
+};
+
+const pickRelationshipSourceValue = (...values) => {
+  for (const value of values) {
+    const normalized = normalizeRelationshipSourceValue(value);
+    if (normalized) return normalized;
+  }
+  return null;
 };
 
 // Periodic keep-alive ping to prevent Neo4j from pausing
@@ -509,29 +542,109 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
 
     // Get teachers with relationship source
     const teachersResult = await session.run(
-      'MATCH (s:Person {full_name: $name})<-[r:TAUGHT]-(t:Person) RETURN t, coalesce(r.teacher_rel_source, r.source, r.relationship_source) AS teacher_rel_source',
+      `MATCH (s:Person {full_name: $name})<-[r:TAUGHT]-(t:Person)
+       RETURN t AS teacher_node, r AS teacher_relationship`,
       { name: singerName }
     );
     const teachers = teachersResult.records.map(r => {
-      const t = r.get('t').properties;
+      const teacherNodeValue = r.get('teacher_node');
+      const teacherRelValue = r.get('teacher_relationship');
+      const teacherNode = teacherNodeValue ? teacherNodeValue.properties || {} : {};
+      const rawRelationshipProps = teacherRelValue ? teacherRelValue.properties || {} : {};
+      const teacherRelSourceText = pickRelationshipSourceValue(
+        rawRelationshipProps.teacher_rel_source_text,
+        rawRelationshipProps.teacher_rel_source,
+        rawRelationshipProps.relationship_source,
+        rawRelationshipProps.source,
+        rawRelationshipProps.relSource,
+        rawRelationshipProps.label,
+        rawRelationshipProps.text,
+        rawRelationshipProps.notes,
+        rawRelationshipProps.citation
+      );
+      const teacherRelSourceUrl = normalizeRelationshipSourceValue(rawRelationshipProps.teacher_rel_source_url);
+      const teacherRelSource = teacherRelSourceText ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.teacher_rel_source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.relationship_source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.relSource) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.label) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.text) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.notes) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.citation);
+      console.log('[singer/network] mapped teacher', {
+        name: teacherNode.full_name,
+        derived_teacher_rel_source: teacherRelSource,
+        raw_relationship: rawRelationshipProps
+      });
       return {
-        ...t,
-        teacher_rel_source: r.get('teacher_rel_source') || null,
-        source: t.voice_type_source || t.spelling_source || t.dates_source || t.birthplace_source || t.image_source || t.underrepresented_source || 'Unknown'
+        ...teacherNode,
+        teacher_rel_source: teacherRelSource,
+        teacher_rel_source_text: teacherRelSourceText || teacherRelSource || null,
+        teacher_rel_source_url: teacherRelSourceUrl || null,
+        relationship_properties: rawRelationshipProps,
+        source:
+          teacherNode.voice_type_source ||
+          teacherNode.spelling_source ||
+          teacherNode.dates_source ||
+          teacherNode.birthplace_source ||
+          teacherNode.image_source ||
+          teacherNode.underrepresented_source ||
+          'Unknown'
       };
     });
 
     // Get students with relationship source
     const studentsResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:TAUGHT]->(st:Person) RETURN st, coalesce(r.teacher_rel_source, r.source, r.relationship_source) AS teacher_rel_source',
+      `MATCH (s:Person {full_name: $name})-[r:TAUGHT]->(st:Person)
+       RETURN st AS student_node, r AS student_relationship`,
       { name: singerName }
     );
     const students = studentsResult.records.map(r => {
-      const st = r.get('st').properties;
+      const studentNodeValue = r.get('student_node');
+      const studentRelValue = r.get('student_relationship');
+      const studentNode = studentNodeValue ? studentNodeValue.properties || {} : {};
+      const rawRelationshipProps = studentRelValue ? studentRelValue.properties || {} : {};
+      const teacherRelSourceText = pickRelationshipSourceValue(
+        rawRelationshipProps.teacher_rel_source_text,
+        rawRelationshipProps.teacher_rel_source,
+        rawRelationshipProps.relationship_source,
+        rawRelationshipProps.source,
+        rawRelationshipProps.relSource,
+        rawRelationshipProps.label,
+        rawRelationshipProps.text,
+        rawRelationshipProps.notes,
+        rawRelationshipProps.citation
+      );
+      const teacherRelSourceUrl = normalizeRelationshipSourceValue(rawRelationshipProps.teacher_rel_source_url);
+      const teacherRelSource = teacherRelSourceText ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.teacher_rel_source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.relationship_source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.source) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.relSource) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.label) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.text) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.notes) ||
+        normalizeRelationshipSourceValue(rawRelationshipProps.citation);
+      console.log('[singer/network] mapped student', {
+        name: studentNode.full_name,
+        derived_teacher_rel_source: teacherRelSource,
+        raw_relationship: rawRelationshipProps
+      });
       return {
-        ...st,
-        teacher_rel_source: r.get('teacher_rel_source') || null,
-        source: st.voice_type_source || st.spelling_source || st.dates_source || st.birthplace_source || st.image_source || st.underrepresented_source || 'Unknown'
+        ...studentNode,
+        teacher_rel_source: teacherRelSource,
+        teacher_rel_source_text: teacherRelSourceText || teacherRelSource || null,
+        teacher_rel_source_url: teacherRelSourceUrl || null,
+        relationship_properties: rawRelationshipProps,
+        source:
+          studentNode.voice_type_source ||
+          studentNode.spelling_source ||
+          studentNode.dates_source ||
+          studentNode.birthplace_source ||
+          studentNode.image_source ||
+          studentNode.underrepresented_source ||
+          'Unknown'
       };
     });
 
@@ -540,74 +653,199 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       MATCH (s:Person {full_name: $name})
       WITH s
       MATCH (p:Person)-[r1:PARENT]->(s)
-      RETURN p AS f, 'parent' AS relationship, coalesce(r1.teacher_rel_source, r1.source, r1.relationship_source) AS teacher_rel_source
+      RETURN p AS f, 'parent' AS relationship, coalesce(
+        r1.teacher_rel_source,
+        r1.relationship_source,
+        r1.relationshipSource,
+        r1.relSource,
+        r1.source,
+        r1.notes,
+        r1.text,
+        r1.label,
+        r1.citation
+      ) AS teacher_rel_source,
+      r1.teacher_rel_source_text AS teacher_rel_source_text,
+      r1.teacher_rel_source_url AS teacher_rel_source_url
       UNION
       MATCH (s:Person {full_name: $name})-[r2:PARENT]->(c:Person)
-      RETURN c AS f, 'parentOf' AS relationship, coalesce(r2.teacher_rel_source, r2.source, r2.relationship_source) AS teacher_rel_source
+      RETURN c AS f, 'parentOf' AS relationship, coalesce(
+        r2.teacher_rel_source,
+        r2.relationship_source,
+        r2.relationshipSource,
+        r2.relSource,
+        r2.source,
+        r2.notes,
+        r2.text,
+        r2.label,
+        r2.citation
+      ) AS teacher_rel_source,
+      r2.teacher_rel_source_text AS teacher_rel_source_text,
+      r2.teacher_rel_source_url AS teacher_rel_source_url
       UNION
       MATCH (s:Person {full_name: $name})-[r3:SIBLING]-(sib:Person)
-      RETURN sib AS f, 'sibling' AS relationship, coalesce(r3.teacher_rel_source, r3.source, r3.relationship_source) AS teacher_rel_source
+      RETURN sib AS f, 'sibling' AS relationship, coalesce(
+        r3.teacher_rel_source,
+        r3.relationship_source,
+        r3.relationshipSource,
+        r3.relSource,
+        r3.source,
+        r3.notes,
+        r3.text,
+        r3.label,
+        r3.citation
+      ) AS teacher_rel_source,
+      r3.teacher_rel_source_text AS teacher_rel_source_text,
+      r3.teacher_rel_source_url AS teacher_rel_source_url
       UNION
       MATCH (s:Person {full_name: $name})-[r4:SPOUSE]-(sp:Person)
-      RETURN sp AS f, 'spouse' AS relationship, coalesce(r4.teacher_rel_source, r4.source, r4.relationship_source) AS teacher_rel_source
+      RETURN sp AS f, 'spouse' AS relationship, coalesce(
+        r4.teacher_rel_source,
+        r4.relationship_source,
+        r4.relationshipSource,
+        r4.relSource,
+        r4.source,
+        r4.notes,
+        r4.text,
+        r4.label,
+        r4.citation
+      ) AS teacher_rel_source,
+      r4.teacher_rel_source_text AS teacher_rel_source_text,
+      r4.teacher_rel_source_url AS teacher_rel_source_url
       UNION
       MATCH (gp:Person)-[r5:GRANDPARENT]->(s:Person {full_name: $name})
-      RETURN gp AS f, 'grandparent' AS relationship, coalesce(r5.teacher_rel_source, r5.source, r5.relationship_source) AS teacher_rel_source
+      RETURN gp AS f, 'grandparent' AS relationship, coalesce(
+        r5.teacher_rel_source,
+        r5.relationship_source,
+        r5.relationshipSource,
+        r5.relSource,
+        r5.source,
+        r5.notes,
+        r5.text,
+        r5.label,
+        r5.citation
+      ) AS teacher_rel_source,
+      r5.teacher_rel_source_text AS teacher_rel_source_text,
+      r5.teacher_rel_source_url AS teacher_rel_source_url
       UNION
       MATCH (s:Person {full_name: $name})-[r6:GRANDPARENT]->(gc:Person)
-      RETURN gc AS f, 'grandparentOf' AS relationship, coalesce(r6.teacher_rel_source, r6.source, r6.relationship_source) AS teacher_rel_source
+      RETURN gc AS f, 'grandparentOf' AS relationship, coalesce(
+        r6.teacher_rel_source,
+        r6.relationship_source,
+        r6.relationshipSource,
+        r6.relSource,
+        r6.source,
+        r6.notes,
+        r6.text,
+        r6.label,
+        r6.citation
+      ) AS teacher_rel_source,
+      r6.teacher_rel_source_text AS teacher_rel_source_text,
+      r6.teacher_rel_source_url AS teacher_rel_source_url
     `;
     const familyResult = await session.run(familyQuery, { name: singerName });
     const family = familyResult.records.map(r => {
       const f = r.get('f').properties;
       const rel = r.get('relationship');
-      const relSrc = r.get('teacher_rel_source');
+      const relSrcRaw = r.get('teacher_rel_source');
+      const relSrc = normalizeRelationshipSourceValue(relSrcRaw);
+      const relSrcTextRaw = r.get('teacher_rel_source_text');
+      const relSrcUrlRaw = r.get('teacher_rel_source_url');
+      const relSrcText = normalizeRelationshipSourceValue(relSrcTextRaw) || relSrc;
+      const relSrcUrl = normalizeRelationshipSourceValue(relSrcUrlRaw);
       return {
         ...f,
         relationship_type: rel,
-        teacher_rel_source: relSrc || null,
+        teacher_rel_source: relSrcText || null,
+        teacher_rel_source_text: relSrcText || null,
+        teacher_rel_source_url: relSrcUrl || null,
         source: f.voice_type_source || f.spelling_source || f.dates_source || f.birthplace_source || f.image_source || f.underrepresented_source || 'Unknown'
       };
     });
 
     // Get works (operas and books)
     const operasResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.source as source',
+      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
       { name: singerName }
     );
-    const operas = operasResult.records.map(r => ({
-      opera_name: r.get('opera_name'),
-      role: r.get('role'),
-      source: r.get('source') || 'Unknown'
-    }));
+    const operas = operasResult.records.map(r => {
+      const sourceTextRaw = r.get('opera_source_text');
+      const sourceUrlRaw = r.get('opera_source_url');
+      const legacySourceRaw = r.get('legacy_source');
+      const resolvedSourceText = pickRelationshipSourceValue(sourceTextRaw, legacySourceRaw);
+      const resolvedSourceUrl = normalizeRelationshipSourceValue(sourceUrlRaw);
+      return {
+        opera_name: r.get('opera_name'),
+        role: r.get('role'),
+        source: resolvedSourceText || 'Unknown',
+        opera_source_text: resolvedSourceText || null,
+        opera_source_url: resolvedSourceUrl || null
+      };
+    });
 
     // Get specific roles premiered (for the new Roles premiered card)
     const premieredRolesResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.source as source',
+      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
       { name: singerName }
     );
-    const premieredRoles = premieredRolesResult.records.map(r => ({
-      opera_name: r.get('opera_name'),
-      role: r.get('role'),
-      source: r.get('source') || 'Unknown'
-    }));
+    const premieredRoles = premieredRolesResult.records.map(r => {
+      const sourceTextRaw = r.get('opera_source_text');
+      const sourceUrlRaw = r.get('opera_source_url');
+      const legacySourceRaw = r.get('legacy_source');
+      const resolvedSourceText = pickRelationshipSourceValue(sourceTextRaw, legacySourceRaw);
+      const resolvedSourceUrl = normalizeRelationshipSourceValue(sourceUrlRaw);
+      return {
+        opera_name: r.get('opera_name'),
+        role: r.get('role'),
+        source: resolvedSourceText || 'Unknown',
+        opera_source_text: resolvedSourceText || null,
+        opera_source_url: resolvedSourceUrl || null
+      };
+    });
 
     const booksResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[:AUTHORED]->(b:Book) RETURN b.title as title, b.source as source',
+      `MATCH (s:Person {full_name: $name})-[r:AUTHORED]->(b:Book)
+       RETURN b.title as title, r AS relationship`,
       { name: singerName }
     );
     const books = booksResult.records.map(r => ({
-      title: r.get('title'),
+      title: r.get('title')
     }));
 
     const composedOperasResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[:COMPOSED]->(o:Opera) RETURN o.title as title, o.source as source',
+      `MATCH (s:Person {full_name: $name})-[r:COMPOSED|WROTE]->(o:Opera)
+       RETURN o.title as title, r AS relationship`,
       { name: singerName }
     );
-    const composedOperas = composedOperasResult.records.map(r => ({
-      title: r.get('title'),
-      source: r.get('source') || 'Unknown'
-    }));
+    const composedOperasRaw = composedOperasResult.records.map(r => {
+      const relationshipValue = r.get('relationship');
+      const relationshipProps = relationshipValue ? relationshipValue.properties || {} : {};
+      const sourceText = pickRelationshipSourceValue(
+        relationshipProps.opera_source_text,
+        relationshipProps.opera_source,
+        relationshipProps.source,
+        relationshipProps.relationship_source,
+        relationshipProps.relSource,
+        relationshipProps.label,
+        relationshipProps.text,
+        relationshipProps.notes,
+        relationshipProps.citation
+      );
+      const sourceUrl = normalizeRelationshipSourceValue(relationshipProps.opera_source_url);
+      return {
+        title: r.get('title'),
+        source: sourceText || 'Unknown',
+        opera_source_text: sourceText || null,
+        opera_source_url: sourceUrl || null
+      };
+    });
+    const composedOperas = [];
+    const seenComposedTitles = new Set();
+    for (const opera of composedOperasRaw) {
+      const key = opera.title || '';
+      if (seenComposedTitles.has(key)) continue;
+      seenComposedTitles.add(key);
+      composedOperas.push(opera);
+    }
 
     res.json({
       center,
@@ -669,27 +907,40 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
     const rolesResult = await session.run(
       `MATCH (s:Person)-[r:PREMIERED_ROLE_IN]->(o:Opera {opera_name: $opera_name})
        RETURN s.full_name as singer, r.role as role, s.voice_type as voice_type,
-         s.voice_type_source as voice_type_source, s.spelling_source as spelling_source, s.dates_source as dates_source, s.birthplace_source as birthplace_source, s.image_source as image_source, s.underrepresented_source as underrepresented_source, r.source as relationship_source` ,
+         s.voice_type_source as voice_type_source, s.spelling_source as spelling_source, s.dates_source as dates_source, s.birthplace_source as birthplace_source, s.image_source as image_source, s.underrepresented_source as underrepresented_source,
+         r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as relationship_source`,
       { opera_name: operaName }
     );
-    const premieredRoles = rolesResult.records.map(r => ({
-      singer: r.get('singer'),
-      role: r.get('role'),
-      voice_type: r.get('voice_type'),
-      source: r.get('relationship_source') || r.get('voice_type_source') || r.get('spelling_source') || r.get('dates_source') || r.get('birthplace_source') || r.get('image_source') || r.get('underrepresented_source') || 'Unknown'
-    }));
+    const premieredRoles = rolesResult.records.map(r => {
+      const sourceText = pickRelationshipSourceValue(r.get('opera_source_text'), r.get('relationship_source'));
+      const sourceUrl = normalizeRelationshipSourceValue(r.get('opera_source_url'));
+      return {
+        singer: r.get('singer'),
+        role: r.get('role'),
+        voice_type: r.get('voice_type'),
+        source: sourceText || 'Unknown',
+        opera_source_text: sourceText || null,
+        opera_source_url: sourceUrl || null
+      };
+    });
 
     // Get composers via WROTE relationship (source stored on relationship)
     const wroteResult = await session.run(
       `MATCH (c:Person)-[w:WROTE]->(o:Opera {opera_name: $opera_name})
-       RETURN c.full_name as composer, w.source as relationship_source
+       RETURN c.full_name as composer, w.opera_source_text as opera_source_text, w.opera_source_url as opera_source_url, w.source as relationship_source
        ORDER BY composer`,
       { opera_name: operaName }
     );
-    const wrote = wroteResult.records.map(r => ({
-      composer: r.get('composer'),
-      source: r.get('relationship_source') || 'Unknown'
-    }));
+    const wrote = wroteResult.records.map(r => {
+      const sourceText = pickRelationshipSourceValue(r.get('opera_source_text'), r.get('relationship_source'));
+      const sourceUrl = normalizeRelationshipSourceValue(r.get('opera_source_url'));
+      return {
+        composer: r.get('composer'),
+        source: sourceText || 'Unknown',
+        opera_source_text: sourceText || null,
+        opera_source_url: sourceUrl || null
+      };
+    });
 
     res.json({
       opera: {
@@ -738,8 +989,7 @@ app.post('/book/details', authenticateToken, async (req, res) => {
     );
     const authors = authorsResult.records.map(r => ({
       author: r.get('author'),
-      voice_type: r.get('voice_type'),
-      source: r.get('relationship_source') || r.get('voice_type_source') || r.get('spelling_source') || r.get('dates_source') || r.get('birthplace_source') || r.get('image_source') || r.get('underrepresented_source') || 'Unknown'
+      voice_type: r.get('voice_type')
     }));
 
     // Get editors
@@ -751,8 +1001,7 @@ app.post('/book/details', authenticateToken, async (req, res) => {
     );
     const editors = editorsResult.records.map(r => ({
       editor: r.get('editor'),
-      voice_type: r.get('voice_type'),
-      source: r.get('relationship_source') || r.get('voice_type_source') || r.get('spelling_source') || r.get('dates_source') || r.get('birthplace_source') || r.get('image_source') || r.get('underrepresented_source') || 'Unknown'
+      voice_type: r.get('voice_type')
     }));
 
     res.json({
@@ -792,7 +1041,7 @@ app.post('/path/find', authenticateToken, async (req, res) => {
     console.log('[path/find] cache MISS, querying…', { from, to, hops });
 
     // Single-query resolution + shortest path to minimize round-trips
-    const query = `
+    const optimizedQuery = `
       WITH toLower($from) AS qFrom, toLower($to) AS qTo,
            apoc.text.clean(toLower($from)) AS cFrom,
            apoc.text.clean(toLower($to)) AS cTo
@@ -819,7 +1068,7 @@ app.post('/path/find', authenticateToken, async (req, res) => {
         LIMIT 1
       }
       WITH fromNode, toNode
-      OPTIONAL MATCH p = shortestPath((fromNode)-[:TAUGHT|FAMILY|PREMIERED_ROLE_IN|AUTHORED|COMPOSED|EDITED*..${hops}]-(toNode))
+      OPTIONAL MATCH p = shortestPath((fromNode)-[:TAUGHT|PARENT|SPOUSE|SIBLING|GRANDPARENT|PREMIERED_ROLE_IN|AUTHORED|WROTE|EDITED*..${hops}]-(toNode))
       WITH p
       WHERE p IS NOT NULL
       WITH nodes(p) AS ns, relationships(p) AS rs
@@ -843,11 +1092,34 @@ app.post('/path/find', authenticateToken, async (req, res) => {
              WHEN rType IN ['PREMIERED_ROLE_IN','AUTHORED','COMPOSED','EDITED'] AND 'Person' IN labels(sNode) AND NOT 'Person' IN labels(tNode) THEN tNode
              ELSE endNode(rel)
            END AS oEnd
-      RETURN collect({ relType: rType, role: rel.role, source: oStart, target: oEnd, sourceInfo: rel.source }) AS oriented,
+      RETURN collect({ 
+        relType: rType, 
+        role: rel.role, 
+        source: oStart, 
+        target: oEnd,
+        sourceText: CASE
+          WHEN rType IN ['TAUGHT','PARENT','SPOUSE','SIBLING','GRANDPARENT'] THEN coalesce(rel.teacher_rel_source_text, rel.teacher_rel_source, rel.relationship_source, rel.source)
+          WHEN rType IN ['PREMIERED_ROLE_IN','WROTE'] THEN coalesce(rel.opera_source_text, rel.relationship_source, rel.source)
+          WHEN rType IN ['AUTHORED','EDITED'] THEN coalesce(rel.relationship_source, rel.source)
+          ELSE coalesce(rel.relationship_source, rel.source)
+        END,
+        sourceUrl: CASE
+          WHEN rType IN ['TAUGHT','PARENT','SPOUSE','SIBLING','GRANDPARENT'] THEN rel.teacher_rel_source_url
+          WHEN rType IN ['PREMIERED_ROLE_IN','WROTE'] THEN rel.opera_source_url
+          WHEN rType IN ['AUTHORED','EDITED'] THEN rel.book_source_url
+          ELSE NULL
+        END,
+        sourceInfo: CASE
+          WHEN rType IN ['TAUGHT','PARENT','SPOUSE','SIBLING','GRANDPARENT'] THEN coalesce(rel.teacher_rel_source_text, rel.teacher_rel_source, rel.relationship_source, rel.source)
+          WHEN rType IN ['PREMIERED_ROLE_IN','WROTE'] THEN coalesce(rel.opera_source_text, rel.relationship_source, rel.source)
+          WHEN rType IN ['AUTHORED','EDITED'] THEN coalesce(rel.relationship_source, rel.source)
+          ELSE coalesce(rel.relationship_source, rel.source)
+        END
+      }) AS oriented,
              ns AS pathNodes
     `;
 
-    const result = await session.run(query, { from, to });
+    const result = await session.run(optimizedQuery, { from, to });
     if (result.records.length === 0) {
       console.log('[path/find] no resolution for from/to');
       setCachedPath(from, to, hops, { error: 'No path found' }, true);
@@ -889,7 +1161,8 @@ app.post('/path/find', authenticateToken, async (req, res) => {
       if (!nodesMap.has(startInfo.id)) nodesMap.set(startInfo.id, startInfo);
       if (!nodesMap.has(endInfo.id)) nodesMap.set(endInfo.id, endInfo);
       const relType = seg.relType;
-      const relProps = { role: seg.role, source: seg.sourceInfo };
+      const sourceText = seg.sourceText || seg.sourceInfo || null;
+      const sourceUrl = seg.sourceUrl || null;
       const toFrontType = (t) => {
         switch ((t || '').toUpperCase()) {
           case 'TAUGHT': return 'taught';
@@ -913,8 +1186,23 @@ app.post('/path/find', authenticateToken, async (req, res) => {
         order: idx
       };
       if (toFrontType(relType) === 'premiered') {
-        link.role = relProps.role;
-        link.sourceInfo = relProps.source;
+        link.role = seg.role;
+      }
+      if (sourceText) {
+        link.relationshipSourceDisplay = sourceText;
+        link.sourceInfo = sourceText;
+        link.relationship_source = sourceText;
+      }
+      if (sourceUrl) {
+        link.sourceUrl = sourceUrl;
+      }
+      if (frontType === 'taught' || frontType === 'family') {
+        link.teacher_rel_source_text = sourceText || null;
+        link.teacher_rel_source_url = sourceUrl || null;
+        link.teacher_rel_source = sourceText || null;
+      } else if (frontType === 'premiered' || frontType === 'composed') {
+        link.opera_source_text = sourceText || null;
+        link.opera_source_url = sourceUrl || null;
       }
       links.push(link);
 
@@ -925,7 +1213,10 @@ app.post('/path/find', authenticateToken, async (req, res) => {
         type: link.type,
         label: link.label,
         role: link.role,
-        sourceInfo: link.sourceInfo
+        sourceInfo: sourceText,
+        relationshipSourceDisplay: sourceText,
+        relationship_source: sourceText,
+        sourceUrl
       });
     });
 
