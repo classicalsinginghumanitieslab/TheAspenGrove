@@ -113,6 +113,18 @@ const formatRelationshipSource = (...values) => {
 };
 
 const renderRelationshipSourceLink = (...values) => {
+  const stopPropagation = (event) => {
+    if (event && typeof event.stopPropagation === 'function') {
+      event.stopPropagation();
+    }
+  };
+  const linkEventHandlers = {
+    onMouseDown: stopPropagation,
+    onMouseUp: stopPropagation,
+    onClick: stopPropagation,
+    onPointerDown: stopPropagation,
+    onPointerUp: stopPropagation
+  };
   const url = deriveRelationshipSourceUrl(...values);
   const raw = deriveRelationshipSourceText(...values);
   const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
@@ -132,6 +144,7 @@ const renderRelationshipSourceLink = (...values) => {
         onMouseOut={(e) => {
           if (e?.target) e.target.style.color = '#2563eb';
         }}
+        {...linkEventHandlers}
       >
         {display}
       </a>
@@ -166,6 +179,7 @@ const renderRelationshipSourceLink = (...values) => {
         onMouseOut={(e) => {
           if (e?.target) e.target.style.color = '#2563eb';
         }}
+        {...linkEventHandlers}
       >
         {url}
       </a>
@@ -212,6 +226,43 @@ const normalizeLinks = (links = []) =>
     };
   });
 
+const toTitleCase = (str = '') =>
+  str
+    .split(' ')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
+const formatRelationshipTypeLabel = (value) => {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const normalized = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  switch (normalized) {
+    case 'parentof':
+      return 'Child';
+    case 'grandparentof':
+      return 'Grandchild';
+    case 'parent':
+      return 'Parent';
+    case 'grandparent':
+      return 'Grandparent';
+    case 'spouse':
+    case 'spouseof':
+      return 'Spouse';
+    case 'sibling':
+      return 'Sibling';
+    default: {
+      const withSpaces = raw
+        .replace(/[_-]+/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+      return toTitleCase(withSpaces);
+    }
+  }
+};
+
 const createLinkContextMenuState = () => ({
   show: false,
   x: 0,
@@ -222,6 +273,63 @@ const createLinkContextMenuState = () => ({
 
 const normalizeDetailsRelationshipSources = (details = {}) => {
   const clone = { ...details };
+  const toTrimmedString = (value) => {
+    if (value == null) return '';
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+    return '';
+  };
+  const derivePrimaryName = (entry) => {
+    const candidateKeys = [
+      'full_name',
+      'name',
+      'title',
+      'opera_name',
+      'author',
+      'editor',
+      'singer',
+      'role',
+      'book_title'
+    ];
+    for (const key of candidateKeys) {
+      const value = toTrimmedString(entry?.[key]);
+      if (value) return value;
+    }
+    return '';
+  };
+  const deriveLastNameKey = (entry) => {
+    const explicit = toTrimmedString(
+      entry?.last_name ||
+      entry?.surname ||
+      entry?.family_name ||
+      entry?.author_last_name ||
+      entry?.editor_last_name
+    );
+    if (explicit) return explicit.toLowerCase();
+    const primary = derivePrimaryName(entry);
+    if (!primary) return '';
+    const parts = primary.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return '';
+    return parts[parts.length - 1].toLowerCase();
+  };
+  const deriveFullNameKey = (entry) => {
+    const primary = derivePrimaryName(entry);
+    return primary ? primary.toLowerCase() : '';
+  };
+  const extractSortKey = (entry) => {
+    if (!entry || typeof entry !== 'object') return '';
+    const lastKey = deriveLastNameKey(entry);
+    const fullKey = deriveFullNameKey(entry);
+    return `${lastKey}|${fullKey}`;
+  };
+  const sortList = (list) => {
+    if (!Array.isArray(list)) return [];
+    return [...list].sort((a, b) => {
+      const aKey = extractSortKey(a);
+      const bKey = extractSortKey(b);
+      return aKey.localeCompare(bKey);
+    });
+  };
   const normalizeList = (list, priorityFields = [], options = {}) => {
     const { allowFallback = true } = options;
     if (!Array.isArray(list)) return [];
@@ -277,18 +385,21 @@ const normalizeDetailsRelationshipSources = (details = {}) => {
     });
   };
 
-  clone.teachers = normalizeList(clone.teachers, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
-  clone.students = normalizeList(clone.students, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
-  clone.family = normalizeList(clone.family, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false });
-  clone.premieredRoles = normalizeList(clone.premieredRoles, ['opera_source_text', 'source']);
+  clone.teachers = sortList(normalizeList(clone.teachers, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false }));
+  clone.students = sortList(normalizeList(clone.students, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false }));
+  clone.family = sortList(normalizeList(clone.family, ['teacher_rel_source_text', 'teacher_rel_source'], { allowFallback: false }));
+  clone.premieredRoles = sortList(normalizeList(clone.premieredRoles, ['opera_source_text', 'source']));
 
   if (clone.works && typeof clone.works === 'object') {
     const worksClone = { ...clone.works };
-    worksClone.operas = normalizeList(worksClone.operas, ['opera_source_text', 'source']);
-    worksClone.books = normalizeList(worksClone.books, []);
-    worksClone.composedOperas = normalizeList(worksClone.composedOperas, ['opera_source_text', 'source']);
+    worksClone.operas = sortList(normalizeList(worksClone.operas, ['opera_source_text', 'source']));
+    worksClone.books = sortList(normalizeList(worksClone.books, []));
+    worksClone.composedOperas = sortList(normalizeList(worksClone.composedOperas, ['opera_source_text', 'source']));
     clone.works = worksClone;
   }
+
+  clone.authors = sortList(normalizeList(clone.authors, ['source']));
+  clone.editors = sortList(normalizeList(clone.editors, ['source']));
 
   return clone;
 };
@@ -311,11 +422,93 @@ const ClassicalMusicGenealogy = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [originalSearchResults, setOriginalSearchResults] = useState([]);
+  const [hasExecutedSearch, setHasExecutedSearch] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [itemDetails, setItemDetails] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [networkData, setNetworkData] = useState({ nodes: [], links: [] });
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.__cmg_lastNetwork = networkData;
+        window.dumpLatestNetwork = (options = {}) => {
+          const graph = window.__cmg_lastNetwork;
+          if (!graph || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.links)) {
+            console.warn('[cmg-debug] No network captured yet.');
+            return null;
+          }
+          const includeNodes = options.includeNodes !== false;
+          const includeLinks = options.includeLinks !== false;
+          console.log(
+            `[cmg-debug] Latest network snapshot: ${graph.nodes.length} nodes, ${graph.links.length} links`
+          );
+          const summary = {
+            nodeCount: graph.nodes.length,
+            linkCount: graph.links.length
+          };
+          if (includeNodes) {
+            const nodeSample = graph.nodes.slice(0, 50).map(node => ({
+              id: node?.id ?? '',
+              name: node?.name ?? '',
+              type: node?.type ?? '',
+              x: Number.isFinite(node?.x) ? Math.round(node.x) : null,
+              y: Number.isFinite(node?.y) ? Math.round(node.y) : null
+            }));
+            console.table(nodeSample);
+            summary.nodes = nodeSample;
+          }
+          if (includeLinks) {
+            const linkSample = graph.links.slice(0, 100).map(link => ({
+              source: resolveLinkEndpointId(link?.source),
+              target: resolveLinkEndpointId(link?.target),
+              type: link?.type ?? '',
+              label: link?.label ?? link?.relationshipSourceDisplay ?? '',
+              role: link?.role ?? ''
+            }));
+            console.table(linkSample);
+            summary.links = linkSample;
+          }
+          return summary;
+        };
+        window.dumpNetworkOnError = () => {
+          const snapshot = window.__cmg_lastNetworkOnError;
+          if (!snapshot) {
+            console.warn('[cmg-debug] No error snapshot captured.');
+            return null;
+          }
+          console.log(
+            `[cmg-debug] Last error snapshot: ${snapshot.nodes?.length || 0} nodes, ${snapshot.links?.length || 0} links`
+          );
+          window.__cmg_lastNetwork = snapshot;
+          return window.dumpLatestNetwork();
+        };
+      }
+    } catch (_) {}
+  }, [networkData]);
+  useEffect(() => {
+    try {
+      const nodes = Array.isArray(networkData?.nodes) ? networkData.nodes : [];
+      const placeholders = nodes
+        .filter(node => isPlaceholderName(node?.id ?? node?.name))
+        .map(node => node?.id ?? node?.name);
+      if (placeholders.length > 0) {
+        console.warn('[cmg-debug] Placeholder nodes detected after sanitization', placeholders);
+      }
+      const links = Array.isArray(networkData?.links) ? networkData.links : [];
+      const badLinks = [];
+      links.forEach(link => {
+        const sourceId = resolveLinkEndpointId(link?.source);
+        const targetId = resolveLinkEndpointId(link?.target);
+        if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) {
+          badLinks.push({ sourceId, targetId, type: link?.type });
+        }
+      });
+      if (badLinks.length > 0) {
+        console.warn('[cmg-debug] Links referencing placeholder endpoints detected', badLinks);
+      }
+    } catch (_) {}
+  }, [networkData]);
   const [shouldRunSimulation, setShouldRunSimulation] = useState(false);
   const [contextMenu, setContextMenu] = useState({ show: false, x: 0, y: 0, node: null });
   const [linkContextMenu, setLinkContextMenu] = useState(createLinkContextMenuState);
@@ -330,6 +523,8 @@ const ClassicalMusicGenealogy = () => {
   const [rightGroupWidthPx, setRightGroupWidthPx] = useState(0);
   const [expandSubmenu, setExpandSubmenu] = useState(null);
   const [profileCard, setProfileCard] = useState({ show: false, data: null });
+  const relationshipCountsUnavailableRef = useRef(false);
+  const pathApiUnavailableRef = useRef(false);
   const [actualCounts, setActualCounts] = useState({});
   const [fetchingCounts, setFetchingCounts] = useState({});
   const [failedFetches, setFailedFetches] = useState({}); // Track nodes that failed to fetch
@@ -449,7 +644,7 @@ const ClassicalMusicGenealogy = () => {
 
   const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
 
-  const isSaveExportEligible = Array.isArray(networkData?.nodes) && networkData.nodes.length > 0 && hasSearchResults;
+  const isSaveExportEligible = hasExecutedSearch && Array.isArray(networkData?.nodes) && networkData.nodes.length > 0;
 
   const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } = {}) => {
     const disabledSave = !isSaveExportEligible || !token || isSavingView;
@@ -630,6 +825,7 @@ const ClassicalMusicGenealogy = () => {
         setError('Session expired. Please log in again.');
         setToken('');
         clearStoredToken();
+        setHasExecutedSearch(false);
         return true;
       }
     } catch (_) {}
@@ -667,11 +863,11 @@ const ClassicalMusicGenealogy = () => {
     const selectedVoiceTypesSnap = Array.from(selectedVoiceTypes || []);
     const selectedBirthplacesSnap = Array.from(selectedBirthplaces || []);
     const birthRangeSnap = Array.isArray(birthYearRange) ? [...birthYearRange] : [1534, 2005];
-    const deathRangeSnap = Array.isArray(deathYearRange) ? [...deathYearRange] : [1575, 2025];
-    return {
-      snapshotVersion: 2,
-      nodes: nodesSnap,
-      links: linksSnap,
+  const deathRangeSnap = Array.isArray(deathYearRange) ? [...deathYearRange] : [1575, 2025];
+  return {
+    snapshotVersion: 2,
+    nodes: nodesSnap,
+    links: linksSnap,
       currentView,
       searchType,
       searchQuery,
@@ -679,12 +875,13 @@ const ClassicalMusicGenealogy = () => {
       originalSearchResults: originalSearchResultsSnap,
       selectedVoiceTypes: selectedVoiceTypesSnap,
       selectedBirthplaces: selectedBirthplacesSnap,
-      birthYearRange: birthRangeSnap,
-      deathYearRange: deathRangeSnap,
-      showFilterPanel,
-      showPathPanel,
-      pathInfo: pathInfoSnap,
-      selectedNodeId: selectedNode ? selectedNode.id : null,
+    birthYearRange: birthRangeSnap,
+    deathYearRange: deathRangeSnap,
+    showFilterPanel,
+    showPathPanel,
+    pathInfo: pathInfoSnap,
+    hasExecutedSearch,
+    selectedNodeId: selectedNode ? selectedNode.id : null,
       currentCenterNode,
       visualizationHeight,
       itemDetails: detailsSnap,
@@ -705,7 +902,7 @@ const ClassicalMusicGenealogy = () => {
         target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target)
       }))
     );
-    setNetworkData({ nodes: clonedNodes, links: normalizedLinks });
+    setNetworkData(sanitizeGraphData({ nodes: clonedNodes, links: normalizedLinks }));
     // If the snapshot contains explicit positions, preserve layout and build a dormant sim
     const hasPositions = Array.isArray(clonedNodes) && clonedNodes.length > 0 && clonedNodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y));
     try { setShouldRunSimulation(!hasPositions); } catch (_) {}
@@ -748,6 +945,11 @@ const ClassicalMusicGenealogy = () => {
         setOriginalSearchResults(snap.originalSearchResults);
       } else if (Array.isArray(snap.searchResults)) {
         setOriginalSearchResults(snap.searchResults);
+      }
+    } catch (_) {}
+    try {
+      if (typeof snap.hasExecutedSearch === 'boolean') {
+        setHasExecutedSearch(snap.hasExecutedSearch);
       }
     } catch (_) {}
     if (restoreFilters) {
@@ -918,6 +1120,7 @@ const ClassicalMusicGenealogy = () => {
           searchType,
           selectedNodeId: selectedNode ? selectedNode.id : null,
           currentCenterNode,
+          hasExecutedSearch,
           filters: {
             selectedVoiceTypes: Array.from(selectedVoiceTypes || []),
             selectedBirthplaces: Array.from(selectedBirthplaces || []),
@@ -1008,10 +1211,12 @@ const ClassicalMusicGenealogy = () => {
         selectedItem: details.selectedItem || snapshot.selectedItem || null,
         zoom: (ui.zoom || snapshot.zoom || null),
         visualizationHeight: ui.visualizationHeight || snapshot.visualizationHeight || visualizationHeight,
-        ui
+        ui,
+        hasExecutedSearch: view.hasExecutedSearch ?? true
       };
 
       applySnapshot(snapshotToApply);
+      setHasExecutedSearch(snapshotToApply.hasExecutedSearch ?? true);
 
       if (options.treatAsSearch) {
         setCurrentView('network');
@@ -1948,10 +2153,17 @@ const attemptLoadSavedView = async () => {
       clearStoredToken();
       setError('Session expired. Please log in again.');
       setToken('');
+      setHasExecutedSearch(false);
       return;
     }
     setToken(savedToken);
   }, []);
+
+  useEffect(() => {
+    if (!showFilterPanel) {
+      setFilterSectionsOpen({ voice: false, birth: false, death: false, birthplaces: false });
+    }
+  }, [showFilterPanel]);
 
   useEffect(() => {
     if (!token) {
@@ -2340,6 +2552,7 @@ const attemptLoadSavedView = async () => {
         setOriginalSearchResults(data[searchType] || []);
         setOriginalSearchType(searchType);
         setCurrentView('results');
+        setHasExecutedSearch(true);
         // Trigger halo for search result cards (persistent for now)
         setShowResultsHalo(true);
         
@@ -2410,8 +2623,203 @@ const attemptLoadSavedView = async () => {
         node.y = 100 + row * Math.max(spacing, 150);
       }
     });
-    
+  
     return nodes;
+  };
+  const resolveFallbackConfig = (relationshipType = '', anchorType = '') => {
+    const normalizedLabel = String(relationshipType || '').trim().toLowerCase();
+    const base = {
+      source: 'anchor',
+      type: 'related',
+      label: relationshipType || 'related'
+    };
+
+    if (!normalizedLabel) return base;
+    if (normalizedLabel.includes('taughtby')) {
+      return { source: 'node', type: 'taught', label: 'taught' };
+    }
+    if (normalizedLabel.includes('taught')) {
+      return { source: 'anchor', type: 'taught', label: 'taught' };
+    }
+    if (normalizedLabel.includes('parentof')) {
+      return { source: 'anchor', type: 'family', label: 'parent' };
+    }
+    if (normalizedLabel.includes('parent')) {
+      return { source: 'node', type: 'family', label: 'parent' };
+    }
+    if (normalizedLabel.includes('spouseof')) {
+      return { source: 'node', type: 'family', label: 'spouse' };
+    }
+    if (normalizedLabel.includes('spouse')) {
+      return { source: 'anchor', type: 'family', label: 'spouse' };
+    }
+    if (normalizedLabel.includes('grandparentof')) {
+      return { source: 'anchor', type: 'family', label: 'grandparent' };
+    }
+    if (normalizedLabel.includes('grandparent')) {
+      return { source: 'node', type: 'family', label: 'grandparent' };
+    }
+    if (normalizedLabel.includes('sibling')) {
+      return { source: 'anchor', type: 'family', label: 'sibling' };
+    }
+    if (normalizedLabel.includes('premieredrolein') || normalizedLabel.includes('premiered')) {
+      return anchorType === 'opera'
+        ? { source: 'node', type: 'premiered', label: 'premiered role in' }
+        : { source: 'anchor', type: 'premiered', label: 'premiered role in' };
+    }
+    if (normalizedLabel.includes('wrote') || normalizedLabel.includes('composed')) {
+      return anchorType === 'opera'
+        ? { source: 'node', type: 'wrote', label: 'wrote' }
+        : { source: 'anchor', type: 'wrote', label: 'wrote' };
+    }
+    if (normalizedLabel.includes('authored')) {
+      return anchorType === 'book'
+        ? { source: 'node', type: 'authored', label: 'authored' }
+        : { source: 'anchor', type: 'authored', label: 'authored' };
+    }
+    if (normalizedLabel.includes('edited')) {
+      return anchorType === 'book'
+        ? { source: 'node', type: 'edited', label: 'edited' }
+        : { source: 'anchor', type: 'edited', label: 'edited' };
+    }
+
+    return base;
+  };
+  const attachNewNodesToAnchor = ({
+    anchorId,
+    anchorType,
+    relationshipType,
+    newNodes,
+    newLinks,
+    existingLinks,
+    addLink
+  }) => {
+    if (!anchorId || !Array.isArray(newNodes) || newNodes.length === 0) return;
+
+    const normalize = (value) => normalizeNodeId(value);
+    const attachedToAnchor = new Set();
+    const registerAttachment = (sourceId, targetId) => {
+      const src = normalize(sourceId);
+      const tgt = normalize(targetId);
+      if (src === anchorId && tgt) attachedToAnchor.add(tgt);
+      if (tgt === anchorId && src) attachedToAnchor.add(src);
+    };
+
+    (existingLinks || []).forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source?.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target?.id;
+      registerAttachment(sourceId, targetId);
+    });
+    (newLinks || []).forEach(link => {
+      registerAttachment(link.source, link.target);
+    });
+
+    const fallbackConfig = resolveFallbackConfig(relationshipType, anchorType);
+    const fallbackTypeKey = String(fallbackConfig.type || 'related').toLowerCase();
+
+    newNodes.forEach(node => {
+      const nodeId = normalize(node?.id ?? node?.name);
+      if (!nodeId || attachedToAnchor.has(nodeId)) return;
+      if (isPlaceholderName(nodeId)) return;
+
+      const sourceId = fallbackConfig.source === 'node' ? nodeId : anchorId;
+      const targetId = fallbackConfig.source === 'node' ? anchorId : nodeId;
+      if (!sourceId || !targetId) return;
+
+      const linkKey = `${sourceId}|${targetId}|${fallbackTypeKey}`;
+      // addLink handles deduplication via existingLinks set, so just call it
+      addLink(sourceId, targetId, fallbackConfig.type, { label: fallbackConfig.label });
+      attachedToAnchor.add(nodeId);
+    });
+  };
+  const ensureNodeConnectivity = (
+    nodes,
+    links,
+    {
+      primaryId = null,
+      fallbackType = 'related',
+      fallbackLabel = 'related'
+    } = {}
+  ) => {
+    const normalize = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).replace(/\s+/g, ' ').trim();
+    };
+    const nodeIds = nodes
+      .map((node) => normalize(node?.id ?? node?.name))
+      .filter(id => id && !isPlaceholderName(id));
+    if (nodeIds.length === 0) return;
+    const nodeIdSet = new Set(nodeIds);
+    const adjacency = new Map();
+    nodeIds.forEach((id) => adjacency.set(id, 0));
+    const linkKeys = new Set();
+    links.forEach((link) => {
+      const sourceId = normalize(
+        typeof link.source === 'string'
+          ? link.source
+          : link.source?.id ?? link.source?.name
+      );
+      const targetId = normalize(
+        typeof link.target === 'string'
+          ? link.target
+          : link.target?.id ?? link.target?.name
+      );
+      if (!sourceId || !targetId) return;
+      const key = `${sourceId}|${targetId}|${String(link.type || '').toLowerCase()}`;
+      linkKeys.add(key);
+      if (adjacency.has(sourceId)) {
+        adjacency.set(sourceId, (adjacency.get(sourceId) || 0) + 1);
+      }
+      if (adjacency.has(targetId)) {
+        adjacency.set(targetId, (adjacency.get(targetId) || 0) + 1);
+      }
+    });
+    const normalizedPrimaryId = normalize(primaryId);
+    const pickFallback = (nodeId) => {
+      if (
+        normalizedPrimaryId &&
+        normalizedPrimaryId !== nodeId &&
+        nodeIdSet.has(normalizedPrimaryId)
+      ) {
+        return normalizedPrimaryId;
+      }
+      for (const candidate of nodeIds) {
+        if (candidate && candidate !== nodeId) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+    const fallbackTypeKey = fallbackType.toLowerCase();
+    nodeIds.forEach((nodeId) => {
+      if (!nodeId) return;
+      if ((adjacency.get(nodeId) || 0) > 0) return;
+      let fallbackId = pickFallback(nodeId);
+      const isSelfLink = !fallbackId || fallbackId === nodeId;
+      if (!fallbackId) {
+        fallbackId = nodeId;
+      }
+      if (!nodeIdSet.has(nodeId) || (fallbackId && !nodeIdSet.has(fallbackId))) {
+        console.warn('[ensureNodeConnectivity] skipped fallback link; missing node', { nodeId, fallbackId });
+        return;
+      }
+      const key = `${fallbackId}|${nodeId}|${fallbackTypeKey}`;
+      if (linkKeys.has(key)) return;
+      links.push({
+        source: fallbackId,
+        target: nodeId,
+        type: fallbackType,
+        label: fallbackLabel,
+        relationshipSourceDisplay: fallbackLabel,
+        sourceInfo: fallbackLabel,
+        relationship_source: fallbackLabel
+      });
+      linkKeys.add(key);
+      if (!isSelfLink) {
+        adjacency.set(fallbackId, (adjacency.get(fallbackId) || 0) + 1);
+      }
+      adjacency.set(nodeId, (adjacency.get(nodeId) || 0) + 1);
+    });
   };
   const generateNetworkFromSearchResults = (results, type) => {
     const nodes = [];
@@ -2456,8 +2864,13 @@ const attemptLoadSavedView = async () => {
 
     // Apply anti-overlap positioning to all nodes
     positionNodesWithoutOverlap(nodes);
+    ensureNodeConnectivity(nodes, links, {
+      primaryId: nodes[0]?.id,
+      fallbackType: 'related',
+      fallbackLabel: 'Search result'
+    });
 
-    setNetworkData({ nodes, links: normalizeLinks(links) });
+    setNetworkData(sanitizeGraphData({ nodes, links }));
     resetFiltersForNodeSet(nodes);
     setShowFilterPanel(false);
     setCurrentCenterNode(null); // Reset center tracking for search results
@@ -2469,31 +2882,44 @@ const attemptLoadSavedView = async () => {
     const addedNodes = new Set(); // Track which people have been added
     
     // Helper function to add a person node only if not already added
-    const addPersonNode = (person, defaultX, defaultY) => {
-      if (!addedNodes.has(person.full_name)) {
-        nodes.push({
-          id: person.full_name,
-          name: person.full_name,
-          type: 'person',
-          voiceType: person.voice_type,
-          birthplace: person.birthplace || person.citizen || null,
-          birthYear: (person.birth_year ?? (person.birth && (person.birth.low ?? person.birth))) || null,
-          deathYear: (person.death_year ?? (person.death && (person.death.low ?? person.death))) || null,
-          spelling_source: person.spelling_source || null,
-          voice_type_source: person.voice_type_source || null,
-          dates_source: person.dates_source || null,
-          birthplace_source: person.birthplace_source || null,
-          x: defaultX,
-          y: defaultY
-        });
-        addedNodes.add(person.full_name);
-      }
-    };
+  const addPersonNode = (person, defaultX, defaultY) => {
+    const candidateName = person?.full_name || person?.name;
+    const normalizedName = normalizeNodeId(candidateName);
+    if (!normalizedName || isPlaceholderName(normalizedName)) return null;
+    const displayName = String(candidateName || normalizedName).trim() || normalizedName;
+    if (!addedNodes.has(normalizedName)) {
+      nodes.push({
+        id: normalizedName,
+        name: displayName,
+        type: 'person',
+        voiceType: person.voice_type,
+        birthplace: person.birthplace || person.citizen || null,
+        birthYear: (person.birth_year ?? (person.birth && (person.birth.low ?? person.birth))) || null,
+        deathYear: (person.death_year ?? (person.death && (person.death.low ?? person.death))) || null,
+        spelling_source: person.spelling_source || null,
+        voice_type_source: person.voice_type_source || null,
+        dates_source: person.dates_source || null,
+        birthplace_source: person.birthplace_source || null,
+        x: defaultX,
+        y: defaultY
+      });
+      addedNodes.add(normalizedName);
+    }
+    return normalizedName;
+  };
     
-    // Add center node with correct type
-    const centerNode = {
-      id: centerName,
-      name: centerName,
+  const rawCenterName = String(centerName || '').trim();
+  const centerId = normalizeNodeId(rawCenterName);
+  if (!centerId || isPlaceholderName(centerId)) {
+    console.warn('[generateNetworkFromDetails] Skipping network with placeholder center', { centerName });
+    return;
+  }
+  const centerLabel = rawCenterName || centerId;
+
+  // Add center node with correct type
+  const centerNode = {
+    id: centerId,
+    name: centerLabel,
       type: type === 'singers' ? 'person' : (type === 'operas' ? 'opera' : 'book'),
       isCenter: true,
       x: 400,
@@ -2511,41 +2937,46 @@ const attemptLoadSavedView = async () => {
       centerNode.author = details.book.author;
     }
     
-    nodes.push(centerNode);
-    addedNodes.add(centerName);
+  nodes.push(centerNode);
+  addedNodes.add(centerId);
 
-    // Add composer(s) for opera center via wrote list; fallback to single property if present
-    if (type === 'operas') {
-      const wroteList = Array.isArray(details.wrote) ? details.wrote : [];
-      if (wroteList.length > 0) {
-        wroteList.forEach((row, idx) => {
-          const composerId = row && (row.composer || row.name || row.full_name);
-          if (!composerId) return;
-          if (!addedNodes.has(composerId)) {
-            nodes.push({ id: composerId, name: composerId, type: 'person', x: 250 + (idx * 40), y: 180 });
-            addedNodes.add(composerId);
-          }
-          const relationshipSource = deriveRelationshipSourceText(row?.source, row?.relationship_source);
-          links.push({
-            source: composerId,
-            target: centerName,
-            type: 'wrote',
-            label: 'wrote',
-            relationshipSourceDisplay: relationshipSource,
-            sourceInfo: relationshipSource,
-            relationship_source: row?.relationship_source || null
-          });
-        });
-      } else if (details.opera && details.opera.composer) {
-        const composerId = details.opera.composer;
+  // Add composer(s) for opera center via wrote list; fallback to single property if present
+  if (type === 'operas') {
+    const wroteList = Array.isArray(details.wrote) ? details.wrote : [];
+    if (wroteList.length > 0) {
+      wroteList.forEach((row, idx) => {
+        const composerRaw = row && (row.composer || row.name || row.full_name);
+        const composerId = normalizeNodeId(composerRaw);
+        if (!composerId || isPlaceholderName(composerId)) return;
+        const composerName = String(composerRaw || composerId).trim() || composerId;
         if (!addedNodes.has(composerId)) {
-          nodes.push({ id: composerId, name: composerId, type: 'person', x: 250, y: 180 });
+          nodes.push({ id: composerId, name: composerName, type: 'person', x: 250 + (idx * 40), y: 180 });
+          addedNodes.add(composerId);
+        }
+        const relationshipSource = deriveRelationshipSourceText(row?.source, row?.relationship_source);
+        links.push({
+          source: composerId,
+          target: centerId,
+          type: 'wrote',
+          label: 'wrote',
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: row?.relationship_source || null
+        });
+      });
+    } else if (details.opera && details.opera.composer) {
+      const composerRaw = details.opera.composer;
+      const composerId = normalizeNodeId(composerRaw);
+      if (composerId && !isPlaceholderName(composerId)) {
+        const composerName = String(composerRaw || composerId).trim() || composerId;
+        if (!addedNodes.has(composerId)) {
+          nodes.push({ id: composerId, name: composerName, type: 'person', x: 250, y: 180 });
           addedNodes.add(composerId);
         }
         const relationshipSource = deriveRelationshipSourceText(details.opera?.source, details.opera?.relationship_source);
         links.push({
           source: composerId,
-          target: centerName,
+          target: centerId,
           type: 'wrote',
           label: 'wrote',
           relationshipSourceDisplay: relationshipSource,
@@ -2554,48 +2985,49 @@ const attemptLoadSavedView = async () => {
         });
       }
     }
+  }
 
-    // Add teachers
-    if (details.teachers) {
-      details.teachers.forEach((teacher, index) => {
-        addPersonNode(teacher, 200 + (index * 50), 150);
-        
-        const relationshipSource = deriveRelationshipSourceText(teacher.teacher_rel_source_text, teacher.relationshipSourceDisplay, teacher.teacher_rel_source, teacher.relationship_source, teacher.source);
-        links.push({
-          source: teacher.full_name,
-          target: centerName,
-          type: 'taught',
-          label: 'taught',
-          relationshipSourceDisplay: relationshipSource,
-          sourceInfo: relationshipSource,
-          teacher_rel_source: teacher.teacher_rel_source || null,
-          teacher_rel_source_text: teacher.teacher_rel_source_text || relationshipSource || null,
-          teacher_rel_source_url: teacher.teacher_rel_source_url || null,
-          relationship_source: teacher.relationship_source || null
-        });
+  // Add teachers
+  if (details.teachers) {
+    details.teachers.forEach((teacher, index) => {
+      const teacherId = addPersonNode(teacher, 200 + (index * 50), 150);
+      if (!teacherId) return;
+      const relationshipSource = deriveRelationshipSourceText(teacher.teacher_rel_source_text, teacher.relationshipSourceDisplay, teacher.teacher_rel_source, teacher.relationship_source, teacher.source);
+      links.push({
+        source: teacherId,
+        target: centerId,
+        type: 'taught',
+        label: 'taught',
+        relationshipSourceDisplay: relationshipSource,
+        sourceInfo: relationshipSource,
+        teacher_rel_source: teacher.teacher_rel_source || null,
+        teacher_rel_source_text: teacher.teacher_rel_source_text || relationshipSource || null,
+        teacher_rel_source_url: teacher.teacher_rel_source_url || null,
+        relationship_source: teacher.relationship_source || null
       });
-    }
+    });
+  }
 
-    // Add students
-    if (details.students) {
-      details.students.forEach((student, index) => {
-        addPersonNode(student, 200 + (index * 50), 450);
-        
-        const relationshipSource = deriveRelationshipSourceText(student.teacher_rel_source_text, student.relationshipSourceDisplay, student.teacher_rel_source, student.relationship_source, student.source);
-        links.push({
-          source: centerName,
-          target: student.full_name,
-          type: 'taught',
-          label: 'taught',
-          relationshipSourceDisplay: relationshipSource,
-          sourceInfo: relationshipSource,
-          teacher_rel_source: student.teacher_rel_source || null,
-          teacher_rel_source_text: student.teacher_rel_source_text || relationshipSource || null,
-          teacher_rel_source_url: student.teacher_rel_source_url || null,
-          relationship_source: student.relationship_source || null
-        });
+  // Add students
+  if (details.students) {
+    details.students.forEach((student, index) => {
+      const studentId = addPersonNode(student, 200 + (index * 50), 450);
+      if (!studentId) return;
+      const relationshipSource = deriveRelationshipSourceText(student.teacher_rel_source_text, student.relationshipSourceDisplay, student.teacher_rel_source, student.relationship_source, student.source);
+      links.push({
+        source: centerId,
+        target: studentId,
+        type: 'taught',
+        label: 'taught',
+        relationshipSourceDisplay: relationshipSource,
+        sourceInfo: relationshipSource,
+        teacher_rel_source: student.teacher_rel_source || null,
+        teacher_rel_source_text: student.teacher_rel_source_text || relationshipSource || null,
+        teacher_rel_source_url: student.teacher_rel_source_url || null,
+        relationship_source: student.relationship_source || null
       });
-    }
+    });
+  }
 
     // Add family (fallback: some responses may nest under center)
     const familyList = (details.family || details.center?.family || []);
@@ -2603,17 +3035,19 @@ const attemptLoadSavedView = async () => {
       familyList.forEach((relative, index) => {
         const relName = relative.full_name || relative.name;
         const relativeNorm = { ...relative, full_name: relName };
-        addPersonNode(relativeNorm, 600 + (index * 50), 200 + (index * 50));
+        const relativeId = addPersonNode(relativeNorm, 600 + (index * 50), 200 + (index * 50));
+        if (!relativeId) return;
+        const relDisplay = String(relName || relativeId).trim() || relativeId;
         
         // Determine correct direction based on relationship_type from backend
         const relType = (relative.relationship_type || '').toLowerCase();
-        let src = centerName;
-        let tgt = relName;
+        let src = centerId;
+        let tgt = relativeId;
         if ((relType.includes('parent') && !relType.includes('of')) ||
             (relType.includes('grandparent') && !relType.includes('of'))) {
           // relative is ancestor of center
-          src = relName;
-          tgt = centerName;
+          src = relativeId;
+          tgt = centerId;
         } else if (relType.includes('parentof') || relType.includes('grandparentof')) {
           // center is ancestor of relative (already src=center, tgt=relative)
         } // spouse/sibling/default keep center -> relative for determinism
@@ -2623,7 +3057,7 @@ const attemptLoadSavedView = async () => {
           source: src,
           target: tgt,
           type: 'family',
-          label: relative.relationship_type || 'family',
+          label: relative.relationship_type || relDisplay,
           relationshipSourceDisplay: relationshipSource,
           sourceInfo: relationshipSource,
           teacher_rel_source: relative.teacher_rel_source || null,
@@ -2634,7 +3068,7 @@ const attemptLoadSavedView = async () => {
       });
     }
 
-    // Add works
+  // Add works
     if (details.works) {
       // Add operas
       if (details.works.operas) {
@@ -2652,10 +3086,10 @@ const attemptLoadSavedView = async () => {
             y: 500
           });
           
-          const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
-          links.push({
-            source: centerName,
-            target: operaId,
+        const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
+        links.push({
+          source: centerId,
+          target: operaId,
             type: 'premiered',
             label: 'premiered role in',
             role: opera.role,
@@ -2682,7 +3116,7 @@ const attemptLoadSavedView = async () => {
           
           const relationshipSource = null;
           links.push({
-            source: centerName,
+            source: centerId,
             target: bookId,
             type: 'authored',
             label: 'authored',
@@ -2708,7 +3142,7 @@ const attemptLoadSavedView = async () => {
           
           const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
           links.push({
-            source: centerName,
+            source: centerId,
             target: operaId,
             type: 'wrote',
             label: 'wrote',
@@ -2723,114 +3157,128 @@ const attemptLoadSavedView = async () => {
     }
 
     // Add premiered roles - behavior depends on center type
-    if (details.premieredRoles) {
-      if (type === 'operas') {
-        // For opera networks: show people who premiered roles in this opera
-        details.premieredRoles.forEach((role, index) => {
-          const singerId = role.singer || `Unknown Singer ${index}`;
-          // Use the same deduplication logic
-          if (!addedNodes.has(singerId)) {
-            nodes.push({
-              id: singerId,
-              name: singerId,
-              type: 'person',
-              voiceType: role.voice_type, // Include voice type for proper styling
-              x: 300 + (index * 60),
-              y: 400
-            });
-            addedNodes.add(singerId);
-          }
-          
-          const relationshipSource = deriveRelationshipSourceText(role.opera_source_text, role.relationshipSourceDisplay, role.source, role.relationship_source);
-          links.push({
-            source: singerId,
-            target: centerName,
-            type: 'premiered',
-            label: 'premiered role in',
-            role: role.role,
-            relationshipSourceDisplay: relationshipSource,
-            sourceInfo: relationshipSource,
-            relationship_source: role.relationship_source || null,
-            opera_source_text: role.opera_source_text || relationshipSource || null,
-            opera_source_url: role.opera_source_url || null
+  if (details.premieredRoles) {
+    if (type === 'operas') {
+      // For opera networks: show people who premiered roles in this opera
+      details.premieredRoles.forEach((role, index) => {
+        const fallbackSinger = `Unknown Singer ${index}`;
+        const singerRaw = role?.singer || fallbackSinger;
+        const singerId = normalizeNodeId(singerRaw);
+        if (!singerId || isPlaceholderName(singerId)) return;
+        const singerName = String(singerRaw || singerId).trim() || singerId;
+        if (!addedNodes.has(singerId)) {
+          nodes.push({
+            id: singerId,
+            name: singerName,
+            type: 'person',
+            voiceType: role.voice_type,
+            x: 300 + (index * 60),
+            y: 400
           });
+          addedNodes.add(singerId);
+        }
+        
+        const relationshipSource = deriveRelationshipSourceText(role.opera_source_text, role.relationshipSourceDisplay, role.source, role.relationship_source);
+        links.push({
+          source: singerId,
+          target: centerId,
+          type: 'premiered',
+          label: 'premiered role in',
+          role: role.role,
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: role.relationship_source || null,
+          opera_source_text: role.opera_source_text || relationshipSource || null,
+          opera_source_url: role.opera_source_url || null
         });
-      } else if (type === 'singers') {
-        // For person networks: show operas the person premiered roles in
-        // This data should be in works.operas, not premieredRoles
-        // Skip processing premieredRoles for person networks to avoid confusion
-        console.log('Skipping premieredRoles for person network - should use works.operas instead');
+      });
+    } else if (type === 'singers') {
+      // For person networks: show operas the person premiered roles in
+      // This data should be in works.operas, not premieredRoles
+      // Skip processing premieredRoles for person networks to avoid confusion
+      console.log('Skipping premieredRoles for person network - should use works.operas instead');
+    }
+  }
+
+  // Add authors for books
+  if (details.authors) {
+    details.authors.forEach((author, index) => {
+      const fallbackAuthor = `Unknown Author ${index}`;
+      const authorRaw = author?.author || author?.name || fallbackAuthor;
+      const authorId = normalizeNodeId(authorRaw);
+      if (!authorId || isPlaceholderName(authorId)) return;
+      const authorName = String(authorRaw || authorId).trim() || authorId;
+      if (!addedNodes.has(authorId)) {
+        nodes.push({
+          id: authorId,
+          name: authorName,
+          type: 'person',
+          voiceType: author.voice_type,
+          x: 200 + (index * 60),
+          y: 200
+        });
+        addedNodes.add(authorId);
       }
-    }
-
-    // Add authors for books
-    if (details.authors) {
-      details.authors.forEach((author, index) => {
-        const authorId = author.author || `Unknown Author ${index}`;
-        // Use the same deduplication logic
-        if (!addedNodes.has(authorId)) {
-          nodes.push({
-            id: authorId,
-            name: authorId,
-            type: 'person',
-            voiceType: author.voice_type, // Include voice type for proper styling
-            x: 200 + (index * 60),
-            y: 200
-          });
-          addedNodes.add(authorId);
-        }
-        
-        const relationshipSource = null;
-        links.push({
-          source: authorId,
-          target: centerName,
-          type: 'authored',
-          label: 'authored',
-          relationshipSourceDisplay: relationshipSource,
-          sourceInfo: relationshipSource,
-          relationship_source: null
-        });
+      
+      const relationshipSource = null;
+      links.push({
+        source: authorId,
+        target: centerId,
+        type: 'authored',
+        label: 'authored',
+        relationshipSourceDisplay: relationshipSource,
+        sourceInfo: relationshipSource,
+        relationship_source: null
       });
-    }
+    });
+  }
 
-    // Add editors for books
-    if (details.editors) {
-      details.editors.forEach((editor, index) => {
-        const editorId = editor.editor || `Unknown Editor ${index}`;
-        // Use the same deduplication logic
-        if (!addedNodes.has(editorId)) {
-          nodes.push({
-            id: editorId,
-            name: editorId,
-            type: 'person',
-            voiceType: editor.voice_type, // Include voice type for proper styling
-            x: 600 + (index * 60),
-            y: 200
-          });
-          addedNodes.add(editorId);
-        }
-        
-        const relationshipSource = null;
-        links.push({
-          source: editorId,
-          target: centerName,
-          type: 'edited',
-          label: 'edited',
-          relationshipSourceDisplay: relationshipSource,
-          sourceInfo: relationshipSource,
-          relationship_source: null
+  // Add editors for books
+  if (details.editors) {
+    details.editors.forEach((editor, index) => {
+      const fallbackEditor = `Unknown Editor ${index}`;
+      const editorRaw = editor?.editor || editor?.name || fallbackEditor;
+      const editorId = normalizeNodeId(editorRaw);
+      if (!editorId || isPlaceholderName(editorId)) return;
+      const editorName = String(editorRaw || editorId).trim() || editorId;
+      if (!addedNodes.has(editorId)) {
+        nodes.push({
+          id: editorId,
+          name: editorName,
+          type: 'person',
+          voiceType: editor.voice_type,
+          x: 600 + (index * 60),
+          y: 200
         });
+        addedNodes.add(editorId);
+      }
+      
+      const relationshipSource = null;
+      links.push({
+        source: editorId,
+        target: centerId,
+        type: 'edited',
+        label: 'edited',
+        relationshipSourceDisplay: relationshipSource,
+        sourceInfo: relationshipSource,
+        relationship_source: null
       });
-    }
+    });
+  }
 
-    // Apply anti-overlap positioning to all nodes
-    positionNodesWithoutOverlap(nodes);
+  // Apply anti-overlap positioning to all nodes
+  positionNodesWithoutOverlap(nodes);
+  ensureNodeConnectivity(nodes, links, {
+    primaryId: centerId,
+    fallbackType: 'related',
+    fallbackLabel: 'related'
+  });
 
-    clearFiltersForNewSearch(nodes);
+  clearFiltersForNewSearch(nodes);
 
-    setNetworkData({ nodes, links: normalizeLinks(links) });
-    setCurrentCenterNode(centerName); // Set the center node for this network
-    setShouldRunSimulation(true); // Trigger force simulation for new network
+  setNetworkData(sanitizeGraphData({ nodes, links }));
+  setCurrentCenterNode(centerLabel); // Set the center node for this network
+  setShouldRunSimulation(true); // Trigger force simulation for new network
   };
 
   // Function to show full information profile card
@@ -2900,14 +3348,50 @@ const attemptLoadSavedView = async () => {
       setLoading(false);
     }
   };
-  const normalizeNodeId = (value) => {
-    if (value === null || value === undefined) return '';
-    return String(value).replace(/\s+/g, ' ').trim();
-  };
+const normalizeNodeId = (value) => {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .normalize('NFKC')
+    .replace(/[\u2010-\u2015\u2212\u2017\u00AD\u2011\uFE63\uFF0D]/g, '-') // unifies dash variants
+    .replace(/[\u0000-\u001F\u007F]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const resolveLinkEndpointId = (endpoint) => {
+  if (endpoint === null || endpoint === undefined) return '';
+  if (typeof endpoint === 'string') return normalizeNodeId(endpoint);
+  if (typeof endpoint === 'object') {
+    if (endpoint.id !== undefined && endpoint.id !== null) return normalizeNodeId(endpoint.id);
+    if (endpoint.name !== undefined && endpoint.name !== null) return normalizeNodeId(endpoint.name);
+  }
+  return normalizeNodeId(endpoint);
+};
+
+const isPlaceholderName = (value) => {
+  const normalized = normalizeNodeId(value);
+  if (!normalized) return true;
+  const simplified = normalized
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!simplified) return true;
+  if (simplified === 'unknown') return true;
+  if (
+    simplified.includes('teacher provided') ||
+    simplified.includes('teacherprovided')
+  ) return true;
+  if (
+    simplified.includes('student provided') ||
+    simplified.includes('studentprovided')
+  ) return true;
+  return false;
+};
 
   const mergeNodeAttributes = (base, incoming) => {
     if (!incoming) return base;
-    const result = { ...base };
+    const result = base || {};
     Object.entries(incoming).forEach(([key, value]) => {
       if (value === undefined || value === null) return;
       if (key === 'id') {
@@ -2968,6 +3452,7 @@ const attemptLoadSavedView = async () => {
     if (!candidate) return null;
     const normalizedId = normalizeNodeId(candidate.id ?? candidate.name);
     if (!normalizedId) return null;
+    if (isPlaceholderName(normalizedId)) return null;
     const normalizedName = candidate.name ? String(candidate.name).trim() : normalizedId;
     const nodeObj = { ...candidate, id: normalizedId, name: normalizedName };
     if (!Number.isFinite(nodeObj.x)) nodeObj.x = undefined;
@@ -2975,26 +3460,131 @@ const attemptLoadSavedView = async () => {
     return nodeObj;
   };
 
-  const normalizeLinkForMerge = (link) => {
-    if (!link) return { key: '', link: null };
-    const resolveEndpoint = (endpoint) => {
-      if (endpoint === null || endpoint === undefined) return '';
-      if (typeof endpoint === 'string') return normalizeNodeId(endpoint);
-      if (typeof endpoint === 'object') {
-        return normalizeNodeId(endpoint.id ?? endpoint.name);
-      }
-      return normalizeNodeId(endpoint);
-    };
-    const sourceId = resolveEndpoint(link.source);
-    const targetId = resolveEndpoint(link.target);
-    if (!sourceId || !targetId) return { key: '', link: null };
-    const typeKey = String(link.type || '').toLowerCase();
-    const normalizedLink = { ...link, source: sourceId, target: targetId };
+const sanitizeGraphData = (graph) => {
+  if (!graph) return { nodes: [], links: [] };
+  const nodeAccumulator = new Map();
+  (graph.nodes || []).forEach(node => {
+    const normalizedId = normalizeNodeId(node?.id ?? node?.name);
+      if (!normalizedId || isPlaceholderName(normalizedId)) return;
+      const normalizedName = String(node?.name ?? '').trim() || normalizedId;
+      const base = nodeAccumulator.get(normalizedId) || { id: normalizedId, name: normalizedName };
+      nodeAccumulator.set(normalizedId, mergeNodeAttributes(base, { ...node, id: normalizedId, name: normalizedName }));
+    });
+    const sanitizedNodes = Array.from(nodeAccumulator.values());
+    const validIds = new Set(sanitizedNodes.map(n => n.id));
+    const sanitizedLinks = [];
+    (graph.links || []).forEach(link => {
+      const sourceId = normalizeNodeId(
+        typeof link?.source === 'string'
+          ? link.source
+          : link?.source?.id ?? link?.source?.name
+      );
+      const targetId = normalizeNodeId(
+        typeof link?.target === 'string'
+          ? link.target
+          : link?.target?.id ?? link?.target?.name
+      );
+      if (!sourceId || !targetId) return;
+      if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return;
+      if (!validIds.has(sourceId) || !validIds.has(targetId)) return;
+      sanitizedLinks.push({ ...link, source: sourceId, target: targetId });
+    });
     return {
-      key: `${sourceId}|${targetId}|${typeKey}`,
-      link: normalizedLink
+      nodes: sanitizedNodes,
+      links: normalizeLinks(sanitizedLinks)
     };
   };
+  const sanitizeIncrementalGraph = (nodes, links, { anchorId, existingNodeIds } = {}) => {
+    const normalizedAnchorId = normalizeNodeId(anchorId);
+    const baseNodes = Array.isArray(nodes) ? [...nodes] : [];
+    const stubbedNodeIds = new Set();
+    const existingIdsSet = existingNodeIds instanceof Set
+      ? existingNodeIds
+      : Array.isArray(existingNodeIds)
+        ? new Set(existingNodeIds.map(id => normalizeNodeId(id)))
+        : null;
+    const baseNodeIds = new Set(
+      baseNodes
+        .map(node => normalizeNodeId(node?.id ?? node?.name))
+        .filter(Boolean)
+    );
+    const ensureStubForId = (id) => {
+      const normalizedId = normalizeNodeId(id);
+      if (!normalizedId) return;
+      if (baseNodeIds.has(normalizedId)) return;
+      baseNodes.push({ id: normalizedId, name: normalizedId });
+      baseNodeIds.add(normalizedId);
+      stubbedNodeIds.add(normalizedId);
+    };
+    if (normalizedAnchorId) {
+      ensureStubForId(normalizedAnchorId);
+    }
+    (Array.isArray(links) ? links : []).forEach(link => {
+      const sourceId = normalizeNodeId(resolveLinkEndpointId(link?.source));
+      const targetId = normalizeNodeId(resolveLinkEndpointId(link?.target));
+      if (existingIdsSet) {
+        if (existingIdsSet.has(sourceId)) {
+          ensureStubForId(sourceId);
+        }
+        if (existingIdsSet.has(targetId)) {
+          ensureStubForId(targetId);
+        }
+      }
+    });
+    const graphForSanitization = { nodes: baseNodes, links };
+    const sanitized = sanitizeGraphData(graphForSanitization);
+    const filteredNodes = (sanitized.nodes || []).filter(node => {
+      const id = normalizeNodeId(node?.id ?? node?.name);
+      if (!id) return false;
+      if (stubbedNodeIds.has(id)) return false;
+      if (isPlaceholderName(id)) return false;
+      return true;
+    });
+    const filteredNodeIds = new Set(filteredNodes.map(node => normalizeNodeId(node?.id ?? node?.name)).filter(Boolean));
+    const filteredLinks = (sanitized.links || []).filter(link => {
+      const sourceId = normalizeNodeId(resolveLinkEndpointId(link?.source));
+      const targetId = normalizeNodeId(resolveLinkEndpointId(link?.target));
+      if (!sourceId || !targetId) return false;
+      if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return false;
+      return true;
+    });
+    return {
+      nodes: filteredNodes,
+      links: filteredLinks
+    };
+  };
+
+const createLinkKey = (sourceIdRaw, targetIdRaw, type) => {
+  const sourceId = normalizeNodeId(sourceIdRaw);
+  const targetId = normalizeNodeId(targetIdRaw);
+  if (!sourceId || !targetId) return '';
+  const typeKey = String(type || '').toLowerCase();
+  return JSON.stringify([sourceId, targetId, typeKey]);
+};
+
+const buildLinkKeySet = (links = []) => {
+  const keys = new Set();
+  (Array.isArray(links) ? links : []).forEach((link) => {
+    const sourceId = resolveLinkEndpointId(link?.source);
+    const targetId = resolveLinkEndpointId(link?.target);
+    if (!sourceId || !targetId) return;
+    const key = createLinkKey(sourceId, targetId, link?.type);
+    if (key) keys.add(key);
+  });
+  return keys;
+};
+
+const normalizeLinkForMerge = (link) => {
+  if (!link) return { key: '', link: null };
+  const sourceId = resolveLinkEndpointId(link.source);
+  const targetId = resolveLinkEndpointId(link.target);
+  if (!sourceId || !targetId) return { key: '', link: null };
+  const normalizedLink = { ...link, source: sourceId, target: targetId };
+  return {
+    key: createLinkKey(sourceId, targetId, link.type),
+    link: normalizedLink
+  };
+};
 
   const mergeNetworkUpdates = (prev, nodesToAdd = [], linksToAdd = [], nodeUpdates) => {
     const updatesMap = new Map();
@@ -3043,12 +3633,7 @@ const attemptLoadSavedView = async () => {
       }
     });
 
-    const existingLinkKeys = new Set();
-    (prev.links || []).forEach(link => {
-      const { key } = normalizeLinkForMerge(link);
-      if (key) existingLinkKeys.add(key);
-    });
-
+    const existingLinkKeys = buildLinkKeySet(prev.links);
     const mergedLinks = [...(prev.links || [])];
     const pendingLinkKeys = new Set();
     (linksToAdd || []).forEach(link => {
@@ -3059,17 +3644,83 @@ const attemptLoadSavedView = async () => {
       mergedLinks.push(normalized.link);
     });
 
-    return {
-      nodes: [...updatedNodes, ...pendingNewMap.values()],
-      links: normalizeLinks(mergedLinks)
-    };
+    const combinedNodes = [...updatedNodes, ...pendingNewMap.values()].filter(n => {
+      const nodeId = normalizeNodeId(n?.id ?? n?.name);
+      if (!nodeId) return false;
+      if (isPlaceholderName(nodeId)) return false;
+      n.id = nodeId;
+      if (typeof n.name !== 'string' || !n.name.trim()) {
+        n.name = nodeId;
+      }
+      return true;
+    });
+    const validIds = new Set(combinedNodes.map(n => n.id));
+    const filteredLinks = (mergedLinks || []).filter(link => {
+      const sourceId = normalizeNodeId(
+        typeof link.source === 'string'
+          ? link.source
+          : link.source?.id ?? link.source?.name
+      );
+      const targetId = normalizeNodeId(
+        typeof link.target === 'string'
+          ? link.target
+          : link.target?.id ?? link.target?.name
+      );
+      if (!sourceId || !targetId) return false;
+      if (!validIds.has(sourceId) || !validIds.has(targetId)) return false;
+      return true;
+    });
+
+    return sanitizeGraphData({
+      nodes: combinedNodes,
+      links: filteredLinks
+    });
   };
+
+  useEffect(() => {
+    const nodesList = Array.isArray(networkData.nodes) ? networkData.nodes : [];
+    const placeholderNodes = nodesList.filter(node => {
+      const id = normalizeNodeId(node?.id ?? node?.name);
+      return isPlaceholderName(id);
+    });
+    const nodeIdSet = new Set(
+      nodesList
+        .map(node => normalizeNodeId(node?.id ?? node?.name))
+        .filter(Boolean)
+    );
+    const invalidLinks = [];
+    (networkData.links || []).forEach(link => {
+      const sourceId = resolveLinkEndpointId(link?.source);
+      const targetId = resolveLinkEndpointId(link?.target);
+      if (
+        !sourceId ||
+        !targetId ||
+        isPlaceholderName(sourceId) ||
+        isPlaceholderName(targetId) ||
+        !nodeIdSet.has(sourceId) ||
+        !nodeIdSet.has(targetId)
+      ) {
+        invalidLinks.push({ sourceId, targetId });
+      }
+    });
+    if (!placeholderNodes.length && invalidLinks.length === 0) return;
+    try {
+      if (placeholderNodes.length > 0) {
+        console.warn('[sanitizeGraphData] Removing placeholder nodes before simulation:', placeholderNodes.map(n => n?.id ?? n?.name));
+      }
+      if (invalidLinks.length > 0) {
+        console.warn('[sanitizeGraphData] Detected invalid links; sanitizing graph', invalidLinks);
+      }
+    } catch (_) {}
+    setNetworkData(prev => sanitizeGraphData(prev));
+  }, [networkData]);
 
   // Function to expand all relationships for a node
   const expandAllRelationships = async (node) => {
     try {
       pushHistory('expand-all');
       setLoading(true);
+      const relationshipType = 'all';
       let response, data;
       
       if (node.type === 'person') {
@@ -3111,17 +3762,10 @@ const attemptLoadSavedView = async () => {
           const existingNodes = new Set(
             (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
           );
-          const existingLinks = new Set(
-            (networkData.links || []).map(l => {
-              const sourceId = normalizeNodeId(typeof l.source === 'string' ? l.source : l.source?.id);
-              const targetId = normalizeNodeId(typeof l.target === 'string' ? l.target : l.target?.id);
-              if (!sourceId || !targetId) return null;
-              return `${sourceId}-${targetId}-${String(l.type || '').toLowerCase()}`;
-            }).filter(Boolean)
-          );
+          const existingLinks = buildLinkKeySet(networkData.links);
           
-          const newNodes = [];
-          const newLinks = [];
+          let newNodes = [];
+          let newLinks = [];
           const anchorId = normalizeNodeId(node.id ?? node.name);
           const anchorX = Number.isFinite(node?.x) ? node.x : 400;
           const anchorY = Number.isFinite(node?.y) ? node.y : 300;
@@ -3146,8 +3790,8 @@ const attemptLoadSavedView = async () => {
             const sourceId = normalizeNodeId(sourceIdRaw);
             const targetId = normalizeNodeId(targetIdRaw);
             if (!sourceId || !targetId) return;
-            const linkTypeKey = String(type || '').toLowerCase();
-            const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
+            if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return;
+            const linkKey = createLinkKey(sourceId, targetId, type);
             if (existingLinks.has(linkKey)) return;
             existingLinks.add(linkKey);
             const cleanedExtra = { ...extra };
@@ -3157,6 +3801,12 @@ const attemptLoadSavedView = async () => {
               ? cleanedExtra.relationshipSourceCandidates
               : [];
             delete cleanedExtra.relationshipSourceCandidates;
+            delete cleanedExtra.teacher_rel_source;
+            delete cleanedExtra.relationship_source;
+            delete cleanedExtra.source;
+            delete cleanedExtra.sourceInfo;
+            delete cleanedExtra.target;
+            delete cleanedExtra.sourceDisplay;
             const linkPayload = {
               source: sourceId,
               target: targetId,
@@ -3172,8 +3822,8 @@ const attemptLoadSavedView = async () => {
             linkPayload.teacher_rel_source = teacherRelSource;
             linkPayload.relationship_source = relationshipSourceProp;
             linkPayload.sourceInfo = relationshipSource;
-            linkPayload.source = relationshipSource || linkPayload.source;
             newLinks.push(linkPayload);
+            console.log('[expandSpecific] addLink', { sourceId, targetId, type: linkPayload.type, label: linkPayload.label, linkKey });
           };
           
           // Handle different node types and their data structures
@@ -3280,7 +3930,27 @@ const attemptLoadSavedView = async () => {
                   });
                 });
               }
-              
+
+              if (Array.isArray(data.works.composedOperas) && data.works.composedOperas.length > 0) {
+                data.works.composedOperas.forEach(opera => {
+                  const operaId = registerNode({
+                    id: opera.title || opera.opera_name || 'Unknown Opera',
+                    name: opera.title || opera.opera_name || 'Unknown Opera',
+                    type: 'opera'
+                  });
+                  if (!operaId) return;
+                  addLink(anchorId, operaId, 'wrote', {
+                    label: 'wrote',
+                    relationshipSourceCandidates: [
+                      opera.opera_source_text,
+                      opera.opera_source,
+                      opera.source,
+                      opera.relationship_source
+                    ]
+                  });
+                });
+              }
+
               if (data.works.books) {
                 data.works.books.forEach(book => {
                   const bookId = registerNode({
@@ -3314,36 +3984,112 @@ const attemptLoadSavedView = async () => {
               });
             }
             
-            if (data.opera && data.opera.composer) {
-              const composerId = registerNode({
+            let composerLinked = false;
+            if (Array.isArray(data.wrote) && data.wrote.length > 0) {
+              data.wrote.forEach(entry => {
+                const composerName = entry.composer || entry.name;
+                if (!composerName) return;
+                const composerId = registerNode({
+                  id: composerName,
+                  name: composerName,
+                  type: 'person',
+                  voiceType: 'Composer'
+                });
+                if (!composerId) return;
+                addLink(composerId, anchorId, 'wrote', {
+                  label: 'wrote',
+                  relationshipSourceCandidates: [
+                    entry.opera_source_text,
+                    entry.source,
+                    entry.relationship_source,
+                    entry.opera_source_url
+                  ]
+                });
+                composerLinked = true;
+              });
+            }
+
+            if (!composerLinked && data.opera && data.opera.composer) {
+              const fallbackComposerId = registerNode({
                 id: data.opera.composer,
                 name: data.opera.composer,
                 type: 'person',
                 voiceType: 'Composer'
               });
-              if (composerId) {
-                addLink(composerId, anchorId, 'wrote', {
+              if (fallbackComposerId) {
+                addLink(fallbackComposerId, anchorId, 'wrote', {
                   label: 'wrote',
                   relationshipSourceCandidates: [data.opera?.source, data.opera?.relationship_source]
                 });
               }
             }
           } else if (node.type === 'book') {
-            if (data.book && data.book.author) {
+            const authors = Array.isArray(data.authors) && data.authors.length > 0
+              ? data.authors.map(entry => ({
+                  name: entry.author,
+                  voice_type: entry.voice_type,
+                  relationship_source: entry.relationship_source
+                }))
+              : (data.book && data.book.author ? [{ name: data.book.author }] : []);
+            authors.forEach(author => {
+              if (!author?.name) return;
               const authorId = registerNode({
-                id: data.book.author,
-                name: data.book.author,
-                type: 'person'
+                id: author.name,
+                name: author.name,
+                type: 'person',
+                voiceType: author.voice_type
               });
-              if (authorId) {
-                addLink(authorId, anchorId, 'authored', {
-                  label: 'authored',
-                  relationshipSourceCandidates: [data.book?.source, data.book?.relationship_source]
+              if (!authorId) return;
+              addLink(authorId, anchorId, 'authored', {
+                label: 'authored',
+                relationshipSourceCandidates: [
+                  author.relationship_source,
+                  data.book?.source,
+                  data.book?.relationship_source
+                ]
+              });
+            });
+
+            if (Array.isArray(data.editors) && data.editors.length > 0) {
+              data.editors.forEach(editor => {
+                const editorName = editor.editor || editor.name;
+                if (!editorName) return;
+                const editorId = registerNode({
+                  id: editorName,
+                  name: editorName,
+                  type: 'person',
+                  voiceType: editor.voice_type
                 });
-              }
+                if (!editorId) return;
+                addLink(editorId, anchorId, 'edited', {
+                  label: 'edited',
+                  relationshipSourceCandidates: [
+                    editor.relationship_source,
+                    data.book?.source,
+                    data.book?.relationship_source
+                  ]
+                });
+              });
             }
           }
-          
+
+          const sanitizedAdditions = sanitizeIncrementalGraph(newNodes, newLinks, {
+            anchorId,
+            existingNodeIds: existingNodes
+          });
+          newNodes = sanitizedAdditions.nodes || [];
+          newLinks = sanitizedAdditions.links || [];
+
+          attachNewNodesToAnchor({
+            anchorId,
+            anchorType: node.type,
+            relationshipType: 'related',
+            newNodes,
+            newLinks,
+            existingLinks: networkData.links,
+            addLink
+          });
+
           if (newNodes.length > 0) {
             const radius = Math.max(180, Math.min(400, 100 + newNodes.length * 30));
             newNodes.forEach((n, idx) => {
@@ -3355,7 +4101,20 @@ const attemptLoadSavedView = async () => {
             extendDateRangesForNodes(newNodes);
           }
 
-          setNetworkData(prev => mergeNetworkUpdates(prev, newNodes, newLinks));
+          console.log('[expandAll] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'relationship:', relationshipType);
+          setNetworkData(prev => {
+            const merged = mergeNetworkUpdates(prev, newNodes, newLinks);
+            const fallback = resolveFallbackConfig(relationshipType, node.type);
+            const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
+            ensureNodeConnectivity(merged.nodes, ensuredLinks, {
+              primaryId: anchorId,
+              fallbackType: fallback.type || 'related',
+              fallbackLabel: fallback.label || 'related'
+            });
+            const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
+            console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
+            return next;
+          });
           // Refresh counts for the expanded node to keep context menu accurate
           try {
             const updatedCounts = await fetchActualCounts(node);
@@ -3422,21 +4181,14 @@ const attemptLoadSavedView = async () => {
           const existingNodes = new Set(
             (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
           );
-          const existingLinks = new Set(
-            (networkData.links || []).map(l => {
-              const sourceId = normalizeNodeId(typeof l.source === 'string' ? l.source : l.source?.id);
-              const targetId = normalizeNodeId(typeof l.target === 'string' ? l.target : l.target?.id);
-              if (!sourceId || !targetId) return null;
-              return `${sourceId}-${targetId}-${String(l.type || '').toLowerCase()}`;
-            }).filter(Boolean)
-          );
+          const existingLinks = buildLinkKeySet(networkData.links);
           
           console.log(`🔍 Expanding "${relationshipType}" for "${node.name}"`);
           console.log(`📊 Current network: ${networkData.nodes.length} nodes, ${networkData.links.length} links`);
           console.log(`🗂️ Existing node IDs:`, Array.from(existingNodes));
           
-          const newNodes = [];
-          const newLinks = [];
+          let newNodes = [];
+          let newLinks = [];
           const anchorId = normalizeNodeId(node.id ?? node.name);
           const anchorX = Number.isFinite(node?.x) ? node.x : 400;
           const anchorY = Number.isFinite(node?.y) ? node.y : 300;
@@ -3461,8 +4213,8 @@ const attemptLoadSavedView = async () => {
             const sourceId = normalizeNodeId(sourceIdRaw);
             const targetId = normalizeNodeId(targetIdRaw);
             if (!sourceId || !targetId) return;
-            const linkTypeKey = String(type || '').toLowerCase();
-            const linkKey = `${sourceId}-${targetId}-${linkTypeKey}`;
+            if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return;
+            const linkKey = createLinkKey(sourceId, targetId, type);
             if (existingLinks.has(linkKey)) return;
             existingLinks.add(linkKey);
             const cleanedExtra = { ...extra };
@@ -3491,8 +4243,8 @@ const attemptLoadSavedView = async () => {
             linkPayload.teacher_rel_source = teacherRelSource;
             linkPayload.relationship_source = relationshipSourceProp;
             linkPayload.sourceInfo = relationshipSource;
-            linkPayload.source = relationshipSource || linkPayload.source;
             newLinks.push(linkPayload);
+            console.log('[expandSpecific] addLink', { sourceId, targetId, type: linkPayload.type, label: linkPayload.label, linkKey });
           };
           
           // Handle specific relationship types for people
@@ -3682,6 +4434,13 @@ const attemptLoadSavedView = async () => {
             }
           }
           
+          const sanitizedAdditions = sanitizeIncrementalGraph(newNodes, newLinks, {
+            anchorId,
+            existingNodeIds: existingNodes
+          });
+          newNodes = sanitizedAdditions.nodes || [];
+          newLinks = sanitizedAdditions.links || [];
+
           if (newNodes.length > 0 && anchorId) {
             const attachedToAnchor = new Set();
             (networkData.links || []).forEach(link => {
@@ -3697,10 +4456,25 @@ const attemptLoadSavedView = async () => {
               if (targetId === anchorId && sourceId) attachedToAnchor.add(sourceId);
             });
 
-            const relationshipLabel = typeof relationshipType === 'string' ? relationshipType : 'related';
+            const relationshipLabel = typeof relationshipType === 'string' && relationshipType.trim()
+              ? relationshipType.trim()
+              : 'related';
             const normalizedLabel = relationshipLabel.toLowerCase();
-            const fallbackType = normalizedLabel.includes('parent') || normalizedLabel.includes('sibling') || normalizedLabel.includes('grandparent')
+            const fallbackType = normalizedLabel.includes('parent') ||
+              normalizedLabel.includes('sibling') ||
+              normalizedLabel.includes('grandparent') ||
+              normalizedLabel.includes('spouse')
               ? 'family'
+              : normalizedLabel.includes('taught')
+              ? 'taught'
+              : normalizedLabel.includes('premiered')
+              ? 'premiered'
+              : normalizedLabel.includes('wrote') || normalizedLabel.includes('composed')
+              ? 'wrote'
+              : normalizedLabel.includes('authored')
+              ? 'authored'
+              : normalizedLabel.includes('edited')
+              ? 'edited'
               : 'related';
 
             newNodes.forEach(n => {
@@ -3769,7 +4543,20 @@ const attemptLoadSavedView = async () => {
             extendDateRangesForNodes(newNodes);
           }
 
-          setNetworkData(prev => mergeNetworkUpdates(prev, newNodes, newLinks));
+          console.log('[expandAll] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'anchor:', anchorId);
+          setNetworkData(prev => {
+            const merged = mergeNetworkUpdates(prev, newNodes, newLinks);
+            const fallback = resolveFallbackConfig('related', node.type);
+            const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
+            ensureNodeConnectivity(merged.nodes, ensuredLinks, {
+              primaryId: anchorId,
+              fallbackType: fallback.type || 'related',
+              fallbackLabel: fallback.label || 'related'
+            });
+            const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
+            console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
+            return next;
+          });
 
           setIsExpansionSimulation(true);
           setShouldRunSimulation(true);
@@ -3789,10 +4576,10 @@ const attemptLoadSavedView = async () => {
     const filteredNodes = networkData.nodes.filter(node => node.id === selectedNode.id);
     
     // Remove all relationships - this creates a new visualization starting from this node
-    setNetworkData({
+    setNetworkData(sanitizeGraphData({
       nodes: filteredNodes,
       links: [] // No relationships - clean slate
-    });
+    }));
   };
 
   // Function to dismiss the selected node
@@ -3804,10 +4591,10 @@ const attemptLoadSavedView = async () => {
       return sourceId !== nodeToRemove.id && targetId !== nodeToRemove.id;
     });
     
-    setNetworkData({
+    setNetworkData(sanitizeGraphData({
       nodes: filteredNodes,
       links: filteredLinks
-    });
+    }));
   };
 
   const getItemDetails = async (item, itemType = null) => {
@@ -3914,6 +4701,7 @@ const attemptLoadSavedView = async () => {
         setCurrentView('network');
         generateNetworkFromDetails(normalized, personName, 'singers');
         setShouldRunSimulation(true); // Trigger simulation for person search
+        setHasExecutedSearch(true);
       } else {
         setError(data.error || 'Person not found');
       }
@@ -3956,6 +4744,7 @@ const attemptLoadSavedView = async () => {
         setCurrentView('network');
         generateNetworkFromDetails(normalized, personName, 'singers');
         setShouldRunSimulation(true); // Trigger simulation for person search
+        setHasExecutedSearch(true);
       } else {
         setError(data.error || 'Person not found');
       }
@@ -4260,6 +5049,26 @@ const attemptLoadSavedView = async () => {
       const container = containerRef.current;
       const width = container.clientWidth;
       const height = visualizationHeight;
+
+      const nodesList = Array.isArray(networkData.nodes) ? networkData.nodes : [];
+      const nodeIdSet = new Set(nodesList.map(node => normalizeNodeId(node?.id ?? node?.name)).filter(Boolean));
+      const hasPlaceholderNodes = nodesList.some(node => {
+        const id = normalizeNodeId(node?.id ?? node?.name);
+        return isPlaceholderName(id);
+      });
+      const hasInvalidLinks = (networkData.links || []).some(link => {
+        const sourceId = resolveLinkEndpointId(link?.source);
+        const targetId = resolveLinkEndpointId(link?.target);
+        if (!sourceId || !targetId) return true;
+        if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return true;
+        return !nodeIdSet.has(sourceId) || !nodeIdSet.has(targetId);
+      });
+      if (hasPlaceholderNodes || hasInvalidLinks) {
+        try {
+          console.warn('[graph] Skipping render due to invalid nodes/links', { hasPlaceholderNodes, hasInvalidLinks });
+        } catch (_) {}
+        return;
+      }
 
       // Restore zoom transform from a global cache across remounts
       try {
@@ -5202,12 +6011,56 @@ const attemptLoadSavedView = async () => {
       }
 
       // Prepare link data to always reference node objects (not just id strings)
-      const nodeById = new Map(networkData.nodes.map(n => [n.id, n]));
-      const linkData = (networkData.links || []).map(l => ({
-        ...l,
-        source: (typeof l.source === 'string' ? nodeById.get(l.source) : l.source),
-        target: (typeof l.target === 'string' ? nodeById.get(l.target) : l.target)
-      }));
+      const nodeById = new Map();
+      const invalidNodeIds = [];
+      (networkData.nodes || []).forEach(node => {
+        if (!node) return;
+        const normalizedId = normalizeNodeId(node?.id ?? node?.name);
+        if (!normalizedId || isPlaceholderName(normalizedId)) {
+          invalidNodeIds.push(node?.id ?? node?.name ?? '');
+          return;
+        }
+        node.id = normalizedId;
+        nodeById.set(normalizedId, node);
+      });
+      if (invalidNodeIds.length > 0) {
+        try {
+          console.warn('[cmg-debug] Dropping placeholder or invalid nodes before simulation', invalidNodeIds);
+        } catch (_) {}
+      }
+      const rawLinks = Array.isArray(networkData.links) ? networkData.links : [];
+      const linkData = [];
+      let droppedLinksCount = 0;
+      rawLinks.forEach(link => {
+        const sourceId = resolveLinkEndpointId(link?.source);
+        const targetId = resolveLinkEndpointId(link?.target);
+        if (
+          !sourceId ||
+          !targetId ||
+          isPlaceholderName(sourceId) ||
+          isPlaceholderName(targetId) ||
+          !nodeById.has(sourceId) ||
+          !nodeById.has(targetId)
+        ) {
+          droppedLinksCount += 1;
+          return;
+        }
+        linkData.push({
+          ...link,
+          source: nodeById.get(sourceId),
+          target: nodeById.get(targetId)
+        });
+      });
+      if (droppedLinksCount > 0) {
+        try {
+          console.warn('[graph] Dropped links referencing missing or placeholder nodes before rendering', { droppedLinksCount });
+        } catch (_) {}
+      }
+      const getEndpointNode = (endpoint) => (
+        typeof endpoint === 'string'
+          ? nodeById.get(resolveLinkEndpointId(endpoint))
+          : endpoint
+      );
 
       // Create links (using paths)
       const link = g.append("g")
@@ -5234,8 +6087,8 @@ const attemptLoadSavedView = async () => {
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
           setTimeout(() => {
-            const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-            const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+            const srcNode = getEndpointNode(d.source);
+            const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
             const resolvedSource = formatRelationshipSource(
               d.relationshipSourceDisplay,
@@ -5282,8 +6135,8 @@ const attemptLoadSavedView = async () => {
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
           setTimeout(() => {
-            const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-            const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+            const srcNode = getEndpointNode(d.source);
+            const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
             const resolvedSource = formatRelationshipSource(
               d.relationshipSourceDisplay,
@@ -5314,7 +6167,7 @@ const attemptLoadSavedView = async () => {
         if (v === 'grandparentof' || v === 'grandparent') return 'grandparent';
         return v;
       };
-      const toNodeObj = n => (typeof n === 'string' ? networkData.nodes.find(nn => nn.id === n) : n);
+      const toNodeObj = (n) => getEndpointNode(n);
       const directedPairKey = (s, t) => `${getNodeId(s)}->${getNodeId(t)}`;
       const directedGroups = new Map();
       linkData.forEach(ld => {
@@ -5361,15 +6214,15 @@ const attemptLoadSavedView = async () => {
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
           // Find a representative link for this directed pair
-          const srcId = typeof d.source === 'string' ? d.source : d.source?.id;
-          const tgtId = typeof d.target === 'string' ? d.target : d.target?.id;
-          const matching = networkData.links.find(l => (typeof l.source === 'string' ? l.source : l.source?.id) === srcId && (typeof l.target === 'string' ? l.target : l.target?.id) === tgtId);
+          const srcId = resolveLinkEndpointId(d.source);
+          const tgtId = resolveLinkEndpointId(d.target);
+          const matching = linkData.find(l => resolveLinkEndpointId(l.source) === srcId && resolveLinkEndpointId(l.target) === tgtId);
           const linkType = (matching && matching.type ? String(matching.type).toLowerCase() : '');
           if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
             return;
           }
-          const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-          const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+          const srcNode = getEndpointNode(d.source);
+          const tgtNode = getEndpointNode(d.target);
           const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
           setTimeout(() => {
             setLinkContextMenu({
@@ -5406,15 +6259,15 @@ const attemptLoadSavedView = async () => {
           const containerRect = container.getBoundingClientRect();
           const mouseX = isMobileViewport ? 0 : Math.max(0, event.clientX - containerRect.left);
           const mouseY = isMobileViewport ? 0 : Math.max(0, event.clientY - containerRect.top);
-          const srcId = typeof d.source === 'string' ? d.source : d.source?.id;
-          const tgtId = typeof d.target === 'string' ? d.target : d.target?.id;
-          const matching = networkData.links.find(l => (typeof l.source === 'string' ? l.source : l.source?.id) === srcId && (typeof l.target === 'string' ? l.target : l.target?.id) === tgtId);
+          const srcId = resolveLinkEndpointId(d.source);
+          const tgtId = resolveLinkEndpointId(d.target);
+          const matching = linkData.find(l => resolveLinkEndpointId(l.source) === srcId && resolveLinkEndpointId(l.target) === tgtId);
           const linkType = (matching && matching.type ? String(matching.type).toLowerCase() : '');
           if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
             return;
           }
-          const srcNode = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-          const tgtNode = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+          const srcNode = getEndpointNode(d.source);
+          const tgtNode = getEndpointNode(d.target);
           const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
           setTimeout(() => {
             setLinkContextMenu({
@@ -5660,7 +6513,7 @@ const attemptLoadSavedView = async () => {
           const t = typeof l.target === 'string' ? l.target : l.target?.id;
           return `${[s, t].sort().join('~')}~${l.type}`;
         };
-        networkData.links.forEach(l => {
+        linkData.forEach(l => {
           const key = pairKey(l);
           if (!groupMap.has(key)) groupMap.set(key, []);
           groupMap.get(key).push(l);
@@ -5670,6 +6523,17 @@ const attemptLoadSavedView = async () => {
         });
         // Convert link source/target to objects if they're strings
         const processedLinks = linkData;
+        const resolveCoords = (endpoint) => {
+          const node =
+            typeof endpoint === 'string'
+              ? nodeById.get(resolveLinkEndpointId(endpoint))
+              : endpoint;
+          if (!node) return null;
+          const x = Number(node.x);
+          const y = Number(node.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y, node };
+        };
 
         // Position links
         link
@@ -5677,14 +6541,15 @@ const attemptLoadSavedView = async () => {
           .attr("stroke-width", d => d.isPath ? 2.5 : 1.5)
           .attr("stroke-opacity", _d => 1)
           .attr("d", d => {
-          const source = d.source;
-          const target = d.target;
-            
+          const source = resolveCoords(d.source);
+          const target = resolveCoords(d.target);
+
           if (!source || !target) return '';
-          
+
           const dx = target.x - source.x;
           const dy = target.y - source.y;
           const distance = Math.sqrt(dx * dx + dy * dy);
+          if (!Number.isFinite(distance) || distance === 0) return '';
           const nodeRadius = 40;
           const baseMargin = d.isPath ? 14 : 16;
           const margin = d.type === 'premiered' ? 8 : baseMargin;
@@ -5704,6 +6569,7 @@ const attemptLoadSavedView = async () => {
           const ny = distance ? dx / distance : 0;
           const mx = (startX + endX) / 2 + nx * offset;
           const my = (startY + endY) / 2 + ny * offset;
+          if (!Number.isFinite(mx) || !Number.isFinite(my)) return '';
 
           return `M${startX},${startY} Q ${mx},${my} ${endX},${endY}`;
         })
@@ -5711,14 +6577,13 @@ const attemptLoadSavedView = async () => {
 
         // Keep hit area in sync with link positions
         linkHit.attr("d", d => {
-          const source = typeof d.source === 'string' ? 
-            networkData.nodes.find(n => n.id === d.source) : d.source;
-          const target = typeof d.target === 'string' ? 
-            networkData.nodes.find(n => n.id === d.target) : d.target;
+          const source = resolveCoords(d.source);
+          const target = resolveCoords(d.target);
           if (!source || !target) return '';
           const dx = target.x - source.x;
           const dy = target.y - source.y;
           const distance = Math.sqrt(dx * dx + dy * dy);
+          if (!Number.isFinite(distance) || distance === 0) return '';
           const nodeRadius = 40;
           const baseMargin = d.isPath ? 14 : 16;
           const margin = d.type === 'premiered' ? 8 : baseMargin;
@@ -5736,14 +6601,15 @@ const attemptLoadSavedView = async () => {
           const ny = distance ? dx / distance : 0;
           const mx = (startX + endX) / 2 + nx * offset;
           const my = (startY + endY) / 2 + ny * offset;
+          if (!Number.isFinite(mx) || !Number.isFinite(my)) return '';
           return `M${startX},${startY} Q ${mx},${my} ${endX},${endY}`;
         });
 
         // Remove arrows and link paths, then redraw from merged link data to avoid stale directions
         g.selectAll(".arrow-group").remove();
         link.attr("d", d => {
-          const source = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-          const target = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+          const source = resolveCoords(d.source);
+          const target = resolveCoords(d.target);
           if (!source || !target) return '';
           const dx = target.x - source.x;
           const dy = target.y - source.y;
@@ -5752,7 +6618,7 @@ const attemptLoadSavedView = async () => {
           const margin = d.isPath ? 15 : 17;
           const adjusted = Math.max(0, margin - 5);
           const adjustedStart = Math.max(0, adjusted - 5);
-          if (distance < 1e-6) {
+          if (!Number.isFinite(distance) || distance < 1e-6) {
             // Self-loop: U-shaped loop below the node, from bottom-right to bottom-left
             const x = source.x;
             const y = source.y;
@@ -5777,18 +6643,20 @@ const attemptLoadSavedView = async () => {
         
         // Create arrows directly for each link
         processedLinks.forEach(linkData => {
-          if (!linkData.source || !linkData.target) return;
+          const source = resolveCoords(linkData.source);
+          const target = resolveCoords(linkData.target);
+          if (!source || !target) return;
           
-          const dx = linkData.target.x - linkData.source.x;
-          const dy = linkData.target.y - linkData.source.y;
+          const dx = target.x - source.x;
+          const dy = target.y - source.y;
           const distance = Math.sqrt(dx * dx + dy * dy);
           
-          if (distance > 0) {
+          if (Number.isFinite(distance) && distance > 0) {
             const nodeRadius = 40;
             const extraBase = linkData.isPath ? 12 : 10;
             const extra = Math.max(0, extraBase - 5);
-            const arrowX = linkData.target.x - (dx / distance) * (nodeRadius + extra);
-            const arrowY = linkData.target.y - (dy / distance) * (nodeRadius + extra);
+            const arrowX = target.x - (dx / distance) * (nodeRadius + extra);
+            const arrowY = target.y - (dy / distance) * (nodeRadius + extra);
             
             const angle = Math.atan2(dy, dx);
             const arrowLength = linkData.isPath ? 10 : 8;
@@ -5813,8 +6681,8 @@ const attemptLoadSavedView = async () => {
             const arrowLength = linkData.isPath ? 10 : 8;
             const sideOffset = 6;
             const loopHeight = 80;
-            const x = linkData.source.x;
-            const y = linkData.source.y;
+            const x = source ? source.x : 0;
+            const y = source ? source.y : 0;
             const cp2x = x - 25;
             const cp2y = y + nodeRadius + loopHeight;
             const arrowX = x - sideOffset;
@@ -5836,10 +6704,8 @@ const attemptLoadSavedView = async () => {
         // Position link labels (directed): center along each edge
         linkLabels
           .attr("x", d => {
-            const source = typeof d.source === 'string' ? 
-              networkData.nodes.find(n => n.id === d.source) : d.source;
-            const target = typeof d.target === 'string' ? 
-              networkData.nodes.find(n => n.id === d.target) : d.target;
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
             if (!source || !target) return 0;
             if (source === target) {
               const nodeRadius = 40;
@@ -5864,10 +6730,8 @@ const attemptLoadSavedView = async () => {
             return (startX + endX) / 2;
           })
           .attr("y", d => {
-            const source = typeof d.source === 'string' ? 
-              networkData.nodes.find(n => n.id === d.source) : d.source;
-            const target = typeof d.target === 'string' ? 
-              networkData.nodes.find(n => n.id === d.target) : d.target;
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
             if (!source || !target) return 0;
             if (source === target) {
               const nodeRadius = 40;
@@ -5894,10 +6758,8 @@ const attemptLoadSavedView = async () => {
           .attr("text-anchor", _d => 'middle')
           // Rotate labels parallel to the link; keep upright and adjust anchor directionality
           .attr("transform", function(d) {
-            const source = typeof d.source === 'string' ? 
-              networkData.nodes.find(n => n.id === d.source) : d.source;
-            const target = typeof d.target === 'string' ? 
-              networkData.nodes.find(n => n.id === d.target) : d.target;
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
             if (!source || !target) return '';
             if (source === target) {
               const attrX = this && this.getAttribute ? parseFloat(this.getAttribute('x')) : NaN;
@@ -5924,8 +6786,8 @@ const attemptLoadSavedView = async () => {
         // Position and size label hit rects (centered on the edge)
         linkLabelHits
           .attr("x", function(d) {
-            const source = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-            const target = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
             if (!source || !target) return -9999;
             const dx = target.x - source.x;
             const dy = target.y - source.y;
@@ -5941,8 +6803,8 @@ const attemptLoadSavedView = async () => {
             return x - w / 2 - 4;
           })
           .attr("y", function(d) {
-            const source = typeof d.source === 'string' ? networkData.nodes.find(n => n.id === d.source) : d.source;
-            const target = typeof d.target === 'string' ? networkData.nodes.find(n => n.id === d.target) : d.target;
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
             if (!source || !target) return -9999;
             const dx = target.x - source.x;
             const dy = target.y - source.y;
@@ -5975,23 +6837,29 @@ const attemptLoadSavedView = async () => {
         applyLongPressHandlers();
       };
       // Create simulation for initial positioning only - controlled by shouldRunSimulation flag
+      const nodesForSimulation = (networkData.nodes || []).filter(node => node && nodeById.has(node.id));
+      if (!nodesForSimulation.length) {
+        try { console.warn('[cmg-debug] Aborting simulation; no eligible nodes after filtering.'); } catch (_) {}
+        return;
+      }
+
       if (shouldRunSimulation) {
         // Apply anti-overlap positioning if nodes don't have valid positions
-        const needsPositioning = networkData.nodes.some(node => 
+        const needsPositioning = nodesForSimulation.some(node => 
           !node.x || !node.y || node.x < 50 || node.x > width - 50 || node.y < 50 || node.y > height - 50
         );
         
         if (needsPositioning) {
           // Reset positions for anti-overlap system
-          networkData.nodes.forEach(node => {
+          nodesForSimulation.forEach(node => {
             node.x = 0;
             node.y = 0;
           });
-          positionNodesWithoutOverlap(networkData.nodes, width, height);
+          positionNodesWithoutOverlap(nodesForSimulation, width, height);
         }
         
         // Reset simulation properties
-        networkData.nodes.forEach(node => {
+        nodesForSimulation.forEach(node => {
           node.fx = null;
           node.fy = null;
           node.vx = 0; // Reset velocity
@@ -5999,16 +6867,16 @@ const attemptLoadSavedView = async () => {
         });
 
         try {
-          const hasPinnedNodes = networkData.nodes.some(n => n && n.userPlaced);
+          const hasPinnedNodes = nodesForSimulation.some(n => n && n.userPlaced);
           // Analyze network structure to adjust force parameters
-          const nodeTypes = networkData.nodes.reduce((acc, node) => {
+          const nodeTypes = nodesForSimulation.reduce((acc, node) => {
             acc[node.type] = (acc[node.type] || 0) + 1;
             return acc;
           }, {});
           
           const hasOperas = nodeTypes.opera > 0;
           const hasBooks = nodeTypes.book > 0;
-          const nodeCount = networkData.nodes.length;
+          const nodeCount = nodesForSimulation.length;
           
           // Adjust forces based on network composition
           let linkDistance = 140;
@@ -6045,8 +6913,8 @@ const attemptLoadSavedView = async () => {
           const simulationAlphaMin = isExpansion ? 0.003 : 0.008;   // Lower minimum for more iterations
           const simulationVelocityDecay = isExpansion ? 0.35 : 0.55; // Lower velocity decay for smoother settle
 
-          const simulation = d3.forceSimulation(networkData.nodes)
-            .force("link", d3.forceLink(networkData.links)
+          const simulation = d3.forceSimulation(nodesForSimulation)
+            .force("link", d3.forceLink(linkData)
               .id(d => d.id)
               .distance(l => {
                 const sPlaced = !!(l.source && l.source.userPlaced);
@@ -6095,7 +6963,7 @@ const attemptLoadSavedView = async () => {
                 try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
               }, 0);
               try {
-                networkData.nodes.forEach(node => {
+                nodesForSimulation.forEach(node => {
                   if (!node) return;
                   if (!node.userPlaced) {
                     node.fx = node.x;
@@ -6126,7 +6994,7 @@ const attemptLoadSavedView = async () => {
               try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
             }, 0);
             try {
-              networkData.nodes.forEach(node => {
+              nodesForSimulation.forEach(node => {
                 if (!node) return;
                 if (!node.userPlaced) {
                   node.fx = node.x;
@@ -6142,6 +7010,79 @@ const attemptLoadSavedView = async () => {
           
         } catch (error) {
           console.error("❌ Error creating simulation:", error);
+          try {
+            if (error && typeof error.message === 'string' && error.message.includes('node not found')) {
+              const missingMatch = error.message.match(/node not found:\s*(.+)$/i);
+              const missingIdRaw = missingMatch && missingMatch[1] ? missingMatch[1].trim() : null;
+              const normalizedMissing = missingIdRaw ? normalizeNodeId(missingIdRaw) : '';
+              const nodeIdsSnapshot = (networkData.nodes || []).map(n => n?.id).filter(Boolean);
+              const linkSnapshot = (networkData.links || []).map(l => ({
+                source: typeof l?.source === 'string' ? l.source : l?.source?.id ?? l?.source?.name ?? '',
+                target: typeof l?.target === 'string' ? l.target : l?.target?.id ?? l?.target?.name ?? '',
+                type: l?.type || '',
+                label: l?.label || ''
+              }));
+              const offendingLinks = linkSnapshot.filter(l => {
+                const s = normalizeNodeId(l.source);
+                const t = normalizeNodeId(l.target);
+                return (
+                  (missingIdRaw && (l.source || '').includes(missingIdRaw)) ||
+                  (missingIdRaw && (l.target || '').includes(missingIdRaw)) ||
+                  (normalizedMissing && (s === normalizedMissing || t === normalizedMissing))
+                );
+              });
+        const diagPayload = {
+                missingIdRaw,
+                normalizedMissing,
+                nodeCount: nodeIdsSnapshot.length,
+                hasMissingNode: normalizedMissing ? nodeIdsSnapshot.includes(normalizedMissing) : false,
+                offendingLinks,
+                rawLinkSnapshot: linkSnapshot.slice(0, 20),
+                sampleNodes: nodeIdsSnapshot.slice(0, 20)
+              };
+              console.warn('[cmg-debug] Simulation missing node diagnostics', diagPayload);
+              try {
+                if (window && typeof window === 'object') {
+                  window.__cmg_debugPayloads = window.__cmg_debugPayloads || [];
+                  window.__cmg_debugPayloads.push({
+                    timestamp: Date.now(),
+                    kind: 'simulation-missing-node',
+                    data: diagPayload
+                  });
+                  window.__cmg_lastNetworkOnError = {
+                    nodes: Array.isArray(networkData.nodes) ? [...networkData.nodes] : [],
+                    links: Array.isArray(networkData.links) ? [...networkData.links] : []
+                  };
+                }
+              } catch (_) {}
+              if (normalizedMissing) {
+                try {
+                  setNetworkData(prev => {
+                    if (!prev) return prev;
+                    const filteredNodes = (prev.nodes || []).filter(node => normalizeNodeId(node?.id ?? node?.name) !== normalizedMissing);
+                    const filteredLinks = (prev.links || []).filter(link => {
+                      const srcId = normalizeNodeId(resolveLinkEndpointId(link?.source));
+                      const tgtId = normalizeNodeId(resolveLinkEndpointId(link?.target));
+                      if (!srcId || !tgtId) return false;
+                      if (srcId === normalizedMissing || tgtId === normalizedMissing) return false;
+                      return true;
+                    });
+                    const cleaned = sanitizeGraphData({ nodes: filteredNodes, links: filteredLinks });
+                    console.warn('[cmg-debug] Removed links/nodes referencing missing id after simulation error', {
+                      normalizedMissing,
+                      removedLinkDelta: (prev.links || []).length - (cleaned.links || []).length,
+                      removedNodeDelta: (prev.nodes || []).length - (cleaned.nodes || []).length
+                    });
+                    return cleaned;
+                  });
+                } catch (cleanupErr) {
+                  console.warn('[cmg-debug] Failed to clean up after simulation missing node error', cleanupErr);
+                }
+              }
+            }
+          } catch (diagErr) {
+            console.warn('[cmg-debug] Failed to collect simulation diagnostics', diagErr);
+          }
           isSimulationActiveRef.current = false;
           setShouldRunSimulation(false);
         }
@@ -6154,9 +7095,9 @@ const attemptLoadSavedView = async () => {
           const defaultChargeStrength = -1100;
           baseChargeStrengthRef.current = defaultChargeStrength;
           const defaultCollisionRadius = 60;
-          const hasPinnedNodes = networkData.nodes.some(n => n && n.userPlaced);
-          const simulation = d3.forceSimulation(networkData.nodes)
-            .force("link", d3.forceLink(networkData.links)
+          const hasPinnedNodes = nodesForSimulation.some(n => n && n.userPlaced);
+          const simulation = d3.forceSimulation(nodesForSimulation)
+            .force("link", d3.forceLink(linkData)
               .id(d => d.id)
               .distance(l => {
                 const sPlaced = !!(l.source && l.source.userPlaced);
@@ -6189,7 +7130,7 @@ const attemptLoadSavedView = async () => {
           simulation.on("tick", () => { renderNetwork(); });
           simulation.stop();
           try {
-            networkData.nodes.forEach(node => {
+            nodesForSimulation.forEach(node => {
               if (!node) return;
               if (!node.userPlaced) {
                 node.fx = node.x;
@@ -6523,7 +7464,8 @@ const attemptLoadSavedView = async () => {
                   padding: '12px 16px 12px 12px',
                   boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
                   zIndex: 1000,
-                  minWidth: '260px',
+                  minWidth: '320px',
+                  maxWidth: '440px',
                   fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
                   fontSize: '16px'
                 }}
@@ -6559,7 +7501,7 @@ const attemptLoadSavedView = async () => {
                   </>
                 )}
                 <div style={{ color: '#374151' }}>
-                  <strong>Source:</strong> {formatRelationshipSource(linkContextMenu.source)}
+                  <strong>Relationship source:</strong> {formatRelationshipSource(linkContextMenu.source)}
                 </div>
               </div>
             )}
@@ -6588,16 +7530,61 @@ const attemptLoadSavedView = async () => {
                       wasAddedByPath: false
                     }))
                   };
+                  if (pathApiUnavailableRef.current) {
+                    throw new Error('Path finding is currently unavailable.');
+                  }
                   const payload = { from, to, maxHops: 8 };
                   const resp = await fetchWithRetry(`${API_BASE}/path/find`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                     body: JSON.stringify(payload)
                   }, { retries: 2, baseDelay: 600 });
+                  if (!resp) {
+                    throw new Error('No response from path service');
+                  }
+                  if (resp.status === 404) {
+                    pathApiUnavailableRef.current = true;
+                    throw new Error('Path finding is currently unavailable.');
+                  }
                   const data = await resp.json();
                   if (!resp.ok) throw new Error(data.error || 'Failed');
+                  const rawPathNodes = Array.isArray(data.nodes) ? data.nodes : [];
+                  const sanitizedPathNodes = rawPathNodes
+                    .map(node => {
+                      const normalizedId = normalizeNodeId(node?.id ?? node?.name);
+                      if (!normalizedId || isPlaceholderName(normalizedId)) return null;
+                      return {
+                        ...node,
+                        id: normalizedId,
+                        name: node?.name ? String(node.name).trim() || normalizedId : normalizedId
+                      };
+                    })
+                    .filter(Boolean);
+                  const pathNodeIdSet = new Set(sanitizedPathNodes.map(n => n.id));
+                  const rawPathLinks = Array.isArray(data.links) ? data.links : [];
+                  const sanitizedPathLinks = rawPathLinks
+                    .map(link => {
+                      const sourceId = resolveLinkEndpointId(link?.source);
+                      const targetId = resolveLinkEndpointId(link?.target);
+                      if (
+                        !sourceId ||
+                        !targetId ||
+                        isPlaceholderName(sourceId) ||
+                        isPlaceholderName(targetId) ||
+                        !pathNodeIdSet.has(sourceId) ||
+                        !pathNodeIdSet.has(targetId)
+                      ) {
+                        return null;
+                      }
+                      return {
+                        ...link,
+                        source: sourceId,
+                        target: targetId
+                      };
+                    })
+                    .filter(Boolean);
                   const normalizedPathLinks = normalizeLinks(
-                    Array.isArray(data.links) ? data.links.map(link => ({ ...link })) : []
+                    sanitizedPathLinks.map(link => ({ ...link }))
                   );
                   const normalizedSteps = Array.isArray(data.steps)
                     ? data.steps.map(step => {
@@ -6616,7 +7603,7 @@ const attemptLoadSavedView = async () => {
                         };
                       })
                     : [];
-                  setPathInfo({ nodes: data.nodes, links: normalizedPathLinks, steps: normalizedSteps });
+                  setPathInfo({ nodes: sanitizedPathNodes, links: normalizedPathLinks, steps: normalizedSteps });
                   // Show the path on the graph by merging nodes/links and highlighting the path
                   const existingNodeMap = new Map();
                   networkData.nodes.forEach(existingNode => {
@@ -6633,7 +7620,7 @@ const attemptLoadSavedView = async () => {
                   const existingLinkKeys = new Set(
                     networkData.links.map(l => `${typeof l.source === 'string' ? l.source : l.source?.id}-${typeof l.target === 'string' ? l.target : l.target?.id}-${l.type}`)
                   );
-                  const pathNodeIds = new Set(data.nodes.map(n => n.id));
+                  const pathNodeIds = new Set(sanitizedPathNodes.map(n => n.id));
 
                   // Prepare merged nodes
                   const mergedNodes = [...networkData.nodes];
@@ -6648,7 +7635,7 @@ const attemptLoadSavedView = async () => {
                   };
                   // Build neighbor map from path links
                   const pathNeighbors = new Map();
-                  data.links.forEach(l => {
+                  sanitizedPathLinks.forEach(l => {
                     if (!pathNeighbors.has(l.source)) pathNeighbors.set(l.source, new Set());
                     if (!pathNeighbors.has(l.target)) pathNeighbors.set(l.target, new Set());
                     pathNeighbors.get(l.source).add(l.target);
@@ -6688,7 +7675,7 @@ const attemptLoadSavedView = async () => {
                     const radius = 90;
                     return { x: (neighbor.x || 300) + Math.cos(angle) * radius, y: (neighbor.y || 300) + Math.sin(angle) * radius };
                   };
-                  data.nodes.forEach(rawNode => {
+                  sanitizedPathNodes.forEach(rawNode => {
                     const canonicalNode = normalizePersonNode(rawNode);
                     if (!canonicalNode?.id) return;
                     if (!existingNodeMap.has(canonicalNode.id)) {
@@ -6725,9 +7712,11 @@ const attemptLoadSavedView = async () => {
 
                   // Prefetch person details for path endpoints so we can attach relationship sources
                   try {
-                    const pathPersonNames = Array.from(new Set((data.nodes || [])
-                      .filter(n => n && n.type === 'person' && n.id)
-                      .map(n => n.id)));
+                    const pathPersonNames = Array.from(new Set(
+                      sanitizedPathNodes
+                        .filter(n => n && n.type === 'person' && n.id)
+                        .map(n => n.id)
+                    ));
                     await Promise.all(pathPersonNames.map(nm => fetchAndCachePersonDetails(nm)));
                   } catch (_) {}
 
@@ -6772,14 +7761,14 @@ const attemptLoadSavedView = async () => {
                     if (el.type === 'premiered' || el.type === 'composed' || el.type === 'authored' || el.type === 'edited') workPairs.add(`${s}->${t}`);
                     if (el.type === 'family') familyPairs.add(`${s}->${t}`);
                   });
-                  data.links.forEach(l => {
+                  sanitizedPathLinks.forEach(l => {
                     let src = l.source;
                     let trg = l.target;
                     const type = l.type;
 
                     // Enforce canonical orientation per relationship using existing graph as source of truth
-                    const sourceNode = existingNodeMap.get(src) || data.nodes.find(n => n.id === src);
-                    const targetNode = existingNodeMap.get(trg) || data.nodes.find(n => n.id === trg);
+                    const sourceNode = existingNodeMap.get(src) || sanitizedPathNodes.find(n => n.id === src);
+                    const targetNode = existingNodeMap.get(trg) || sanitizedPathNodes.find(n => n.id === trg);
                     const isWorkType = type === 'premiered' || type === 'wrote' || type === 'composed' || type === 'authored' || type === 'edited';
                     if (type === 'taught') {
                       if (teacherPairs.has(`${src}->${trg}`)) {
@@ -6903,11 +7892,11 @@ const attemptLoadSavedView = async () => {
 
                   // Mark nodes in path
                   mergedNodes.forEach(n => { if (pathNodeIds.has(n.id)) n.isPath = true; });
-                  setNetworkData({ nodes: mergedNodes, links: normalizeLinks(mergedLinks) });
+                  setNetworkData(sanitizeGraphData({ nodes: mergedNodes, links: mergedLinks }));
                   const pathPersons = mergedNodes.filter(n => n && n.type === 'person' && pathNodeIds.has(n.id));
                   extendDateRangesForNodes(pathPersons, { resetUserRangeFlags: true });
                   // Enrich newly added path person nodes so CSV has full details
-                  const newPersonNames = (data.nodes || [])
+                  const newPersonNames = sanitizedPathNodes
                     .filter(n => n && n.type === 'person')
                     .map(n => n.id)
                     .filter(Boolean);
@@ -7067,10 +8056,12 @@ const attemptLoadSavedView = async () => {
                         pathOverlayRef.current.addedNodeIds = new Set();
                         pathOverlayRef.current.addedLinkKeys = new Set();
                         // Restore network as it was before path overlay (and any expansions after)
-                        setNetworkData({
-                          nodes: snapshot.nodes.map(n => ({ ...n, isPath: false, wasAddedByPath: false })),
-                          links: snapshot.links.map(l => ({ ...l, isPath: false, wasAddedByPath: false }))
-                        });
+                        setNetworkData(
+                          sanitizeGraphData({
+                            nodes: snapshot.nodes.map(n => ({ ...n, isPath: false, wasAddedByPath: false })),
+                            links: snapshot.links.map(l => ({ ...l, isPath: false, wasAddedByPath: false }))
+                          })
+                        );
                         // Clear snapshot so next path overlay will re-snapshot
                         prePathNetworkRef.current = null;
                         setShouldRunSimulation(false);
@@ -7090,7 +8081,7 @@ const attemptLoadSavedView = async () => {
                             .map(l => ({ ...l, isPath: false, wasAddedByPath: false }));
                           pathOverlayRef.current.addedNodeIds = new Set();
                           pathOverlayRef.current.addedLinkKeys = new Set();
-                          return { nodes: remainingNodes, links: remainingLinks };
+                          return sanitizeGraphData({ nodes: remainingNodes, links: remainingLinks });
                         });
                       }
                     }}
@@ -7375,7 +8366,66 @@ const attemptLoadSavedView = async () => {
       return actualCounts[node.id];
     }
 
+    const coerceCount = (value) => {
+      const num = Number(value);
+      return Number.isFinite(num) && num >= 0 ? num : 0;
+    };
+
     try {
+      let countsFromCountsEndpoint = null;
+
+      if (
+        !relationshipCountsUnavailableRef.current &&
+        (node.type === 'person' || node.type === 'opera' || node.type === 'book')
+      ) {
+        try {
+          const response = await fetchWithRetry(`${API_BASE}/node/relationship-counts`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ nodeType: node.type, nodeName: node.name })
+          }, { retries: 1, baseDelay: 400 });
+
+          if (response) {
+            if (response.status === 404) {
+              relationshipCountsUnavailableRef.current = true;
+            } else if (response.ok) {
+              const payload = await response.json();
+              if (payload && payload.counts) {
+                const countsPayload = payload.counts;
+                countsFromCountsEndpoint = {
+                  taughtBy: coerceCount(countsPayload.taughtBy),
+                  taught: coerceCount(countsPayload.taught),
+                  authored: coerceCount(countsPayload.authored),
+                  premieredRoleIn: coerceCount(countsPayload.premieredRoleIn),
+                  wrote: coerceCount(countsPayload.wrote),
+                  parent: coerceCount(countsPayload.parent),
+                  parentOf: coerceCount(countsPayload.parentOf),
+                  spouse: coerceCount(countsPayload.spouse),
+                  grandparent: coerceCount(countsPayload.grandparent),
+                  grandparentOf: coerceCount(countsPayload.grandparentOf),
+                  sibling: coerceCount(countsPayload.sibling),
+                  edited: coerceCount(countsPayload.edited),
+                  editedBy: coerceCount(countsPayload.editedBy)
+                };
+              }
+            }
+          }
+        } catch (countErr) {
+          if (countErr && countErr.status === 404) {
+            relationshipCountsUnavailableRef.current = true;
+          }
+          // Fall through to legacy detail endpoints on failures
+        }
+      }
+
+      if (countsFromCountsEndpoint) {
+        setActualCounts(prev => ({ ...prev, [node.id]: countsFromCountsEndpoint }));
+        return countsFromCountsEndpoint;
+      }
+
       let response, data;
       
       if (node.type === 'person') {
@@ -7795,12 +8845,24 @@ const attemptLoadSavedView = async () => {
      ];
    }, [nodeId, isNodeAlone, counts]);
 
-   if (!contextMenu.show) return null;
+    if (!contextMenu.show) return null;
 
-   const dismissMenu = () => {
-     setContextMenu({ show: false, x: 0, y: 0, node: null });
-     setExpandSubmenu(null);
-   };
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const BASE_MENU_WIDTH = 280;
+    const SUBMENU_WIDTH = 320;
+    const SUBMENU_OVERLAP = 24;
+    const contextMenuRightEdge = contextMenu.x + BASE_MENU_WIDTH;
+    const shouldFlipSubmenu =
+      viewportWidth > 0 &&
+      contextMenuRightEdge + SUBMENU_WIDTH > viewportWidth - 16;
+    const submenuOffsetStyle = shouldFlipSubmenu
+      ? { right: `calc(100% - ${SUBMENU_OVERLAP}px)` }
+      : { left: `calc(100% - ${SUBMENU_OVERLAP}px)` };
+
+    const dismissMenu = () => {
+      setContextMenu({ show: false, x: 0, y: 0, node: null });
+      setExpandSubmenu(null);
+    };
 
    return (
       <div
@@ -7901,7 +8963,7 @@ const attemptLoadSavedView = async () => {
               <div
                 style={{
                   position: 'absolute',
-                  left: '100%',
+                  ...submenuOffsetStyle,
                   top: '0',
                   backgroundColor: 'white',
                   border: '2px solid #3e96e2',
@@ -7974,10 +9036,10 @@ const attemptLoadSavedView = async () => {
     const [deathMinInput, setDeathMinInput] = useState(String(deathYearRange[0]));
     const [deathMaxInput, setDeathMaxInput] = useState(String(deathYearRange[1]));
     const contentRef = useRef(null);
-    const [isVoiceOpen, setIsVoiceOpen] = useState(false);
-    const [isBirthOpen, setIsBirthOpen] = useState(false);
-    const [isDeathOpen, setIsDeathOpen] = useState(false);
-    const [isBirthplacesOpen, setIsBirthplacesOpen] = useState(false);
+    const isVoiceOpen = filterSectionsOpen.voice;
+    const isBirthOpen = filterSectionsOpen.birth;
+    const isDeathOpen = filterSectionsOpen.death;
+    const isBirthplacesOpen = filterSectionsOpen.birthplaces;
 
     useLayoutEffect(() => {
       // Sync inputs when ranges or panel visibility changes
@@ -8194,8 +9256,17 @@ const attemptLoadSavedView = async () => {
             <div style={{ marginBottom: '24px' }}>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setIsVoiceOpen(open => !open); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setIsVoiceOpen(open => !open); } }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFilterSectionsOpen(prev => ({ ...prev, voice: !prev.voice }));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFilterSectionsOpen(prev => ({ ...prev, voice: !prev.voice }));
+                  }
+                }}
                 style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '8px 0', gap: '10px', background: 'none', border: 'none', width: '100%', textAlign: 'left' }}
               >
                 <span style={{ color: '#374151', fontSize: '22px', lineHeight: 1 }}>{isVoiceOpen ? '▾' : '▸'}</span>
@@ -8256,23 +9327,17 @@ const attemptLoadSavedView = async () => {
             <div style={{ marginBottom: '24px' }}>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setIsVoiceOpen(open => open); }}
-                style={{ display: 'none' }}
-              />
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setIsBirthOpen(open => open); }}
-                style={{ display: 'none' }}
-              />
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setIsDeathOpen(open => open); }}
-                style={{ display: 'none' }}
-              />
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setIsBirthplacesOpen(open => !open); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setIsBirthplacesOpen(open => !open); } }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFilterSectionsOpen(prev => ({ ...prev, birthplaces: !prev.birthplaces }));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFilterSectionsOpen(prev => ({ ...prev, birthplaces: !prev.birthplaces }));
+                  }
+                }}
                 style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '8px 0', gap: '10px', background: 'none', border: 'none', width: '100%', textAlign: 'left' }}
               >
                 <span style={{ color: '#374151', fontSize: '22px', lineHeight: 1 }}>{isBirthplacesOpen ? '▾' : '▸'}</span>
@@ -8301,8 +9366,17 @@ const attemptLoadSavedView = async () => {
             <div style={{ marginBottom: '24px' }}>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setIsBirthOpen(open => !open); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setIsBirthOpen(open => !open); } }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFilterSectionsOpen(prev => ({ ...prev, birth: !prev.birth }));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFilterSectionsOpen(prev => ({ ...prev, birth: !prev.birth }));
+                  }
+                }}
                 style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '8px 0', gap: '10px', background: 'none', border: 'none', width: '100%', textAlign: 'left' }}
               >
                 <span style={{ color: '#374151', fontSize: '22px', lineHeight: 1 }}>{isBirthOpen ? '▾' : '▸'}</span>
@@ -8317,8 +9391,14 @@ const attemptLoadSavedView = async () => {
                     inputMode="numeric"
                     value={birthMinInput}
                     onChange={(e) => setBirthMinInput(e.target.value)}
-                    onBlur={() => {}}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } }}
+                    onBlur={applyBirthRange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applyBirthRange();
+                      }
+                    }}
                     onMouseDown={(e) => {
                       const scrollContainer = e.target.closest('div[style*="overflowY"]') || e.target.closest('[style*="overflow-y"]');
                       if (scrollContainer) {
@@ -8362,8 +9442,14 @@ const attemptLoadSavedView = async () => {
                     inputMode="numeric"
                     value={birthMaxInput}
                     onChange={(e) => setBirthMaxInput(e.target.value)}
-                    onBlur={() => {}}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } }}
+                    onBlur={applyBirthRange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applyBirthRange();
+                      }
+                    }}
                     onMouseDown={(e) => {
                       const scrollContainer = e.target.closest('div[style*="overflowY"]') || e.target.closest('[style*="overflow-y"]');
                       if (scrollContainer) {
@@ -8407,8 +9493,17 @@ const attemptLoadSavedView = async () => {
             <div style={{ marginBottom: '24px' }}>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setIsDeathOpen(open => !open); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setIsDeathOpen(open => !open); } }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFilterSectionsOpen(prev => ({ ...prev, death: !prev.death }));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFilterSectionsOpen(prev => ({ ...prev, death: !prev.death }));
+                  }
+                }}
                 style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', padding: '8px 0', gap: '10px', background: 'none', border: 'none', width: '100%', textAlign: 'left' }}
               >
                 <span style={{ color: '#374151', fontSize: '22px', lineHeight: 1 }}>{isDeathOpen ? '▾' : '▸'}</span>
@@ -8423,8 +9518,14 @@ const attemptLoadSavedView = async () => {
                     inputMode="numeric"
                     value={deathMinInput}
                     onChange={(e) => setDeathMinInput(e.target.value)}
-                    onBlur={() => {}}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } }}
+                    onBlur={applyDeathRange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applyDeathRange();
+                      }
+                    }}
                     onMouseDown={(e) => {
                       const scrollContainer = e.target.closest('div[style*="overflowY"]') || e.target.closest('[style*="overflow-y"]');
                       if (scrollContainer) {
@@ -8468,8 +9569,14 @@ const attemptLoadSavedView = async () => {
                     inputMode="numeric"
                     value={deathMaxInput}
                     onChange={(e) => setDeathMaxInput(e.target.value)}
-                    onBlur={() => {}}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } }}
+                    onBlur={applyDeathRange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applyDeathRange();
+                      }
+                    }}
                     onMouseDown={(e) => {
                       const scrollContainer = e.target.closest('div[style*="overflowY"]') || e.target.closest('[style*="overflow-y"]');
                       if (scrollContainer) {
@@ -8909,7 +10016,7 @@ const attemptLoadSavedView = async () => {
         <div {...cardProps}>
           <div className={isMobileViewport ? 'mobile-auth-title' : undefined} style={isMobileViewport ? undefined : { textAlign: 'center', marginBottom: '18px' }}>
             <h1 style={{ fontSize: isMobileViewport ? '26px' : '28px', fontWeight: 'bold', color: '#111', margin: '8px 0 16px 0' }}>
-              The Opera Singer <br /> Aspen Grove
+              The Aspen Grove <br /> of Opera Singers
             </h1>
             <div style={{ display: 'inline-block', backgroundColor: '#ffffff', padding: isMobileViewport ? '8px 14px' : '8px 12px', borderRadius: isMobileViewport ? '12px' : '8px' }}>
               <div style={{ fontSize: '16px', fontWeight: '600', color: '#111', lineHeight: 1.35, textAlign: 'center' }}>
@@ -9198,7 +10305,7 @@ const attemptLoadSavedView = async () => {
                 I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
               </p>
               <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
-                If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know.</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank">this form</a>, and I will incorporate it as quickly as I can.
+                If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank">this form</a>, and I will incorporate it as quickly as I can.
               </p>
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 14, color: '#111' }}>
@@ -9256,22 +10363,15 @@ const attemptLoadSavedView = async () => {
             {currentView === 'network' && null}
             
             {currentView === 'network' && (
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-start', alignItems: 'stretch' }}>
-                {/* Full menu: Search, Back, Forward, Filters, Path */}
-            <button
-              onClick={() => setCurrentView('search')}
-              style={{
-                padding: '8px 16px',
-                    backgroundColor: '#f3f4f6',
-                    color: '#374151',
-                    border: '2px solid #3e96e2',
-                borderRadius: '8px',
-                    cursor: 'pointer',
-                    fontSize: '16px'
-              }}
-            >
-              Search
-            </button>
+              <div
+                style={{
+                  display: 'flex',
+                  columnGap: 8,
+                  justifyContent: 'flex-start',
+                  alignItems: 'stretch'
+                }}
+              >
+                {/* Navigation buttons: Back, Forward, Filters, Path */}
                 <button
                   onClick={() => { goBack(); }}
                   disabled={historyCounts.past === 0}
@@ -9339,21 +10439,21 @@ const attemptLoadSavedView = async () => {
                   </span>
                 )}
               </button>
-              <button
-                onClick={() => { setCurrentView('network'); setShowPathPanel(v => !v); }}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: '#ffffff',
-                  color: '#374151',
-                  border: '2px solid #3e96e2',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '16px',
-                  opacity: 1
-                }}
-              >
-                Path
-              </button>
+                <button
+                  onClick={() => { setCurrentView('network'); setShowPathPanel(v => !v); }}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#ffffff',
+                    color: '#374151',
+                    border: '2px solid #3e96e2',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '16px',
+                    opacity: 1
+                  }}
+                >
+                  Path
+                </button>
               </div>
             )}
 
@@ -9398,6 +10498,7 @@ const attemptLoadSavedView = async () => {
                 setToken('');
                 clearStoredToken();
                 setCurrentView('search');
+                setHasExecutedSearch(false);
               }}
               style={{
                 backgroundColor: '#ffffff',
@@ -9614,7 +10715,7 @@ const attemptLoadSavedView = async () => {
                   )}
                   <button
                     ref={logoutBtnRef}
-                    onClick={() => { setToken(''); clearStoredToken(); setCurrentView('search'); }}
+                    onClick={() => { setToken(''); clearStoredToken(); setCurrentView('search'); setHasExecutedSearch(false); }}
                     style={{ backgroundColor: '#ffffff', color: '#374151', padding: '8px 16px', height: '48px', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box', opacity: 1, fontSize: '16px' }}
                   >
                     Logout
@@ -9641,7 +10742,6 @@ const attemptLoadSavedView = async () => {
                 )}
                 {currentView === 'network' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button onClick={() => setCurrentView('search')} style={{ padding: '8px 16px', backgroundColor: '#f3f4f6', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>Search</button>
                     <button onClick={() => { goBack(); }} disabled={historyCounts.past === 0} title={historyCounts.past ? `Back (${historyCounts.past})` : 'Back'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.past ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
                       <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
                         <span>Back</span>
@@ -9757,7 +10857,6 @@ const attemptLoadSavedView = async () => {
               )}
               {currentView === 'network' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <button type="button" onClick={() => { setCurrentView('search'); setShowHeaderMenu(false); }} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}>Search</button>
                   <button type="button" onClick={() => { goBack(); }} disabled={historyCounts.past === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.past ? 'pointer' : 'not-allowed', opacity: historyCounts.past ? 1 : 0.6 }}>Back</button>
                   <button type="button" onClick={() => { goForward(); }} disabled={historyCounts.future === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.future ? 'pointer' : 'not-allowed', opacity: historyCounts.future ? 1 : 0.6 }}>Forward</button>
                   <button type="button" onClick={() => { setShowFilterPanel(true); setShowHeaderMenu(false); }} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'center', gap: 8 }}>
@@ -9778,6 +10877,7 @@ const attemptLoadSavedView = async () => {
                   clearStoredToken();
                   setCurrentView('search');
                   setShowHeaderMenu(false);
+                  setHasExecutedSearch(false);
                 }}
                 style={{
                   padding: '12px 16px',
@@ -9822,7 +10922,8 @@ const attemptLoadSavedView = async () => {
                     setSelectedItem(null);
                     setError('');
                     setSearchQuery('');
-                    setNetworkData({ nodes: [], links: [] });
+                    setNetworkData(sanitizeGraphData({ nodes: [], links: [] }));
+                    setHasExecutedSearch(false);
                   }}
                   style={{
                     padding: '10px 16px',
@@ -10196,13 +11297,13 @@ const attemptLoadSavedView = async () => {
                 <details style={{ backgroundColor: '#f6faff', border: '2px solid #cbdaf7', borderRadius: '12px', padding: '16px 20px' }}>
                   <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Project overview</summary>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    As a lover of nature, when my family and I moved to the west, I was amazed to learn that aspen trees in a grove are all one organism. They are rhizomatic - that is, they all grow from the same system of roots. We can trace the beginning of trained, classical singing to the Florentine Camerata, and in this manner of thinking, all classical singers share the same origins. This site is my attempt to show our vast interconnectedness.
+                    When my family and I moved to the mountain west, I was amazed to learn that aspen trees in a grove are all one organism. They are rhizomatic - that is, they all grow from the same system of roots. We can trace the beginning of trained, classical singing to the Florentine Camerata, and in this manner of thinking, all classical singers share the same system of roots, too. This site is my attempt to show our vast interconnectedness.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who these incredible teachers were. Like <a href="https://www.songhelix.com" target="_blank">SongHelix</a> (released in 2019), I wanted to make a useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. When Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequenlty another language's version will have different information from the English version.
+                    From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who their teachers were. Like <a href="https://www.songhelix.com" target="_blank">SongHelix</a> (released in 2019), I wanted to make another useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. Note that when Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequently another language's version will have different information from the English version.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been <i>created</i> through the use of AI.
+                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, APIs, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been <i>created</i> through the use of AI.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
                     For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
@@ -10759,7 +11860,7 @@ const attemptLoadSavedView = async () => {
                 }}>
                   <div style={{ height: '100%', overflowY: 'auto', padding: '20px 16px 20px 20px' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
-                    {(() => { const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : []; return `👨‍👩‍👧‍👦 Family (${fam.length})`; })()}
+                    {(() => { const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : []; return `👤 Family (${fam.length})`; })()}
                   </h3>
                   {(() => { const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : []; return fam; })().map((relative, index) => (
                     <div 

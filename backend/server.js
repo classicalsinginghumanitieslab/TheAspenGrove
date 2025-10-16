@@ -95,6 +95,20 @@ const driver = uriHasEncryptionScheme
       { encrypted: NEO4J_ENCRYPTION === 'on' ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF' }
     );
 
+const toPlainNumber = (value, defaultValue = 0) => {
+  if (value === null || value === undefined) return defaultValue;
+  if (typeof neo4j.isInt === 'function' && neo4j.isInt(value)) {
+    try {
+      return value.toNumber();
+    } catch (_) {
+      return defaultValue;
+    }
+  }
+  if (typeof value === 'number') return value;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : defaultValue;
+};
+
 // In-memory cache for pathfinding results
 // Key format: `${fromNorm}|${toNorm}|${hops}` where names are lowercased & diacritics removed
 const PATH_CACHE_TTL_MS = parseInt(process.env.PATH_CACHE_TTL_MS || '600000', 10); // 10 minutes
@@ -862,6 +876,175 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Singer network error:', error);
     res.status(500).json({ error: 'Failed to fetch singer network' });
+  } finally {
+    await session.close();
+  }
+});
+
+app.post('/node/relationship-counts', authenticateToken, async (req, res) => {
+  const session = driver.session();
+  try {
+    const { nodeType, nodeName } = req.body || {};
+    const trimmedType = typeof nodeType === 'string' ? nodeType.trim().toLowerCase() : '';
+    const trimmedName = typeof nodeName === 'string' ? nodeName.trim() : '';
+
+    if (!trimmedType || !trimmedName) {
+      return res.status(400).json({ error: 'nodeType and nodeName are required' });
+    }
+
+    if (trimmedType === 'person') {
+      const result = await session.run(
+        `
+        MATCH (s:Person {full_name: $name})
+        WITH s
+        OPTIONAL MATCH (s)<-[:TAUGHT]-(teacher:Person)
+        WITH s, count(DISTINCT teacher) AS taughtBy
+        OPTIONAL MATCH (s)-[:TAUGHT]->(student:Person)
+        WITH s, taughtBy, count(DISTINCT student) AS taught
+        OPTIONAL MATCH (s)-[:AUTHORED]->(book:Book)
+        WITH s, taughtBy, taught, count(DISTINCT book) AS authored
+        OPTIONAL MATCH (s)-[:EDITED]->(editedBook:Book)
+        WITH s, taughtBy, taught, authored, count(DISTINCT editedBook) AS edited
+        OPTIONAL MATCH (s)-[:PREMIERED_ROLE_IN]->(premOpera:Opera)
+        WITH s, taughtBy, taught, authored, edited, count(DISTINCT premOpera) AS premieredRoleIn
+        OPTIONAL MATCH (s)-[:COMPOSED|WROTE]->(wroteOpera:Opera)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, count(DISTINCT wroteOpera) AS wrote
+        OPTIONAL MATCH (parent:Person)-[:PARENT]->(s)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, wrote, count(DISTINCT parent) AS parent
+        OPTIONAL MATCH (s)-[:PARENT]->(child:Person)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, wrote, parent, count(DISTINCT child) AS parentOf
+        OPTIONAL MATCH (grandparent:Person)-[:GRANDPARENT]->(s)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, wrote, parent, parentOf, count(DISTINCT grandparent) AS grandparent
+        OPTIONAL MATCH (s)-[:GRANDPARENT]->(grandchild:Person)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, wrote, parent, parentOf, grandparent, count(DISTINCT grandchild) AS grandparentOf
+        OPTIONAL MATCH (s)-[:SPOUSE]-(spouseNode:Person)
+        WITH s, taughtBy, taught, authored, edited, premieredRoleIn, wrote, parent, parentOf, grandparent, grandparentOf, count(DISTINCT spouseNode) AS spouse
+        OPTIONAL MATCH (s)-[:SIBLING]-(siblingNode:Person)
+        RETURN
+          taughtBy,
+          taught,
+          authored,
+          edited,
+          premieredRoleIn,
+          wrote,
+          parent,
+          parentOf,
+          grandparent,
+          grandparentOf,
+          spouse,
+          count(DISTINCT siblingNode) AS sibling
+        `,
+        { name: trimmedName }
+      );
+
+      if (result.records.length === 0) {
+        return res.status(404).json({ error: 'Person not found' });
+      }
+
+      const record = result.records[0];
+      return res.json({
+        nodeType: 'person',
+        nodeName: trimmedName,
+        counts: {
+          taughtBy: toPlainNumber(record.get('taughtBy')),
+          taught: toPlainNumber(record.get('taught')),
+          authored: toPlainNumber(record.get('authored')),
+          edited: toPlainNumber(record.get('edited')),
+          premieredRoleIn: toPlainNumber(record.get('premieredRoleIn')),
+          wrote: toPlainNumber(record.get('wrote')),
+          parent: toPlainNumber(record.get('parent')),
+          parentOf: toPlainNumber(record.get('parentOf')),
+          grandparent: toPlainNumber(record.get('grandparent')),
+          grandparentOf: toPlainNumber(record.get('grandparentOf')),
+          spouse: toPlainNumber(record.get('spouse')),
+          sibling: toPlainNumber(record.get('sibling')),
+          editedBy: 0
+        }
+      });
+    }
+
+    if (trimmedType === 'opera') {
+      const result = await session.run(
+        `
+        MATCH (o:Opera {opera_name: $name})
+        WITH o
+        OPTIONAL MATCH (person:Person)-[:PREMIERED_ROLE_IN]->(o)
+        WITH o, count(DISTINCT person) AS premieredRoleIn
+        OPTIONAL MATCH (composer:Person)-[:COMPOSED|WROTE]->(o)
+        RETURN premieredRoleIn, count(DISTINCT composer) AS wrote
+        `,
+        { name: trimmedName }
+      );
+
+      if (result.records.length === 0) {
+        return res.status(404).json({ error: 'Opera not found' });
+      }
+
+      const record = result.records[0];
+      return res.json({
+        nodeType: 'opera',
+        nodeName: trimmedName,
+        counts: {
+          taughtBy: 0,
+          taught: 0,
+          authored: 0,
+          edited: 0,
+          premieredRoleIn: toPlainNumber(record.get('premieredRoleIn')),
+          wrote: toPlainNumber(record.get('wrote')),
+          parent: 0,
+          parentOf: 0,
+          grandparent: 0,
+          grandparentOf: 0,
+          spouse: 0,
+          sibling: 0,
+          editedBy: 0
+        }
+      });
+    }
+
+    if (trimmedType === 'book') {
+      const result = await session.run(
+        `
+        MATCH (b:Book {title: $name})
+        WITH b
+        OPTIONAL MATCH (author:Person)-[:AUTHORED]->(b)
+        WITH b, count(DISTINCT author) AS authored
+        OPTIONAL MATCH (editor:Person)-[:EDITED]->(b)
+        RETURN authored, count(DISTINCT editor) AS edited
+        `,
+        { name: trimmedName }
+      );
+
+      if (result.records.length === 0) {
+        return res.status(404).json({ error: 'Book not found' });
+      }
+
+      const record = result.records[0];
+      return res.json({
+        nodeType: 'book',
+        nodeName: trimmedName,
+        counts: {
+          taughtBy: 0,
+          taught: 0,
+          authored: toPlainNumber(record.get('authored')),
+          edited: toPlainNumber(record.get('edited')),
+          premieredRoleIn: 0,
+          wrote: 0,
+          parent: 0,
+          parentOf: 0,
+          grandparent: 0,
+          grandparentOf: 0,
+          spouse: 0,
+          sibling: 0,
+          editedBy: 0
+        }
+      });
+    }
+
+    return res.status(400).json({ error: `Unsupported nodeType: ${nodeType}` });
+  } catch (error) {
+    console.error('Relationship count error:', error);
+    res.status(500).json({ error: 'Failed to fetch relationship counts' });
   } finally {
     await session.close();
   }
