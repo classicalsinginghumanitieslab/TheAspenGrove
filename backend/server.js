@@ -161,12 +161,15 @@ const sendPasswordResetEmail = async (recipientEmail, token) => {
       '',
       resetUrl,
       '',
+      `Reset code: ${token}`,
+      '',
       'If you did not request this change, you can safely ignore this email.'
     ].join('\n'),
     html: `
       <p>You recently requested to reset your password for <strong>The Aspen Grove of Opera Singers</strong>.</p>
       <p>Use the secure link below to choose a new password. This link expires in ${PASSWORD_RESET_TOKEN_TTL_MINUTES} minutes.</p>
       <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p><strong>Reset code:</strong> ${token}</p>
       <p>If you did not request this change, you can safely ignore this email.</p>
     `
   };
