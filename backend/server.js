@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import mysql from 'mysql2/promise';
 
 dotenv.config();
 
@@ -21,6 +22,76 @@ const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const MYSQL_URL = process.env.MYSQL_URL || process.env.DATABASE_URL || process.env.MYSQL_CONNECTION_URL || '';
+const MYSQL_HOST = process.env.MYSQL_HOST;
+const MYSQL_PORT = process.env.MYSQL_PORT;
+const MYSQL_USER = process.env.MYSQL_USER;
+const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD;
+const MYSQL_DATABASE = process.env.MYSQL_DATABASE;
+const MYSQL_SSL = String(process.env.MYSQL_SSL || '').toLowerCase();
+const MYSQL_CONNECTION_LIMIT = parseInt(process.env.MYSQL_CONNECTION_LIMIT || '10', 10);
+
+let mysqlPoolPromise = null;
+const getMysqlPool = () => {
+  if (!mysqlPoolPromise) {
+    mysqlPoolPromise = (async () => {
+      let config;
+      if (MYSQL_URL) {
+        const url = new URL(MYSQL_URL);
+        config = {
+          host: url.hostname,
+          port: url.port ? Number(url.port) : 3306,
+          user: decodeURIComponent(url.username),
+          password: decodeURIComponent(url.password),
+          database: url.pathname.replace(/^\//, '') || undefined
+        };
+      } else {
+        config = {
+          host: MYSQL_HOST || 'localhost',
+          port: MYSQL_PORT ? Number(MYSQL_PORT) : 3306,
+          user: MYSQL_USER || 'root',
+          password: MYSQL_PASSWORD || '',
+          database: MYSQL_DATABASE || 'cmg_auth'
+        };
+      }
+      if (MYSQL_SSL === 'true' || MYSQL_SSL === '1') {
+        config.ssl = { rejectUnauthorized: false };
+      }
+      const pool = mysql.createPool({
+        waitForConnections: true,
+        connectionLimit: MYSQL_CONNECTION_LIMIT,
+        maxIdle: Math.min(MYSQL_CONNECTION_LIMIT, 5),
+        idleTimeout: 60000,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 0,
+        ...config
+      });
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          email VARCHAR(320) NOT NULL UNIQUE,
+          password_hash VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS saved_views (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_email VARCHAR(320) NOT NULL,
+          token CHAR(36) NOT NULL UNIQUE,
+          label VARCHAR(255) DEFAULT '',
+          snapshot JSON NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_saved_views_user (user_email)
+        )
+        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      return pool;
+    })();
+  }
+  return mysqlPoolPromise;
+};
 
 // Security middleware
 app.set('trust proxy', 1);
@@ -219,46 +290,35 @@ app.get('/health', (req, res) => {
 
 // Authentication endpoints
 app.post('/auth/register', async (req, res) => {
-  const session = driver.session();
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+
   try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+    const pool = await getMysqlPool();
+    const connection = await pool.getConnection();
+    try {
+      const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
+      if (existing.length > 0) {
+        return res.status(400).json({ error: 'User already exists' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await connection.query(
+        'INSERT INTO users (email, password_hash) VALUES (?, ?)',
+        [email, hashedPassword]
+      );
+    } finally {
+      connection.release();
     }
 
-    // Check if user already exists
-    const existingUser = await session.run(
-      'MATCH (u:User {email: $email}) RETURN u',
-      { email }
-    );
-
-    if (existingUser.records.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create user
-    await session.run(
-      'CREATE (u:User {email: $email, password: $password, createdAt: datetime()})',
-      { email, password: hashedPassword }
-    );
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { email },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
-    );
-
+    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.status(201).json({ token, email });
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    await session.close();
   }
 });
 
@@ -268,41 +328,30 @@ app.post('/auth/login', async (req, res) => {
     const token = jwt.sign({ email: 'test@example.com' }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     return res.json({ token, email: 'test@example.com' });
   }
-  const session = driver.session();
   try {
     const { email, password } = req.body;
-    
+
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    // Find user
-    const result = await session.run(
-      'MATCH (u:User {email: $email}) RETURN u',
-      { email }
-    );
-
-    if (result.records.length === 0) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.query('SELECT id, password_hash FROM users WHERE email = ?', [email]);
+    if (rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const user = result.records[0].get('u').properties;
-    
-    // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password);
+    const { password_hash: passwordHash } = rows[0];
+    const isValidPassword = await bcrypt.compare(password, passwordHash);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Generate JWT token
     const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-
     res.json({ token, email });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    await session.close();
   }
 });
 
@@ -1425,17 +1474,6 @@ app.get('/test', (req, res) => {
 });
 
 // View snapshot storage (file-based per-user)
-const VIEWS_DIR = path.resolve(__dirname, 'data', 'views');
-const ensureDir = async (dir) => {
-  await fs.promises.mkdir(dir, { recursive: true });
-};
-const userDir = async (email) => {
-  const safe = encodeURIComponent(email || 'unknown');
-  const dir = path.join(VIEWS_DIR, safe);
-  await ensureDir(dir);
-  return dir;
-};
-
 const SAMPLE_VIEW_DIRS = [
   path.resolve(__dirname, 'data', 'views', 'test%40example.com'),
   path.resolve(__dirname, 'sample-views')
@@ -1459,13 +1497,16 @@ app.post('/views', authenticateToken, async (req, res) => {
     if (!snapshot || typeof snapshot !== 'object') {
       return res.status(400).json({ error: 'snapshot required' });
     }
+
     const token = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    const payload = { token, user: req.user.email, label, createdAt, snapshot };
-    const dir = await userDir(req.user.email);
-    const file = path.join(dir, `${token}.json`);
-    await fs.promises.writeFile(file, JSON.stringify(payload, null, 2), 'utf8');
-    return res.json({ token, label, createdAt });
+    const createdAt = new Date();
+    const pool = await getMysqlPool();
+    await pool.query(
+      'INSERT INTO saved_views (user_email, token, label, snapshot, created_at) VALUES (?, ?, ?, ?, ?)',
+      [req.user.email, token, label, JSON.stringify(snapshot), createdAt]
+    );
+
+    return res.json({ token, label, createdAt: createdAt.toISOString() });
   } catch (err) {
     console.error('Save view error:', err);
     return res.status(500).json({ error: 'Failed to save view' });
@@ -1475,19 +1516,17 @@ app.post('/views', authenticateToken, async (req, res) => {
 // List snapshots for current user
 app.get('/views', authenticateToken, async (req, res) => {
   try {
-    const dir = await userDir(req.user.email);
-    const files = await fs.promises.readdir(dir).catch(() => []);
-    const items = [];
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      const full = path.join(dir, f);
-      try {
-        const data = JSON.parse(await fs.promises.readFile(full, 'utf8'));
-        items.push({ token: data.token, label: data.label || '', createdAt: data.createdAt || null });
-      } catch (_) {}
-    }
-    items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    return res.json({ views: items });
+    const pool = await getMysqlPool();
+    const [rows] = await pool.query(
+      'SELECT token, label, created_at FROM saved_views WHERE user_email = ? ORDER BY created_at DESC',
+      [req.user.email]
+    );
+    const views = rows.map((row) => ({
+      token: row.token,
+      label: row.label || '',
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+    }));
+    return res.json({ views });
   } catch (err) {
     console.error('List views error:', err);
     return res.status(500).json({ error: 'Failed to list views' });
@@ -1502,16 +1541,30 @@ app.get('/views/:token', authenticateToken, async (req, res) => {
 
     let data = null;
 
-    try {
-      const dir = await userDir(req.user.email);
-      data = await readSnapshotFromDir(dir, token);
-      if (data && data.user && data.user !== req.user.email) {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.query(
+      'SELECT token, label, created_at, snapshot, user_email FROM saved_views WHERE token = ?',
+      [token]
+    );
+    if (rows.length > 0) {
+      const row = rows[0];
+      if (row.user_email !== req.user.email) {
         return res.status(403).json({ error: 'Forbidden' });
       }
-    } catch (err) {
-      if (!(err && err.code === 'ENOENT')) {
-        throw err;
+      let snapshotPayload = row.snapshot;
+      if (snapshotPayload && typeof snapshotPayload === 'string') {
+        try {
+          snapshotPayload = JSON.parse(snapshotPayload);
+        } catch (err) {
+          console.warn('Failed to parse snapshot JSON from MySQL:', err?.message);
+        }
       }
+      data = {
+        token: row.token,
+        label: row.label || '',
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+        snapshot: snapshotPayload
+      };
     }
 
     if (!data) {

@@ -16,9 +16,7 @@
   body {
     font-size: 16px;
     line-height: 1.6;
-    padding-left: var(--cmg-mobile-inline-padding);
-    padding-right: var(--cmg-mobile-inline-padding-end);
-    padding-bottom: var(--cmg-mobile-block-padding-end);
+    padding: 0;
   }
 
   button,

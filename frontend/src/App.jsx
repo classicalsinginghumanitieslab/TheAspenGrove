@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 're
 import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
+import initTouchInteractions from './touchInteractions';
 
 const SESSION_SNAPSHOT_KEY = 'cmgActiveSession_v1';
 const SESSION_SNAPSHOT_FILTERLESS_KEY = 'cmgActiveSession_filtersReset';
@@ -225,6 +226,38 @@ const normalizeLinks = (links = []) =>
       sourceInfo: sourceText
     };
   });
+
+const computeCenteredTransform = (
+  nodes = [],
+  containerWidth = 0,
+  containerHeight = 0,
+  padding = 80
+) => {
+  const positionedNodes = Array.isArray(nodes)
+    ? nodes.filter((node) => Number.isFinite(node?.x) && Number.isFinite(node?.y))
+    : [];
+  const width = Math.max(1, Number(containerWidth) || 0);
+  const height = Math.max(1, Number(containerHeight) || 0);
+  if (!positionedNodes.length || width <= 0 || height <= 0) return null;
+  const xs = positionedNodes.map((node) => node.x);
+  const ys = positionedNodes.map((node) => node.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const paddingValue = Math.max(0, Number(padding) || 0);
+  const paddedWidth = Math.max(1, (maxX - minX) + paddingValue * 2);
+  const paddedHeight = Math.max(1, (maxY - minY) + paddingValue * 2);
+  const scaleX = width / paddedWidth;
+  const scaleY = height / paddedHeight;
+  const scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.1), 4);
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  return d3.zoomIdentity
+    .translate(width / 2, height / 2)
+    .scale(scale)
+    .translate(-centerX, -centerY);
+};
 
 const toTitleCase = (str = '') =>
   str
@@ -548,8 +581,6 @@ const ClassicalMusicGenealogy = () => {
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [showSupportPanel, setShowSupportPanel] = useState(false);
   const [justLoggedIn, setJustLoggedIn] = useState(false);
-  const toolbarPointerStartRef = useRef(null);
-  const toolbarSkipClickRef = useRef(false);
   const pathFromRef = useRef(null);
   const pathToRef = useRef(null);
   const pathFromValRef = useRef('');
@@ -559,6 +590,45 @@ const ClassicalMusicGenealogy = () => {
   const pathPanelRef = useRef(null);
   const pathListRef = useRef(null);
   const [pathInfo, setPathInfo] = useState(null);
+  const handleClearPath = () => {
+    try { setPathInfo(null); } catch (_) {}
+    try { if (pathFromRef.current) pathFromRef.current.value = ''; } catch (_) {}
+    try { if (pathToRef.current) pathToRef.current.value = ''; } catch (_) {}
+    try { pathFromValRef.current = ''; } catch (_) {}
+    try { pathToValRef.current = ''; } catch (_) {}
+    if (prePathNetworkRef.current) {
+      const snapshot = prePathNetworkRef.current;
+      pathOverlayRef.current.addedNodeIds = new Set();
+      pathOverlayRef.current.addedLinkKeys = new Set();
+      try {
+        setNetworkData(
+          sanitizeGraphData({
+            nodes: snapshot.nodes.map((n) => ({ ...n, isPath: false, wasAddedByPath: false })),
+            links: snapshot.links.map((l) => ({ ...l, isPath: false, wasAddedByPath: false }))
+          })
+        );
+      } catch (_) {}
+      prePathNetworkRef.current = null;
+      try { setShouldRunSimulation(false); } catch (_) {}
+    } else {
+      setNetworkData((prev) => {
+        const addedNodeIds = new Set(pathOverlayRef.current.addedNodeIds || []);
+        const addedLinkKeys = new Set(pathOverlayRef.current.addedLinkKeys || []);
+        const remainingNodes = prev.nodes
+          .filter((n) => !addedNodeIds.has(n.id) && !n.wasAddedByPath)
+          .map((n) => ({ ...n, isPath: false, wasAddedByPath: false }));
+        const remainingLinks = prev.links
+          .filter((l) => {
+            const key = `${typeof l.source === 'string' ? l.source : l.source?.id}-${typeof l.target === 'string' ? l.target : l.target?.id}-${l.type}`;
+            return !addedLinkKeys.has(key) && !l.wasAddedByPath;
+          })
+          .map((l) => ({ ...l, isPath: false, wasAddedByPath: false }));
+        pathOverlayRef.current.addedNodeIds = new Set();
+        pathOverlayRef.current.addedLinkKeys = new Set();
+        return sanitizeGraphData({ nodes: remainingNodes, links: remainingLinks });
+      });
+    }
+  };
 
   const svgRef = useRef(null);
   const simulationRef = useRef(null);
@@ -779,44 +849,6 @@ const ClassicalMusicGenealogy = () => {
       setShowMobileToolbarMenu(false);
     }
   }, [currentView, showMobileToolbarMenu]);
-
-  const handleToolbarPointerDown = (e) => {
-    if (e.pointerType === 'touch') {
-      toolbarPointerStartRef.current = { x: e.clientX, y: e.clientY };
-    } else {
-      toolbarPointerStartRef.current = null;
-    }
-  };
-
-  const handleToolbarPointerUp = (e, action) => {
-    if (e.pointerType === 'touch') {
-      const start = toolbarPointerStartRef.current;
-      toolbarPointerStartRef.current = null;
-      if (!start) {
-        action();
-        toolbarSkipClickRef.current = true;
-        return;
-      }
-      const deltaX = Math.abs(e.clientX - start.x);
-      const deltaY = Math.abs(e.clientY - start.y);
-      if (deltaX > 12 || deltaY > 12) {
-        toolbarSkipClickRef.current = true;
-        return;
-      }
-      toolbarSkipClickRef.current = true;
-      action();
-    } else {
-      action();
-    }
-  };
-
-  const handleToolbarClick = (action) => (e) => {
-    if (toolbarSkipClickRef.current) {
-      toolbarSkipClickRef.current = false;
-      return;
-    }
-    action();
-  };
 
   // Centralized unauthorized handler: clears token and prompts re-login
   const handleUnauthorized = (resp) => {
@@ -1214,6 +1246,29 @@ const ClassicalMusicGenealogy = () => {
         ui,
         hasExecutedSearch: view.hasExecutedSearch ?? true
       };
+
+      if (options.centerOnLoad) {
+        const containerWidth =
+          Number(viewportWidth) ||
+          (typeof window !== 'undefined' ? window.innerWidth : 0) ||
+          1;
+        const containerHeight =
+          Number(visualizationHeight) ||
+          Number(viewportHeight) ||
+          (typeof window !== 'undefined' ? window.innerHeight : 0) ||
+          1;
+        const fitTransform = computeCenteredTransform(
+          snapshotToApply.nodes,
+          containerWidth,
+          containerHeight,
+          isHeaderMobile ? 48 : 80
+        );
+        if (fitTransform) {
+          const plainTransform = { k: fitTransform.k, x: fitTransform.x, y: fitTransform.y };
+          snapshotToApply.zoom = plainTransform;
+          snapshotToApply.ui = { ...(snapshotToApply.ui || {}), zoom: plainTransform };
+        }
+      }
 
       applySnapshot(snapshotToApply);
       setHasExecutedSearch(snapshotToApply.hasExecutedSearch ?? true);
@@ -4844,6 +4899,7 @@ const normalizeLinkForMerge = (link) => {
   // Network visualization using D3
   const NetworkVisualization = ({ viewport: viewportInfo = {} }) => {
     const viewportIsPhone = !!viewportInfo.isPhone;
+    const viewportIsTablet = !!viewportInfo.isTablet;
     const containerRef = useRef(null);
     const isSimulationActiveRef = useRef(true);
     const zoomRef = useRef(null);
@@ -4851,196 +4907,104 @@ const normalizeLinkForMerge = (link) => {
     const zoomLockedRef = useRef(false);
     const baseChargeStrengthRef = useRef(-1000);
     const hasAppliedInitialFitRef = useRef(false);
-    const longPressTimeoutRef = useRef(null);
-    const touchDragStateRef = useRef(null);
-    const gestureLogRef = useRef([]);
-    const activeGestureRef = useRef(null);
-    const lastZoomLogTsRef = useRef(0);
-    const touchPanStateRef = useRef(null);
-
-    const getNowTs = () => {
-      if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
-        return performance.now();
-      }
-      return Date.now();
-    };
-
-    const logGestureEvent = (type, detail = {}) => {
-      if (!viewportIsPhone) return;
-      const entry = {
-        ts: Math.round(getNowTs()),
-        type,
-        ...detail
-      };
-      gestureLogRef.current.push(entry);
-      if (gestureLogRef.current.length > 300) {
-        gestureLogRef.current.shift();
-      }
-      try {
-        window.__cmgGestureLog = gestureLogRef.current;
-      } catch (_) {}
-      const isDevBuild = typeof process !== 'undefined' && process.env && process.env.NODE_ENV !== 'production';
-      if (isDevBuild && typeof console !== 'undefined' && typeof console.log === 'function') {
-        // Provide actionable breadcrumbs while developing/debugging on mobile
-        console.log('[cmg-mobile]', type, detail);
-      }
-    };
-
-    const startGestureSession = (kind, event) => {
-      if (!viewportIsPhone) return;
-      activeGestureRef.current = {
-        kind,
-        pointerId: event.pointerId,
-        startTs: getNowTs(),
-        moves: 0,
-        lastPos: {
-          x: Number.isFinite(event.clientX) ? event.clientX : 0,
-          y: Number.isFinite(event.clientY) ? event.clientY : 0
-        },
-        touchCount: event.touches ? event.touches.length : undefined
-      };
-      logGestureEvent('gesture-start', {
-        kind,
-        pointerId: event.pointerId,
-        x: activeGestureRef.current.lastPos.x,
-        y: activeGestureRef.current.lastPos.y,
-        touchCount: activeGestureRef.current.touchCount
-      });
-    };
-
-    const updateGestureSession = (event) => {
-      if (!viewportIsPhone) return;
-      const session = activeGestureRef.current;
-      if (!session || session.pointerId !== event.pointerId) return;
-      session.moves += 1;
-      session.lastPos = {
-        x: Number.isFinite(event.clientX) ? event.clientX : session.lastPos.x,
-        y: Number.isFinite(event.clientY) ? event.clientY : session.lastPos.y
-      };
-    };
-
-    const endGestureSession = (event, { reason } = {}) => {
-      if (!viewportIsPhone) return;
-      const session = activeGestureRef.current;
-      if (!session) return;
-      if (event && session.pointerId !== event.pointerId) return;
-      const duration = getNowTs() - session.startTs;
-      logGestureEvent('gesture-end', {
-        kind: session.kind,
-        pointerId: session.pointerId,
-        duration: Math.round(duration),
-        moves: session.moves,
-        x: session.lastPos.x,
-        y: session.lastPos.y,
-        reason: reason || (event ? event.type : 'completed')
-      });
-      activeGestureRef.current = null;
-    };
-
     const LONG_PRESS_DELAY_MS = 550;
-    const TOUCH_DRAG_DISTANCE_THRESHOLD = 8;
-    const TOUCH_PAN_ACTIVATION_PX = 6;
-
-    const clearLongPress = () => {
-      if (longPressTimeoutRef.current) {
-        clearTimeout(longPressTimeoutRef.current);
-        longPressTimeoutRef.current = null;
-      }
+    const LONG_PRESS_MOVE_CANCEL_PX = 8;
+    const nodeLongPressState = {
+      pointerId: null,
+      timerId: null,
+      startX: 0,
+      startY: 0,
+      target: null,
+      datum: null,
+      fired: false
     };
-
-    const resetTouchTracking = (pointerId = null) => {
-      const state = touchDragStateRef.current;
-      if (state && (pointerId === null || state.pointerId === pointerId)) {
-        touchDragStateRef.current = null;
+    const clearNodeLongPress = ({ releasePointer = false } = {}) => {
+      if (nodeLongPressState.timerId) {
+        clearTimeout(nodeLongPressState.timerId);
       }
+      if (releasePointer && nodeLongPressState.target && nodeLongPressState.pointerId !== null) {
+        try { nodeLongPressState.target.releasePointerCapture(nodeLongPressState.pointerId); } catch (_) {}
+      }
+      nodeLongPressState.pointerId = null;
+      nodeLongPressState.timerId = null;
+      nodeLongPressState.target = null;
+      nodeLongPressState.datum = null;
+      nodeLongPressState.startX = 0;
+      nodeLongPressState.startY = 0;
+      nodeLongPressState.fired = false;
     };
-
-    const attachLongPress = (selection) => {
-      if (!viewportIsPhone) {
-        return selection;
+    const linkLongPressState = {
+      pointerId: null,
+      timerId: null,
+      startX: 0,
+      startY: 0,
+      target: null,
+      datum: null,
+      fired: false
+    };
+    const clearLinkLongPress = ({ releasePointer = false } = {}) => {
+      if (linkLongPressState.timerId) {
+        clearTimeout(linkLongPressState.timerId);
       }
-      return selection
-        .on('pointerdown.longpress', function(event, datum) {
-          if (event.pointerType !== 'touch' || !event.isPrimary) {
-            return;
-          }
-          clearLongPress();
-          const targetElement = this;
-          const pointerId = event.pointerId;
-          const clientX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : 0);
-          const clientY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : 0);
-          const pageX = Number.isFinite(event.pageX) ? event.pageX : clientX;
-          const pageY = Number.isFinite(event.pageY) ? event.pageY : clientY;
-          touchDragStateRef.current = {
-            pointerId,
-            startX: clientX,
-            startY: clientY,
-            startPageX: pageX,
-            startPageY: pageY,
-            hasMoved: false,
-            longPressFired: false,
-            target: targetElement,
-            datum
-          };
-          longPressTimeoutRef.current = window.setTimeout(() => {
-            const state = touchDragStateRef.current;
-            if (!state || state.pointerId !== pointerId || state.hasMoved) {
-              if (state && state.pointerId === pointerId && state.hasMoved) {
-                logGestureEvent('longpress-cancelled', { pointerId, reason: 'movement-exceeded' });
-              }
-              return;
-            }
-            longPressTimeoutRef.current = null;
-            state.longPressFired = true;
-            logGestureEvent('longpress-fired', {
-              pointerId,
-              nodeId: state.datum && (state.datum.id || state.datum.name || null)
-            });
-            const handler = d3.select(targetElement).on('contextmenu');
-            if (typeof handler === 'function') {
-              const syntheticEvent = {
-                preventDefault: () => {},
-                stopPropagation: () => {},
-                target: targetElement,
-                currentTarget: targetElement,
-                pointerType: 'touch',
-                clientX: state.startX,
-                clientY: state.startY,
-                pageX: state.startPageX,
-                pageY: state.startPageY
-              };
-              handler.call(targetElement, syntheticEvent, state.datum);
-            }
-            try { targetElement.releasePointerCapture(pointerId); } catch (_) {}
-          }, LONG_PRESS_DELAY_MS);
-        })
-        .on('pointermove.longpress', (event) => {
-          if (event.pointerType === 'touch') {
-            const state = touchDragStateRef.current;
-            if (state && state.pointerId === event.pointerId) {
-              const dx = (event.clientX ?? 0) - state.startX;
-              const dy = (event.clientY ?? 0) - state.startY;
-              if (!state.hasMoved && Math.sqrt((dx * dx) + (dy * dy)) > TOUCH_DRAG_DISTANCE_THRESHOLD) {
-                state.hasMoved = true;
-                clearLongPress();
-                logGestureEvent('longpress-cancelled', { pointerId: event.pointerId, reason: 'drag-started' });
-              }
-            }
-          }
-        })
-        .on('pointerup.longpress pointercancel.longpress pointerleave.longpress', function(event) {
-          const state = touchDragStateRef.current;
-          if (event.pointerType === 'touch' && state && state.pointerId === event.pointerId && !state.longPressFired) {
-            logGestureEvent('longpress-cancelled', { pointerId: event.pointerId, reason: event.type });
-          }
-          if (event.pointerType === 'touch') {
-            try { this.releasePointerCapture(event.pointerId); } catch (_) {}
-            resetTouchTracking(event.pointerId);
-          }
-          clearLongPress();
+      if (releasePointer && linkLongPressState.target && linkLongPressState.pointerId !== null) {
+        try { linkLongPressState.target.releasePointerCapture(linkLongPressState.pointerId); } catch (_) {}
+      }
+      linkLongPressState.pointerId = null;
+      linkLongPressState.timerId = null;
+      linkLongPressState.target = null;
+      linkLongPressState.datum = null;
+      linkLongPressState.startX = 0;
+      linkLongPressState.startY = 0;
+      linkLongPressState.fired = false;
+    };
+    const scheduleNodeLongPress = (event, datum, target) => {
+      if (!target || event.pointerType !== 'touch') return;
+      clearNodeLongPress({ releasePointer: true });
+      clearLinkLongPress({ releasePointer: true });
+      nodeLongPressState.pointerId = event.pointerId;
+      nodeLongPressState.startX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : 0);
+      nodeLongPressState.startY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : 0);
+      nodeLongPressState.target = target;
+      nodeLongPressState.datum = datum;
+      nodeLongPressState.fired = false;
+      try { target.setPointerCapture(event.pointerId); } catch (_) {}
+      nodeLongPressState.timerId = window.setTimeout(() => {
+        nodeLongPressState.timerId = null;
+        nodeLongPressState.fired = true;
+        const syntheticEvent = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: nodeLongPressState.startX,
+          clientY: nodeLongPressState.startY
         });
+        try { target.dispatchEvent(syntheticEvent); } catch (_) {}
+      }, LONG_PRESS_DELAY_MS);
     };
-
+    const scheduleLinkLongPress = (event, datum, target) => {
+      if (!target || event.pointerType !== 'touch') return;
+      clearLinkLongPress({ releasePointer: true });
+      clearNodeLongPress({ releasePointer: true });
+      linkLongPressState.pointerId = event.pointerId;
+      linkLongPressState.startX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : 0);
+      linkLongPressState.startY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : 0);
+      linkLongPressState.target = target;
+      linkLongPressState.datum = datum;
+      linkLongPressState.fired = false;
+      try { target.setPointerCapture(event.pointerId); } catch (_) {}
+      linkLongPressState.timerId = window.setTimeout(() => {
+        linkLongPressState.timerId = null;
+        linkLongPressState.fired = true;
+        const syntheticEvent = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: linkLongPressState.startX,
+          clientY: linkLongPressState.startY
+        });
+        try { target.dispatchEvent(syntheticEvent); } catch (_) {}
+      }, LONG_PRESS_DELAY_MS);
+    };
     // Date ranges will be reset manually when needed to avoid setState in useEffect
 
     useEffect(() => {
@@ -5086,7 +5050,7 @@ const normalizeLinkForMerge = (link) => {
         .style("background", "transparent")
         .style("user-select", "none")
         .style("-webkit-user-select", "none")
-        .style("touch-action", viewportIsPhone ? "manipulation" : "none");
+        .style("touch-action", "none");
       // Prevent default browser context menu on background to avoid accidental pan/zoom
       svg.on('contextmenu', (event) => {
         event.preventDefault();
@@ -5108,53 +5072,12 @@ const normalizeLinkForMerge = (link) => {
         }
       });
       svg.on('pointerdown.cmg', (event) => {
-        if (viewportIsPhone && event.pointerType === 'touch') {
-          startGestureSession('touch-pan', event);
-          if (touchPanStateRef.current && touchPanStateRef.current.pointerId !== null && touchPanStateRef.current.pointerId !== event.pointerId) {
-            return;
-          }
-          const baseTransform = zoomTransformRef.current || uiZoomRef.current || d3.zoomIdentity;
-          const clientX = Number.isFinite(event.clientX)
-            ? event.clientX
-            : (event.touches && event.touches[0]?.clientX) || (event.targetTouches && event.targetTouches[0]?.clientX) || 0;
-          const clientY = Number.isFinite(event.clientY)
-            ? event.clientY
-            : (event.touches && event.touches[0]?.clientY) || (event.targetTouches && event.targetTouches[0]?.clientY) || 0;
-          touchPanStateRef.current = {
-            pointerId: typeof event.pointerId === 'number' ? event.pointerId : null,
-            startX: clientX,
-            startY: clientY,
-            startTransform: baseTransform,
-            active: false,
-            startK: Number.isFinite(baseTransform.k) ? baseTransform.k : 1,
-            latestTransform: baseTransform,
-            lastClientX: clientX,
-            lastClientY: clientY
-          };
-          logGestureEvent('touch-pan-init', {
-            pointerId: touchPanStateRef.current.pointerId,
-            x: clientX,
-            y: clientY,
-            touches: 1
-          });
-        }
-        if (event.pointerType !== 'touch' && event.buttons && event.buttons !== 1) {
+        if (event.buttons && event.buttons !== 1) {
           event.preventDefault();
           if (event.stopImmediatePropagation) event.stopImmediatePropagation();
           event.stopPropagation();
           try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
         }
-      });
-      svg.on('touchstart.cmg', (event) => {
-        if (viewportIsPhone) {
-          const touchCount = event.touches ? event.touches.length : 0;
-          logGestureEvent('raw-touchstart', { touchCount });
-          if (touchCount > 1) {
-            event.preventDefault();
-          }
-          return;
-        }
-        event.preventDefault();
       });
       svg.on('mouseup', (event) => {
         if (event.button !== 0) {
@@ -5164,27 +5087,12 @@ const normalizeLinkForMerge = (link) => {
           try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
         }
       });
-      svg.on('pointermove.mobileLog', (event) => {
-        if (viewportIsPhone && event.pointerType === 'touch') {
-          updateGestureSession(event);
-        }
-      });
       svg.on('pointerup', (event) => {
-        if (viewportIsPhone && event.pointerType === 'touch') {
-          endGestureSession(event, { reason: 'pointerup' });
-          touchPanStateRef.current = null;
-        }
-        if (event.pointerType !== 'touch' && event.button && event.button !== 0) {
+        if (event.button && event.button !== 0) {
           event.preventDefault();
           if (event.stopImmediatePropagation) event.stopImmediatePropagation();
           event.stopPropagation();
           try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
-        }
-      });
-      svg.on('pointercancel.mobileLog', (event) => {
-        if (viewportIsPhone && event.pointerType === 'touch') {
-          endGestureSession(event, { reason: 'pointercancel' });
-          touchPanStateRef.current = null;
         }
       });
       svg.on('auxclick', (event) => {
@@ -5210,14 +5118,6 @@ const normalizeLinkForMerge = (link) => {
         setExpandSubmenu(null);
       };
       svg.on('click', anchorAllNodes);
-      svg.on('pointerdown.dismissMenu', (event) => {
-        if (event.pointerType !== 'touch') return;
-        const target = event.target;
-        if (target.closest && (target.closest('circle') || target.closest('path') || target.closest('text') || target.closest('rect'))) return;
-        try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
-        try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
-        setExpandSubmenu(null);
-      });
 
       // Create main group for zooming/panning
       const g = svg.append("g");
@@ -5253,18 +5153,6 @@ const normalizeLinkForMerge = (link) => {
         try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
       });
 
-      const longPressTargets = ['circle', 'path', 'text', 'rect.link-label-hit'];
-      const applyLongPressHandlers = () => {
-        if (viewportIsPhone) {
-          longPressTargets.forEach(selector => {
-            try { g.selectAll(selector).call(attachLongPress); } catch (_) {}
-          });
-        } else {
-          longPressTargets.forEach(selector => {
-            try { g.selectAll(selector).on('.longpress', null); } catch (_) {}
-          });
-        }
-      };
       // Always restore previous zoom/pan silently (no zoom event)
       try {
         const prev = uiZoomRef.current || d3.zoomIdentity;
@@ -5284,17 +5172,28 @@ const normalizeLinkForMerge = (link) => {
       // Expose reapply helper globally so outer click handlers can prevent accidental recenter
       try { window.__cmg_reapplyZoom = () => applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
 
+      const centerGraphWithinViewport = ({ padding = 80 } = {}) => {
+        const transform = computeCenteredTransform(
+          networkData.nodes,
+          width,
+          height,
+          padding
+        );
+        if (!transform) return;
+        applyZoomTransformSilently(transform);
+        hasAppliedInitialFitRef.current = true;
+      };
+      try { window.__cmg_centerGraph = centerGraphWithinViewport; } catch (_) {}
+
       // Create zoom behavior
-      const minZoom = viewportIsPhone ? 0.2 : 0.1;
-      const maxZoom = viewportIsPhone ? 3 : 4;
       const zoom = d3.zoom()
         .filter((event) => {
           // Allow wheel zoom always; block double-click zoom entirely
           if (event.type === 'wheel') return true;
           if (event.type === 'dblclick') return false;
-          if (event.pointerType === 'touch' || (typeof event.type === 'string' && event.type.startsWith('touch'))) {
-            return true;
-          }
+          const isTouchPointer = typeof event.pointerType === 'string' && event.pointerType === 'touch';
+          if (isTouchPointer) return false;
+          if (typeof event.type === 'string' && event.type.startsWith('touch')) return false;
           // Explicitly block context menu/right-click and middle-click from initiating zoom/pan
           if (event.button === 2 || event.buttons === 2) return false;
           if (event.button === 1 || event.buttons === 4) return false;
@@ -5302,9 +5201,9 @@ const normalizeLinkForMerge = (link) => {
           const isPrimary = (event.buttons === 1) || (event.button === 0);
           return isPrimary && !event.ctrlKey && !event.metaKey;
         })
-        .clickDistance(viewportIsPhone ? 6 : 0)
-        .scaleExtent([minZoom, maxZoom])
-        .touchable(() => true)
+        .clickDistance(0)
+        .translateExtent([[-1e6, -1e6], [1e6, 1e6]])
+        .scaleExtent([0.1, 4])
         .on("zoom", (event) => {
           // Hard block any zoom while menus are open or during menu open/close
           if (zoomLockedRef.current || contextMenu.show || linkContextMenu.show) {
@@ -5322,64 +5221,16 @@ const normalizeLinkForMerge = (link) => {
           }
           const isWheel = e.type === 'wheel';
           const isPointerMove = e && (e.type === 'pointermove' || e.type === 'mousemove');
-          const isTouchEvent = e && (
-            (typeof e.type === 'string' && e.type.startsWith('touch')) ||
-            e.pointerType === 'touch'
-          );
-          const isPrimaryDrag = isPointerMove && ((e.buttons === 1) || (e.pointerType === 'touch')) || isTouchEvent;
-          if (viewportIsPhone && isTouchEvent && e) {
-            const panState = touchPanStateRef.current;
-            const touches =
-              (typeof e.touches === 'object' && e.touches !== null ? e.touches.length : undefined) ??
-              (typeof e.targetTouches === 'object' && e.targetTouches !== null ? e.targetTouches.length : undefined) ??
-              (e.sourceEvent && typeof e.sourceEvent.touches === 'object' && e.sourceEvent.touches !== null ? e.sourceEvent.touches.length : undefined);
-            if (typeof e.pointerId !== 'undefined') {
-              updateGestureSession(e);
-            }
-            if (panState) {
-              const firstTouch = (e.touches && e.touches[0]) || (e.targetTouches && e.targetTouches[0]) || null;
-              const clientX = Number.isFinite(e.clientX) ? e.clientX : (firstTouch ? firstTouch.clientX : panState.startX);
-              const clientY = Number.isFinite(e.clientY) ? e.clientY : (firstTouch ? firstTouch.clientY : panState.startY);
-              const dx = clientX - panState.startX;
-              const dy = clientY - panState.startY;
-              const dist = Math.sqrt((dx * dx) + (dy * dy));
-              const scaleChanged = Number.isFinite(event.transform.k) && Number.isFinite(panState.startK)
-                ? Math.abs(event.transform.k - panState.startK) > 1e-3
-                : false;
-              if (!panState.active) {
-                const resolvedTouchCount = typeof touches === 'number'
-                  ? touches
-                  : (typeof activeGestureRef.current?.touchCount === 'number'
-                    ? activeGestureRef.current.touchCount
-                    : 1);
-                if (resolvedTouchCount > 1) {
-                  return;
-                }
-                if (dist < TOUCH_PAN_ACTIVATION_PX && !scaleChanged) {
-                  return;
-                }
-                panState.active = true;
-                logGestureEvent('touch-pan-activated', {
-                  pointerId: panState.pointerId,
-                  distance: Math.round(dist),
-                  touches: resolvedTouchCount
-                });
-              }
-            }
-            const nowTs = getNowTs();
-            if (nowTs - lastZoomLogTsRef.current > 120) {
-              lastZoomLogTsRef.current = nowTs;
-              const zoomSnapshot = {
-                k: Number.isFinite(event.transform.k) ? Number(event.transform.k.toFixed(3)) : event.transform.k,
-                x: Number.isFinite(event.transform.x) ? Math.round(event.transform.x) : event.transform.x,
-                y: Number.isFinite(event.transform.y) ? Math.round(event.transform.y) : event.transform.y,
-                sourceType: e.type
-              };
-              logGestureEvent('zoom-update', zoomSnapshot);
-            }
-          }
-          // Ignore if the originating pointer is right or middle button (but allow touch)
-          if (e && !isTouchEvent && (e.buttons === 2 || e.button === 2 || e.buttons === 4 || e.button === 1)) {
+          const isTouchEvent = !!(e && (
+            (typeof e.pointerType === 'string' && e.pointerType === 'touch') ||
+            (typeof e.type === 'string' && e.type.startsWith('touch'))
+          ));
+          const buttons = typeof e.buttons === 'number' ? e.buttons : 0;
+          const button = typeof e.button === 'number' ? e.button : -1;
+          const isPrimaryDrag = isPointerMove && (buttons === 1 || button === 0 || isTouchEvent);
+          // Ignore if the originating pointer is right or middle button
+          const isDisallowedButton = !isTouchEvent && ((buttons === 2) || (button === 2) || (buttons === 4) || (button === 1));
+          if (e && isDisallowedButton) {
             applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
             return;
           }
@@ -5402,6 +5253,21 @@ const normalizeLinkForMerge = (link) => {
         applyGroupTransform(prev, { immediate: true });
       } catch (_) {}
       zoomRef.current = zoom;
+
+      let touchCleanup = null;
+      if (viewportIsPhone || viewportIsTablet) {
+        touchCleanup = initTouchInteractions({
+          svgElement: svgRef.current,
+          svgSelection: svg,
+          zoomBehavior: zoom,
+          zoomTransformRef,
+          uiZoomRef,
+          closeOpenMenus: () => {
+            try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
+            try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
+          }
+        });
+      }
 
 
       // Hoisted helper to wrap label text inside circles
@@ -6073,6 +5939,49 @@ const normalizeLinkForMerge = (link) => {
         .attr("stroke-width", 1.5)
         .attr("fill", "none")
         .attr("opacity", d => isLinkVisible(d) ? 0.6 : 0.12) // Apply filter-based opacity
+        .on("pointerdown.longpress", function(event, d) {
+          if (event.pointerType !== 'touch') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const linkType = (d && d.type ? String(d.type).toLowerCase() : '');
+          if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const srcNode = getEndpointNode(d.source);
+          const tgtNode = getEndpointNode(d.target);
+          const isPersonPerson = srcNode?.type === 'person' && tgtNode?.type === 'person';
+          const isPersonOpera =
+            (srcNode?.type === 'person' && tgtNode?.type === 'opera') ||
+            (srcNode?.type === 'opera' && tgtNode?.type === 'person');
+          if (!isPersonPerson && !isPersonOpera) {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          scheduleLinkLongPress(event, d, this);
+        })
+        .on("pointermove.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          if (linkLongPressState.pointerId !== event.pointerId || linkLongPressState.timerId === null) return;
+          const currentX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : linkLongPressState.startX);
+          const currentY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : linkLongPressState.startY);
+          const dx = currentX - linkLongPressState.startX;
+          const dy = currentY - linkLongPressState.startY;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+            clearLinkLongPress({ releasePointer: true });
+          }
+        })
+        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          const isSamePointer = linkLongPressState.pointerId === event.pointerId;
+          const longPressFired = linkLongPressState.fired && isSamePointer;
+          clearLinkLongPress({ releasePointer: isSamePointer });
+          if (longPressFired && event.cancelable) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        })
         .on("contextmenu", (event, d) => {
           event.preventDefault();
           event.stopPropagation();
@@ -6121,6 +6030,49 @@ const normalizeLinkForMerge = (link) => {
         .attr("stroke-width", 12)
         .attr("fill", "none")
         .style("pointer-events", "stroke")
+        .on("pointerdown.longpress", function(event, d) {
+          if (event.pointerType !== 'touch') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const linkType = (d && d.type ? String(d.type).toLowerCase() : '');
+          if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const srcNode = getEndpointNode(d.source);
+          const tgtNode = getEndpointNode(d.target);
+          const isPersonPerson = srcNode?.type === 'person' && tgtNode?.type === 'person';
+          const isPersonOpera =
+            (srcNode?.type === 'person' && tgtNode?.type === 'opera') ||
+            (srcNode?.type === 'opera' && tgtNode?.type === 'person');
+          if (!isPersonPerson && !isPersonOpera) {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          scheduleLinkLongPress(event, d, this);
+        })
+        .on("pointermove.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          if (linkLongPressState.pointerId !== event.pointerId || linkLongPressState.timerId === null) return;
+          const currentX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : linkLongPressState.startX);
+          const currentY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : linkLongPressState.startY);
+          const dx = currentX - linkLongPressState.startX;
+          const dy = currentY - linkLongPressState.startY;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+            clearLinkLongPress({ releasePointer: true });
+          }
+        })
+        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          const isSamePointer = linkLongPressState.pointerId === event.pointerId;
+          const longPressFired = linkLongPressState.fired && isSamePointer;
+          clearLinkLongPress({ releasePointer: isSamePointer });
+          if (longPressFired && event.cancelable) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        })
         .on("contextmenu", (event, d) => {
           event.preventDefault();
           event.stopPropagation();
@@ -6239,7 +6191,11 @@ const normalizeLinkForMerge = (link) => {
         .text(d => d.label);
 
       // Invisible hit rectangles for labels to enlarge click area
-      const approximateTextWidth = (text) => Math.max(30, (text || '').length * 6);
+      const approximateTextWidth = (text) => {
+        const str = typeof text === 'string' ? text : String(text || '');
+        return Math.max(60, str.length * 7 + 24);
+      };
+      const LABEL_HIT_HEIGHT = 32;
       const linkLabelHits = g.append("g")
         .selectAll("rect.link-label-hit")
         .data(linkLabelData)
@@ -6250,6 +6206,52 @@ const normalizeLinkForMerge = (link) => {
         .attr("stroke", "none")
         .style("opacity", 0)
         .style("pointer-events", "all")
+        .on("pointerdown.longpress", function(event, d) {
+          if (event.pointerType !== 'touch') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const srcId = resolveLinkEndpointId(d.source);
+          const tgtId = resolveLinkEndpointId(d.target);
+          const matching = linkData.find(l => resolveLinkEndpointId(l.source) === srcId && resolveLinkEndpointId(l.target) === tgtId);
+          const linkType = (matching && matching.type ? String(matching.type).toLowerCase() : '');
+          if (linkType === 'authored' || linkType === 'edited' || linkType === 'wrote') {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          const srcNode = getEndpointNode(d.source);
+          const tgtNode = getEndpointNode(d.target);
+          const isPersonPerson = srcNode?.type === 'person' && tgtNode?.type === 'person';
+          const isPersonOpera =
+            (srcNode?.type === 'person' && tgtNode?.type === 'opera') ||
+            (srcNode?.type === 'opera' && tgtNode?.type === 'person');
+          if (!isPersonPerson && !isPersonOpera) {
+            clearLinkLongPress({ releasePointer: true });
+            return;
+          }
+          scheduleLinkLongPress(event, d, this);
+        })
+        .on("pointermove.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          if (linkLongPressState.pointerId !== event.pointerId || linkLongPressState.timerId === null) return;
+          const currentX = Number.isFinite(event.clientX) ? event.clientX : (Number.isFinite(event.pageX) ? event.pageX : linkLongPressState.startX);
+          const currentY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : linkLongPressState.startY);
+          const dx = currentX - linkLongPressState.startX;
+          const dy = currentY - linkLongPressState.startY;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+            clearLinkLongPress({ releasePointer: true });
+          }
+        })
+        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          const isSamePointer = linkLongPressState.pointerId === event.pointerId;
+          const longPressFired = linkLongPressState.fired && isSamePointer;
+          clearLinkLongPress({ releasePointer: isSamePointer });
+          if (longPressFired && event.cancelable) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        })
         .on("contextmenu", (event, d) => {
           event.preventDefault();
           event.stopPropagation();
@@ -6292,6 +6294,32 @@ const normalizeLinkForMerge = (link) => {
         .attr("stroke-width", d => getNodeStyle(d, selectedNode).strokeWidth)
         .attr("opacity", d => isNodeVisible(d) ? 1 : 0.2) // Apply filter-based opacity
         .style("cursor", "pointer")
+        .on("pointerdown.longpress", function(event, d) {
+          if (event.pointerType !== 'touch') {
+            clearNodeLongPress({ releasePointer: true });
+            return;
+          }
+          scheduleNodeLongPress(event, d, this);
+        })
+        .on("pointermove.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          if (nodeLongPressState.pointerId !== event.pointerId || nodeLongPressState.timerId === null) return;
+          const dx = (event.clientX ?? nodeLongPressState.startX) - nodeLongPressState.startX;
+          const dy = (event.clientY ?? nodeLongPressState.startY) - nodeLongPressState.startY;
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+            clearNodeLongPress({ releasePointer: true });
+          }
+        })
+        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
+          if (event.pointerType !== 'touch') return;
+          const isSamePointer = nodeLongPressState.pointerId === event.pointerId;
+          const longPressFired = nodeLongPressState.fired && isSamePointer;
+          clearNodeLongPress({ releasePointer: isSamePointer });
+          if (longPressFired && event.cancelable) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        })
         .on("click", (event, d) => {
           // Snapshot before potentially changing the network by click
           pushHistory('node-click');
@@ -6422,18 +6450,10 @@ const normalizeLinkForMerge = (link) => {
         })
         .call(
           d3.drag()
-            .touchable(() => true)
-            .clickDistance(viewportIsPhone ? TOUCH_DRAG_DISTANCE_THRESHOLD : 0)
+            .clickDistance(0)
             .filter(event => {
               const src = event?.sourceEvent || event;
               if (!src) return false;
-              const pointerType = src.pointerType || (src.touches ? 'touch' : undefined);
-              if (pointerType === 'touch') {
-                if ((src.touches && src.touches.length > 1) || src.ctrlKey || src.metaKey) {
-                  return false;
-                }
-                return true;
-              }
               const buttons = typeof src.buttons === 'number' ? src.buttons : null;
               const button = typeof src.button === 'number' ? src.button : null;
               const isPrimary = (buttons === 1) || (button === 0) || (buttons === null && button === null);
@@ -6789,6 +6809,17 @@ const normalizeLinkForMerge = (link) => {
             const source = getEndpointNode(d.source);
             const target = getEndpointNode(d.target);
             if (!source || !target) return -9999;
+            if (source === target) {
+              const nodeRadius = 40;
+              const margin = d.isPath ? 15 : 17;
+              const adjusted = Math.max(0, margin - 5);
+              const adjustedStart = Math.max(0, adjusted - 5);
+              const sideOffset = 6;
+              const loopHeight = 80;
+              const centerX = source.x - sideOffset - 6;
+              const w = approximateTextWidth(d.label);
+              return centerX - w / 2;
+            }
             const dx = target.x - source.x;
             const dy = target.y - source.y;
             const len = Math.hypot(dx, dy) || 1;
@@ -6800,12 +6831,21 @@ const normalizeLinkForMerge = (link) => {
             const endX = target.x - (dx / len) * (nodeRadius + adjusted);
             const x = (startX + endX) / 2;
             const w = approximateTextWidth(d.label);
-            return x - w / 2 - 4;
+            return x - w / 2;
           })
           .attr("y", function(d) {
             const source = getEndpointNode(d.source);
             const target = getEndpointNode(d.target);
             if (!source || !target) return -9999;
+            if (source === target) {
+              const nodeRadius = 40;
+              const margin = d.isPath ? 15 : 17;
+              const adjusted = Math.max(0, margin - 5);
+              const adjustedStart = Math.max(0, adjusted - 5);
+              const loopHeight = 80;
+              const centerY = source.y + (nodeRadius + adjustedStart) + loopHeight / 2;
+              return centerY - LABEL_HIT_HEIGHT / 2;
+            }
             const dx = target.x - source.x;
             const dy = target.y - source.y;
             const len = Math.hypot(dx, dy) || 1;
@@ -6816,10 +6856,46 @@ const normalizeLinkForMerge = (link) => {
             const startY = source.y + (dy / len) * (nodeRadius + adjustedStart);
             const endY = target.y - (dy / len) * (nodeRadius + adjusted);
             const y = (startY + endY) / 2;
-            return y - 10; // padding
+            return y - LABEL_HIT_HEIGHT / 2;
           })
-          .attr("width", d => approximateTextWidth(d.label) + 8)
-          .attr("height", 20);
+          .attr("width", d => approximateTextWidth(d.label))
+          .attr("height", LABEL_HIT_HEIGHT)
+          .attr("transform", function(d) {
+            const source = getEndpointNode(d.source);
+            const target = getEndpointNode(d.target);
+            if (!source || !target) return '';
+            const width = approximateTextWidth(d.label);
+            const height = LABEL_HIT_HEIGHT;
+            let centerX;
+            let centerY;
+            if (source === target) {
+              const nodeRadius = 40;
+              const margin = d.isPath ? 15 : 17;
+              const adjusted = Math.max(0, margin - 5);
+              const adjustedStart = Math.max(0, adjusted - 5);
+              const sideOffset = 6;
+              const loopHeight = 80;
+              centerX = source.x - sideOffset - 6;
+              centerY = source.y + (nodeRadius + adjustedStart) + loopHeight / 2;
+              return `rotate(-90, ${centerX}, ${centerY})`;
+            }
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const len = Math.hypot(dx, dy) || 1;
+            const nodeRadius = 40;
+            const margin = d.isPath ? 15 : 17;
+            const adjusted = Math.max(0, margin - 5);
+            const adjustedStart = Math.max(0, adjusted - 5);
+            const startX = source.x + (dx / len) * (nodeRadius + adjustedStart);
+            const endX = target.x - (dx / len) * (nodeRadius + adjusted);
+            const startY = source.y + (dy / len) * (nodeRadius + adjustedStart);
+            const endY = target.y - (dy / len) * (nodeRadius + adjusted);
+            centerX = (startX + endX) / 2;
+            centerY = (startY + endY) / 2;
+            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+            const adjustedAngle = Math.abs(angle) > 90 ? angle + 180 : angle;
+            return `rotate(${adjustedAngle}, ${centerX}, ${centerY})`;
+          });
         // Position nodes
         node
           .attr("cx", d => d.x)
@@ -6834,7 +6910,6 @@ const normalizeLinkForMerge = (link) => {
           .attr("transform", d => `translate(${d.x}, ${d.y})`)
           .attr("opacity", d => isNodeVisible(d) ? 1 : 0.2); // Apply filter-based opacity to labels too
 
-        applyLongPressHandlers();
       };
       // Create simulation for initial positioning only - controlled by shouldRunSimulation flag
       const nodesForSimulation = (networkData.nodes || []).filter(node => node && nodeById.has(node.id));
@@ -7150,7 +7225,6 @@ const normalizeLinkForMerge = (link) => {
       const startDragForNode = (dragEvent, node) => {
         if (!node) return;
         dragActiveRef.current = true;
-        try { clearLongPress(); } catch (_) {}
 
         if (simulationRef.current) {
           try {
@@ -7253,38 +7327,12 @@ const normalizeLinkForMerge = (link) => {
       };
 
       function dragstarted(event, d) {
-        const srcEvt = event?.sourceEvent;
-        const pointerType = srcEvt && (srcEvt.pointerType || (srcEvt.touches ? 'touch' : undefined));
         dragActiveRef.current = false;
-        if (pointerType === 'touch') {
-          const state = touchDragStateRef.current;
-          if (state) {
-            state.pendingDragNode = d;
-            state.pendingDragEvent = event;
-            state.dragInitialized = false;
-          }
-          return;
-        }
         startDragForNode(event, d);
       }
 
       function dragged(event, d) {
-        const srcEvt = event?.sourceEvent;
-        const pointerType = srcEvt && (srcEvt.pointerType || (srcEvt.touches ? 'touch' : undefined));
-        if (pointerType === 'touch') {
-          const state = touchDragStateRef.current;
-          if (state) {
-            state.hasMoved = true;
-            clearLongPress();
-            if (state.longPressFired) {
-              return;
-            }
-            if (!state.dragInitialized) {
-              startDragForNode(state.pendingDragEvent || event, state.pendingDragNode || d);
-              state.dragInitialized = true;
-            }
-          }
-        } else if (!dragActiveRef.current) {
+        if (!dragActiveRef.current) {
           startDragForNode(event, d);
         }
 
@@ -7312,15 +7360,6 @@ const normalizeLinkForMerge = (link) => {
       }
 
       function dragended(event, d) {
-        const srcEvt = event?.sourceEvent;
-        const pointerType = srcEvt && (srcEvt.pointerType || (srcEvt.touches ? 'touch' : undefined));
-        if (pointerType === 'touch') {
-          const state = touchDragStateRef.current;
-          resetTouchTracking(srcEvt?.pointerId ?? null);
-          if (state && !state.dragInitialized) {
-            return;
-          }
-        }
         if (!dragActiveRef.current) {
           return;
         }
@@ -7355,16 +7394,23 @@ const normalizeLinkForMerge = (link) => {
 
       // Initial render (simulation will take over immediately)
       renderNetwork();
-      applyLongPressHandlers();
 
       // Cleanup
       return () => {
-        clearLongPress();
-        resetTouchTracking();
+        clearNodeLongPress({ releasePointer: true });
+        clearLinkLongPress({ releasePointer: true });
+        if (typeof touchCleanup === 'function') {
+          touchCleanup();
+        }
         if (pendingZoomFrame) {
           cancelAnimationFrame(pendingZoomFrame);
           pendingZoomFrame = null;
         }
+        try {
+          if (typeof window !== 'undefined' && window.__cmg_centerGraph === centerGraphWithinViewport) {
+            window.__cmg_centerGraph = null;
+          }
+        } catch (_) {}
         if (simulationRef.current) {
           simulationRef.current.stop();
         }
@@ -7380,7 +7426,8 @@ const normalizeLinkForMerge = (link) => {
       selectedVoiceTypes,
       filtersVersion,
       currentCenterNode,
-      viewportIsPhone
+      viewportIsPhone,
+      viewportIsTablet
     ]); // Re-run on data, height, or filter changes
     // Guard against outside clicks forcing any transform reset by reapplying zoom
     useEffect(() => {
@@ -7604,6 +7651,14 @@ const normalizeLinkForMerge = (link) => {
                       })
                     : [];
                   setPathInfo({ nodes: sanitizedPathNodes, links: normalizedPathLinks, steps: normalizedSteps });
+                  if (viewportIsPhone) {
+                    if (pathFromRef.current) pathFromRef.current.value = '';
+                    if (pathToRef.current) pathToRef.current.value = '';
+                    pathFromValRef.current = '';
+                    pathToValRef.current = '';
+                    try { pathFromRef.current && pathFromRef.current.blur(); } catch (_) {}
+                    try { pathToRef.current && pathToRef.current.blur(); } catch (_) {}
+                  }
                   // Show the path on the graph by merging nodes/links and highlighting the path
                   const existingNodeMap = new Map();
                   networkData.nodes.forEach(existingNode => {
@@ -7973,133 +8028,94 @@ const normalizeLinkForMerge = (link) => {
                   ×
                 </button>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>From (Person full name)</label>
-                  <input
-                    ref={pathFromRef}
-                    defaultValue=""
-                    onInput={e => { pathFromValRef.current = e.target.value; }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    inputMode="text"
-                    name="cmg-path-from"
-                    data-lpignore="true"
-                    data-1p-ignore
-                    style={{
-                      width: '100%',
-                      padding: viewportIsPhone ? '12px 14px' : '6px 8px',
-                      border: '2px solid #3e96e2',
-                      borderRadius: viewportIsPhone ? 12 : 4,
-                      fontSize: viewportIsPhone ? '16px' : '14px'
-                    }}
-                  />
+              {(!viewportIsPhone || !pathInfo) && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>From (Person full name)</label>
+                    <input
+                      ref={pathFromRef}
+                      defaultValue=""
+                      onInput={e => { pathFromValRef.current = e.target.value; }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      inputMode="text"
+                      name="cmg-path-from"
+                      data-lpignore="true"
+                      data-1p-ignore
+                      style={{
+                        width: '100%',
+                        padding: viewportIsPhone ? '12px 14px' : '6px 8px',
+                        border: '2px solid #3e96e2',
+                        borderRadius: viewportIsPhone ? 12 : 4,
+                        fontSize: viewportIsPhone ? '16px' : '14px'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>To (Person full name)</label>
+                    <input
+                      ref={pathToRef}
+                      defaultValue=""
+                      onInput={e => { pathToValRef.current = e.target.value; }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      inputMode="text"
+                      name="cmg-path-to"
+                      data-lpignore="true"
+                      data-1p-ignore
+                      style={{
+                        width: '100%',
+                        padding: viewportIsPhone ? '12px 14px' : '6px 8px',
+                        border: '2px solid #3e96e2',
+                        borderRadius: viewportIsPhone ? 12 : 4,
+                        fontSize: viewportIsPhone ? '16px' : '14px'
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexDirection: viewportIsPhone ? 'column' : 'row' }}>
+                    <button
+                      onClick={() => { window.__cmg_runFindPath && window.__cmg_runFindPath(); }}
+                      style={{
+                        backgroundColor: '#2563eb',
+                        color: 'white',
+                        border: '2px solid #3e96e2',
+                        padding: viewportIsPhone ? '12px 16px' : '6px 10px',
+                        borderRadius: viewportIsPhone ? 12 : 4,
+                        cursor: 'pointer',
+                        flex: viewportIsPhone ? 1 : 'initial',
+                        fontSize: viewportIsPhone ? '16px' : '14px'
+                      }}
+                    >
+                      Find path
+                    </button>
+                    {!viewportIsPhone && (
+                      <button
+                        aria-label="Clear path"
+                        title="Clear path"
+                        onClick={handleClearPath}
+                        style={{
+                          backgroundColor: '#f9fafb',
+                          color: '#111827',
+                          border: '2px solid #3e96e2',
+                          padding: viewportIsPhone ? '12px 16px' : '6px 10px',
+                          borderRadius: viewportIsPhone ? 12 : 4,
+                          cursor: 'pointer',
+                          flex: viewportIsPhone ? 1 : 'initial',
+                          fontSize: viewportIsPhone ? '16px' : '14px'
+                        }}
+                      >
+                        Clear path
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>To (Person full name)</label>
-                  <input
-                    ref={pathToRef}
-                    defaultValue=""
-                    onInput={e => { pathToValRef.current = e.target.value; }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    inputMode="text"
-                    name="cmg-path-to"
-                    data-lpignore="true"
-                    data-1p-ignore
-                    style={{
-                      width: '100%',
-                      padding: viewportIsPhone ? '12px 14px' : '6px 8px',
-                      border: '2px solid #3e96e2',
-                      borderRadius: viewportIsPhone ? 12 : 4,
-                      fontSize: viewportIsPhone ? '16px' : '14px'
-                    }}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexDirection: viewportIsPhone ? 'column' : 'row' }}>
-                  <button
-                    onClick={() => { window.__cmg_runFindPath && window.__cmg_runFindPath(); }}
-                    style={{
-                      backgroundColor: '#2563eb',
-                      color: 'white',
-                      border: '2px solid #3e96e2',
-                      padding: viewportIsPhone ? '12px 16px' : '6px 10px',
-                      borderRadius: viewportIsPhone ? 12 : 4,
-                      cursor: 'pointer',
-                      flex: viewportIsPhone ? 1 : 'initial',
-                      fontSize: viewportIsPhone ? '16px' : '14px'
-                    }}
-                  >
-                    Find path
-                  </button>
-                  <button
-                    aria-label="Clear path"
-                    title="Clear path"
-                    onClick={() => {
-                      // Clear the panel info
-                      setPathInfo(null);
-                      // Clear input fields and refs
-                      if (pathFromRef.current) pathFromRef.current.value='';
-                      if (pathToRef.current) pathToRef.current.value='';
-                      pathFromValRef.current='';
-                      pathToValRef.current='';
-                      // If we have a snapshot from before the path overlay, restore it completely
-                      if (prePathNetworkRef.current) {
-                        const snapshot = prePathNetworkRef.current;
-                        // Reset trackers
-                        pathOverlayRef.current.addedNodeIds = new Set();
-                        pathOverlayRef.current.addedLinkKeys = new Set();
-                        // Restore network as it was before path overlay (and any expansions after)
-                        setNetworkData(
-                          sanitizeGraphData({
-                            nodes: snapshot.nodes.map(n => ({ ...n, isPath: false, wasAddedByPath: false })),
-                            links: snapshot.links.map(l => ({ ...l, isPath: false, wasAddedByPath: false }))
-                          })
-                        );
-                        // Clear snapshot so next path overlay will re-snapshot
-                        prePathNetworkRef.current = null;
-                        setShouldRunSimulation(false);
-                      } else {
-                        // Fallback: Remove path overlay from graph based on trackers
-                        setNetworkData(prev => {
-                          const addedNodeIds = new Set(pathOverlayRef.current.addedNodeIds || []);
-                          const addedLinkKeys = new Set(pathOverlayRef.current.addedLinkKeys || []);
-                          const remainingNodes = prev.nodes
-                            .filter(n => !addedNodeIds.has(n.id) && !n.wasAddedByPath)
-                            .map(n => ({ ...n, isPath: false, wasAddedByPath: false }));
-                          const remainingLinks = prev.links
-                            .filter(l => {
-                              const key = `${typeof l.source === 'string' ? l.source : l.source?.id}-${typeof l.target === 'string' ? l.target : l.target?.id}-${l.type}`;
-                              return !addedLinkKeys.has(key) && !l.wasAddedByPath;
-                            })
-                            .map(l => ({ ...l, isPath: false, wasAddedByPath: false }));
-                          pathOverlayRef.current.addedNodeIds = new Set();
-                          pathOverlayRef.current.addedLinkKeys = new Set();
-                          return sanitizeGraphData({ nodes: remainingNodes, links: remainingLinks });
-                        });
-                      }
-                    }}
-                    style={{
-                      backgroundColor: '#f9fafb',
-                      color: '#111827',
-                      border: '2px solid #3e96e2',
-                      padding: viewportIsPhone ? '12px 16px' : '6px 10px',
-                      borderRadius: viewportIsPhone ? 12 : 4,
-                      cursor: 'pointer',
-                      flex: viewportIsPhone ? 1 : 'initial',
-                      fontSize: viewportIsPhone ? '16px' : '14px'
-                    }}
-                  >
-                    Clear path
-                  </button>
-                </div>
-              </div>
+              )}
               {pathInfo && (
                 <div
                   ref={pathListRef}
@@ -8155,6 +8171,26 @@ const normalizeLinkForMerge = (link) => {
                         );
                       })}
                     </div>
+                  )}
+                  {viewportIsPhone && (
+                    <button
+                      aria-label="Clear path"
+                      title="Clear path"
+                      onClick={handleClearPath}
+                      style={{
+                        marginTop: 12,
+                        width: '100%',
+                        backgroundColor: '#f9fafb',
+                        color: '#111827',
+                        border: '2px solid #3e96e2',
+                        padding: '12px 16px',
+                        borderRadius: 12,
+                        cursor: 'pointer',
+                        fontSize: '16px'
+                      }}
+                    >
+                      Clear path
+                    </button>
                   )}
                 </div>
               )}
@@ -8680,6 +8716,12 @@ const normalizeLinkForMerge = (link) => {
   };
     const ContextMenu = React.memo(() => {
     const node = contextMenu.node;
+    const [hoveredMenuIndex, setHoveredMenuIndex] = useState(null);
+    useEffect(() => {
+      if (!contextMenu.show) {
+        setHoveredMenuIndex(null);
+      }
+    }, [contextMenu.show]);
     
     // Extract stable values
     const nodeId = node?.id;
@@ -8847,21 +8889,14 @@ const normalizeLinkForMerge = (link) => {
 
     if (!contextMenu.show) return null;
 
-    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
-    const BASE_MENU_WIDTH = 280;
-    const SUBMENU_WIDTH = 320;
-    const SUBMENU_OVERLAP = 24;
-    const contextMenuRightEdge = contextMenu.x + BASE_MENU_WIDTH;
-    const shouldFlipSubmenu =
-      viewportWidth > 0 &&
-      contextMenuRightEdge + SUBMENU_WIDTH > viewportWidth - 16;
-    const submenuOffsetStyle = shouldFlipSubmenu
-      ? { right: `calc(100% - ${SUBMENU_OVERLAP}px)` }
-      : { left: `calc(100% - ${SUBMENU_OVERLAP}px)` };
+    const activeSubmenuItem = (expandSubmenu != null && menuItems[expandSubmenu]?.hasSubmenu)
+      ? { index: expandSubmenu, item: menuItems[expandSubmenu] }
+      : null;
 
     const dismissMenu = () => {
       setContextMenu({ show: false, x: 0, y: 0, node: null });
       setExpandSubmenu(null);
+      setHoveredMenuIndex(null);
     };
 
    return (
@@ -8926,30 +8961,52 @@ const normalizeLinkForMerge = (link) => {
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 color: item.disabled ? '#9ca3af' : '#374151',
-                transition: 'background-color 0.1s'
+                transition: 'background-color 0.1s',
+                backgroundColor:
+                  (!item.disabled && hoveredMenuIndex === index) ||
+                  (item.hasSubmenu && expandSubmenu === index)
+                    ? '#f3f4f6'
+                    : 'transparent'
               }}
-                             onMouseEnter={(e) => {
-                 e.target.style.backgroundColor = '#f3f4f6';
-                 if (item.hasSubmenu) {
-                   // Clear any existing timeout
-                   if (submenuTimeoutRef.current) {
-                     clearTimeout(submenuTimeoutRef.current);
-                   }
-                   setExpandSubmenu(index);
-                 }
-               }}
-               onMouseLeave={(e) => {
-                 e.target.style.backgroundColor = 'transparent';
-                 if (item.hasSubmenu) {
-                   // Set timeout to close submenu
-                   submenuTimeoutRef.current = setTimeout(() => {
-                     setExpandSubmenu(null);
-                   }, 300);
-                 }
-               }}
+              onMouseEnter={() => {
+                setHoveredMenuIndex(index);
+                if (item.hasSubmenu) {
+                  if (submenuTimeoutRef.current) {
+                    clearTimeout(submenuTimeoutRef.current);
+                  }
+                  setExpandSubmenu(index);
+                }
+              }}
+              onMouseLeave={() => {
+                setHoveredMenuIndex((current) => (current === index ? null : current));
+                if (item.hasSubmenu) {
+                  if (submenuTimeoutRef.current) {
+                    clearTimeout(submenuTimeoutRef.current);
+                  }
+                  submenuTimeoutRef.current = setTimeout(() => {
+                    setExpandSubmenu(null);
+                  }, 300);
+                }
+              }}
+              onTouchStart={() => {
+                setHoveredMenuIndex(index);
+                if (item.hasSubmenu) {
+                  if (submenuTimeoutRef.current) {
+                    clearTimeout(submenuTimeoutRef.current);
+                  }
+                  setExpandSubmenu(index);
+                }
+              }}
               onClick={() => {
                 if (item.disabled) return;
-                if (!item.hasSubmenu && typeof item.action === 'function') {
+                if (item.hasSubmenu) {
+                  // Toggle submenu on click for touch/keyboard users
+                  const willOpen = expandSubmenu !== index;
+                  setExpandSubmenu(willOpen ? index : null);
+                  setHoveredMenuIndex(willOpen ? index : null);
+                  return;
+                }
+                if (typeof item.action === 'function') {
                   item.action();
                 }
               }}
@@ -8957,66 +9014,82 @@ const normalizeLinkForMerge = (link) => {
               <span>{item.label}</span>
               {item.hasSubmenu && <span style={{ color: '#9ca3af' }}>▶</span>}
             </div>
-
-                        {/* Submenu */}
-            {item.hasSubmenu && expandSubmenu === index && (
-              <div
-                style={{
-                  position: 'absolute',
-                  ...submenuOffsetStyle,
-                  top: '0',
-                  backgroundColor: 'white',
-                  border: '2px solid #3e96e2',
-                  borderRadius: '8px',
-                  padding: '8px 0',
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                  minWidth: '280px',
-                  maxWidth: '400px',
-                  zIndex: 1001,
-                  fontSize: '16px'
-                }}
-                onMouseEnter={() => {
-                  // Clear any existing timeout when entering submenu
-                  if (submenuTimeoutRef.current) {
-                    clearTimeout(submenuTimeoutRef.current);
-                  }
-                  setExpandSubmenu(index);
-                }}
-                onMouseLeave={() => {
-                  // Set timeout to close submenu when leaving
-                  submenuTimeoutRef.current = setTimeout(() => {
-                    setExpandSubmenu(null);
-                  }, 300);
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {item.submenu.map((subItem, subIndex) => (
-                  <div
-                    key={subIndex}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      color: '#374151',
-                      fontSize: '16px',
-                      fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
-                      whiteSpace: 'nowrap',
-                      minHeight: '24px',
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}
-                    onMouseEnter={(e) => e.target.style.backgroundColor = '#f3f4f6'}
-                    onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
-                    onClick={() => {
-                      if (typeof subItem.action === 'function') subItem.action();
-                    }}
-                                      >
-                      {subItem.label}
-                    </div>
-                ))}
-              </div>
-            )}
           </div>
         ))}
+        {activeSubmenuItem?.item?.submenu && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '10px',
+              left: '10px',
+              backgroundColor: 'white',
+              border: '2px solid #3e96e2',
+              borderRadius: '8px',
+              padding: '8px 0',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+              minWidth: '280px',
+              maxWidth: '400px',
+              zIndex: 1001,
+              fontSize: '16px'
+            }}
+            onMouseEnter={() => {
+              if (submenuTimeoutRef.current) {
+                clearTimeout(submenuTimeoutRef.current);
+              }
+              if (activeSubmenuItem) {
+                setExpandSubmenu(activeSubmenuItem.index);
+                setHoveredMenuIndex(activeSubmenuItem.index);
+              }
+            }}
+            onMouseLeave={() => {
+              if (submenuTimeoutRef.current) {
+                clearTimeout(submenuTimeoutRef.current);
+              }
+              submenuTimeoutRef.current = setTimeout(() => {
+                setExpandSubmenu(null);
+                setHoveredMenuIndex(null);
+              }, 300);
+            }}
+            onTouchStart={() => {
+              if (submenuTimeoutRef.current) {
+                clearTimeout(submenuTimeoutRef.current);
+              }
+              if (activeSubmenuItem) {
+                setExpandSubmenu(activeSubmenuItem.index);
+                setHoveredMenuIndex(activeSubmenuItem.index);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {activeSubmenuItem.item.submenu.map((subItem, subIndex) => (
+              <div
+                key={subIndex}
+                style={{
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  color: '#374151',
+                  fontSize: '16px',
+                  fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+                  whiteSpace: 'nowrap',
+                  minHeight: '24px',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+                onMouseEnter={(e) => {
+                  if (e.currentTarget) e.currentTarget.style.backgroundColor = '#f3f4f6';
+                }}
+                onMouseLeave={(e) => {
+                  if (e.currentTarget) e.currentTarget.style.backgroundColor = 'transparent';
+                }}
+                onClick={() => {
+                  if (typeof subItem.action === 'function') subItem.action();
+                }}
+              >
+                {subItem.label}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   });
@@ -9949,18 +10022,16 @@ const normalizeLinkForMerge = (link) => {
 
 
     // Auto-fill test credentials
-    const handleAutoFill = () => {
-      setEmail('test@example.com');
-      setPassword('password123');
-    };
 
     const outerStyle = isMobileViewport ? {
       minHeight: backgroundMinHeight,
-      backgroundImage: 'url(/aspens.jpg)',
-      backgroundSize: 'cover',
-      backgroundPosition: 'center center',
-      backgroundRepeat: 'no-repeat',
-      backgroundAttachment: backgroundAttachmentMode,
+      width: '100%',
+      background: 'center top / cover no-repeat url(/aspens.jpg)',
+      backgroundAttachment: 'scroll',
+      paddingLeft: 'var(--cmg-mobile-inline-padding)',
+      paddingRight: 'var(--cmg-mobile-inline-padding-end)',
+      paddingTop: 'var(--cmg-mobile-block-padding)',
+      paddingBottom: 'var(--cmg-mobile-block-padding-end)',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'stretch',
@@ -10128,24 +10199,6 @@ const normalizeLinkForMerge = (link) => {
               >
                 {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
               </button>
-              <div className="mobile-auth-note">
-                <strong>Testing credentials:</strong><br />
-                Email: test@example.com<br />
-                Password: password123
-              </div>
-              <button
-                type="button"
-                onClick={handleAutoFill}
-                style={{
-                  backgroundColor: '#2563eb',
-                  color: '#ffffff',
-                  border: '2px solid #2563eb',
-                  borderRadius: '12px',
-                  fontSize: '15px'
-                }}
-              >
-                Auto-fill credentials
-              </button>
             </div>
           ) : (
             <>
@@ -10165,27 +10218,6 @@ const normalizeLinkForMerge = (link) => {
                     {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
                   </button>
                 </div>
-              </div>
-              <div style={{ marginTop: '15px', padding: '10px', backgroundColor: '#f8f9fa', borderRadius: '8px', fontSize: '12px', color: '#666' }}>
-                <div style={{ marginBottom: '8px' }}>
-                  <strong>For testing:</strong><br />
-                  Email: test@example.com<br />
-                  Password: password123
-                </div>
-                <button
-                  onClick={handleAutoFill}
-                  style={{
-                    fontSize: '11px',
-                    padding: '4px 8px',
-                    backgroundColor: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Auto-fill credentials
-                </button>
               </div>
             </>
           )}
@@ -10325,18 +10357,29 @@ const normalizeLinkForMerge = (link) => {
   );
   };
 
+  const appBackgroundStyle = isMobileViewport ? {
+    minHeight: backgroundMinHeight,
+    width: '100%',
+    background: 'center top / cover no-repeat url(/aspens.jpg)',
+    backgroundAttachment: 'scroll',
+    paddingLeft: 'var(--cmg-mobile-inline-padding)',
+    paddingRight: 'var(--cmg-mobile-inline-padding-end)',
+    paddingTop: 'var(--cmg-mobile-block-padding)',
+    paddingBottom: 'var(--cmg-mobile-block-padding-end)'
+  } : {
+    minHeight: backgroundMinHeight,
+    backgroundImage: 'url(/aspens.jpg)',
+    backgroundSize: 'cover',
+    backgroundPosition: 'center center',
+    backgroundRepeat: 'no-repeat',
+    backgroundAttachment: backgroundAttachmentMode
+  };
+
   if (!token) {
     return <AuthForm />;
   }
   return (
-    <div style={{
-      minHeight: backgroundMinHeight,
-      backgroundImage: 'url(/aspens.jpg)',
-      backgroundSize: 'cover',
-      backgroundPosition: 'center center',
-      backgroundRepeat: 'no-repeat',
-      backgroundAttachment: backgroundAttachmentMode
-    }}>
+    <div style={appBackgroundStyle}>
       {false && (<header style={{
         backgroundColor: 'white',
         borderBottom: '1px solid #dee2e6',
@@ -10855,7 +10898,7 @@ const normalizeLinkForMerge = (link) => {
                   {renderSaveExportFields({ isMobileLayout: true })}
                 </div>
               )}
-              {currentView === 'network' && (
+              {currentView === 'network' && !isMobileViewport && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <button type="button" onClick={() => { goBack(); }} disabled={historyCounts.past === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.past ? 'pointer' : 'not-allowed', opacity: historyCounts.past ? 1 : 0.6 }}>Back</button>
                   <button type="button" onClick={() => { goForward(); }} disabled={historyCounts.future === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.future ? 'pointer' : 'not-allowed', opacity: historyCounts.future ? 1 : 0.6 }}>Forward</button>
@@ -11034,7 +11077,7 @@ const normalizeLinkForMerge = (link) => {
                     <button
                       key={example.key}
                       type="button"
-                      onClick={() => loadViewByToken(example.token, { treatAsSearch: true })}
+                      onClick={() => loadViewByToken(example.token, { treatAsSearch: true, centerOnLoad: isHeaderMobile })}
                       style={{
                         width: isHeaderMobile ? '100%' : 250,
                         height: isHeaderMobile ? 200 : 170,
@@ -12425,17 +12468,11 @@ const normalizeLinkForMerge = (link) => {
             <button
               type="button"
               className="mobile-toolbar__button"
-              onPointerDown={handleToolbarPointerDown}
-              onPointerUp={(e) => handleToolbarPointerUp(e, () => {
+              onClick={() => {
                 if (historyCounts.past > 0) {
                   goBack();
                 }
-              })}
-              onClick={handleToolbarClick(() => {
-                if (historyCounts.past > 0) {
-                  goBack();
-                }
-              })}
+              }}
               disabled={historyCounts.past === 0}
               style={{
                 opacity: historyCounts.past === 0 ? 0.5 : 1,
@@ -12447,17 +12484,11 @@ const normalizeLinkForMerge = (link) => {
             <button
               type="button"
               className="mobile-toolbar__button"
-              onPointerDown={handleToolbarPointerDown}
-              onPointerUp={(e) => handleToolbarPointerUp(e, () => {
+              onClick={() => {
                 if (historyCounts.future > 0) {
                   goForward();
                 }
-              })}
-              onClick={handleToolbarClick(() => {
-                if (historyCounts.future > 0) {
-                  goForward();
-                }
-              })}
+              }}
               disabled={historyCounts.future === 0}
               style={{
                 opacity: historyCounts.future === 0 ? 0.5 : 1,
@@ -12469,28 +12500,19 @@ const normalizeLinkForMerge = (link) => {
             <button
               type="button"
               className="mobile-toolbar__button"
-              onPointerDown={handleToolbarPointerDown}
-              onPointerUp={(e) => handleToolbarPointerUp(e, () => {
+              onClick={() => {
                 setShowFilterPanel(true);
-              })}
-              onClick={handleToolbarClick(() => {
-                setShowFilterPanel(true);
-              })}
+              }}
             >
               Filters
             </button>
             <button
               type="button"
               className="mobile-toolbar__button"
-              onPointerDown={handleToolbarPointerDown}
-              onPointerUp={(e) => handleToolbarPointerUp(e, () => {
+              onClick={() => {
                 setCurrentView('network');
                 setShowPathPanel(v => !v);
-              })}
-              onClick={handleToolbarClick(() => {
-                setCurrentView('network');
-                setShowPathPanel(v => !v);
-              })}
+              }}
             >
               Path
             </button>
