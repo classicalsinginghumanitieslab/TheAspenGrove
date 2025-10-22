@@ -2198,8 +2198,16 @@ const attemptLoadSavedView = async () => {
 
   useEffect(() => {
     try {
+      let incomingResetToken = '';
       const params = new URLSearchParams(window.location.search);
-      const incomingResetToken = params.get('resetToken') || params.get('token') || '';
+      incomingResetToken = params.get('resetToken') || params.get('token') || '';
+      if (!incomingResetToken) {
+        const hash = window.location.hash || '';
+        if (hash.startsWith('#')) {
+          const hashParams = new URLSearchParams(hash.slice(1));
+          incomingResetToken = hashParams.get('resetToken') || hashParams.get('token') || '';
+        }
+      }
       if (incomingResetToken) {
         setInitialResetToken(incomingResetToken);
         clearStoredToken();
@@ -10022,27 +10030,38 @@ const normalizeLinkForMerge = (link) => {
     }, []);
 
     useEffect(() => {
-      if (initialResetToken) {
-        setResetTokenValue(initialResetToken);
-        setShowResetPasswordModal(true);
-      }
-    }, [initialResetToken]);
-
-    useEffect(() => {
       try {
         const params = new URLSearchParams(window.location.search);
-        const incomingToken = params.get('resetToken') || params.get('token') || '';
-        if (incomingToken && !initialResetToken) {
-          setResetTokenValue(incomingToken);
+        const searchToken = params.get('resetToken') || params.get('token') || '';
+        params.delete('resetToken');
+        params.delete('token');
+        const cleanedQuery = params.toString();
+
+        const hash = window.location.hash || '';
+        let hashToken = '';
+        let cleanedHash = hash;
+        if (hash.startsWith('#')) {
+          const hashParams = new URLSearchParams(hash.slice(1));
+          hashToken = hashParams.get('resetToken') || hashParams.get('token') || '';
+          hashParams.delete('resetToken');
+          hashParams.delete('token');
+          const hashString = hashParams.toString();
+          cleanedHash = hashString ? `#${hashString}` : '';
+        }
+
+        const resolvedToken = initialResetToken || searchToken || hashToken;
+        if (resolvedToken) {
+          setResetTokenValue(resolvedToken);
           setShowResetPasswordModal(true);
-          params.delete('resetToken');
-          params.delete('token');
-          const remainingQuery = params.toString();
-          const newUrl = `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}${window.location.hash || ''}`;
+        }
+
+        const newUrl = `${window.location.pathname}${cleanedQuery ? `?${cleanedQuery}` : ''}${cleanedHash}`;
+        const currentRelative = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (newUrl !== currentRelative) {
           window.history.replaceState({}, document.title, newUrl);
         }
       } catch (_) {}
-    }, []);
+    }, [initialResetToken]);
     
 
 

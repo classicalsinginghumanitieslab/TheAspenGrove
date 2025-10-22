@@ -140,7 +140,8 @@ const buildResetLink = (token) => {
   if (!EFFECTIVE_RESET_URL_BASE) {
     throw new Error('RESET_URL_BASE (or CLIENT_BASE_URL) is not configured.');
   }
-  return `${EFFECTIVE_RESET_URL_BASE.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+  const base = EFFECTIVE_RESET_URL_BASE.replace(/\/$/, '');
+  return `${base}/#resetToken=${encodeURIComponent(token)}`;
 };
 
 const sendPasswordResetEmail = async (recipientEmail, token) => {
