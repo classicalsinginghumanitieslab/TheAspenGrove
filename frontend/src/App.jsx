@@ -9989,11 +9989,37 @@ const normalizeLinkForMerge = (link) => {
     const [password, setPassword] = useState('');
     const [showTerms, setShowTerms] = useState(false);
     const [termsChecked, setTermsChecked] = useState(false);
+    const [isForgotPassword, setIsForgotPassword] = useState(false);
+    const [forgotEmail, setForgotEmail] = useState('');
+    const [forgotLoading, setForgotLoading] = useState(false);
+    const [forgotMessage, setForgotMessage] = useState('');
+    const [forgotError, setForgotError] = useState('');
+    const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
+    const [resetTokenValue, setResetTokenValue] = useState('');
+    const [resetPasswordValue, setResetPasswordValue] = useState('');
+    const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
+    const [resetStatus, setResetStatus] = useState({ loading: false, message: '', error: '' });
 
     useEffect(() => {
       try {
         const accepted = localStorage.getItem('tosAccepted') === '1';
         if (accepted) setTermsChecked(true);
+      } catch (_) {}
+    }, []);
+
+    useEffect(() => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const incomingToken = params.get('resetToken') || params.get('token') || '';
+        if (incomingToken) {
+          setResetTokenValue(incomingToken);
+          setShowResetPasswordModal(true);
+          params.delete('resetToken');
+          params.delete('token');
+          const remainingQuery = params.toString();
+          const newUrl = `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}${window.location.hash || ''}`;
+          window.history.replaceState({}, document.title, newUrl);
+        }
       } catch (_) {}
     }, []);
     
@@ -10017,6 +10043,95 @@ const normalizeLinkForMerge = (link) => {
       } else {
         register(email, password);
       }
+    };
+
+    const handleForgotSubmit = async () => {
+      const targetEmail = (forgotEmail || email || '').trim();
+      if (!targetEmail) {
+        setForgotError('Please enter the email associated with your account.');
+        return;
+      }
+      setForgotEmail(targetEmail);
+      setForgotLoading(true);
+      setForgotMessage('');
+      setForgotError('');
+      try {
+        const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: targetEmail })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to send reset email. Please try again.');
+        }
+        setForgotMessage('If an account exists for that email, a reset link has been sent.');
+      } catch (err) {
+        setForgotError(err?.message || 'Failed to send reset email.');
+      } finally {
+        setForgotLoading(false);
+      }
+    };
+
+    const handleResetSubmit = async () => {
+      if (!resetTokenValue.trim()) {
+        setResetStatus({ loading: false, message: '', error: 'Reset code is required.' });
+        return;
+      }
+      if (!resetPasswordValue || resetPasswordValue.length < 8) {
+        setResetStatus({ loading: false, message: '', error: 'Password must be at least 8 characters.' });
+        return;
+      }
+      if (resetPasswordValue !== resetPasswordConfirm) {
+        setResetStatus({ loading: false, message: '', error: 'Passwords do not match.' });
+        return;
+      }
+      setResetStatus({ loading: true, message: '', error: '' });
+      try {
+        const response = await fetch(`${API_BASE}/auth/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: resetTokenValue.trim(), password: resetPasswordValue })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to reset password. Please try again.');
+        }
+        setResetStatus({ loading: false, message: 'Password updated. You may now sign in.', error: '' });
+        setIsForgotPassword(false);
+        setResetPasswordValue('');
+        setResetPasswordConfirm('');
+        setTimeout(() => {
+          setShowResetPasswordModal(false);
+          setResetStatus({ loading: false, message: '', error: '' });
+          setResetTokenValue('');
+        }, 1500);
+      } catch (err) {
+        setResetStatus({ loading: false, message: '', error: err?.message || 'Failed to reset password.' });
+      }
+    };
+
+    const openForgotPassword = () => {
+      setIsForgotPassword(true);
+      setForgotEmail(email);
+      setForgotMessage('');
+      setForgotError('');
+      setError('');
+    };
+
+    const closeForgotPassword = () => {
+      setIsForgotPassword(false);
+      setForgotLoading(false);
+      setForgotMessage('');
+      setForgotError('');
+      setForgotEmail('');
+    };
+
+    const closeResetPasswordModal = () => {
+      setShowResetPasswordModal(false);
+      setResetStatus({ loading: false, message: '', error: '' });
+      setResetPasswordValue('');
+      setResetPasswordConfirm('');
     };
 
 
@@ -10056,13 +10171,13 @@ const normalizeLinkForMerge = (link) => {
 
     const cardProps = {
       className: isMobileViewport ? 'mobile-auth-card' : undefined,
-      style: isMobileViewport ? undefined : {
+      style: {
         maxWidth: '460px',
         width: '100%',
-        backgroundColor: 'rgba(255,255,255,0.6)',
-        borderRadius: '8px',
-        boxShadow: '0 10px 25px rgba(0,0,0,0.08)',
-        padding: '32px'
+        backgroundColor: 'rgba(255,255,255,0.82)',
+        borderRadius: '12px',
+        boxShadow: '0 18px 44px rgba(15, 23, 42, 0.22)',
+        padding: isMobileViewport ? '24px 20px' : '36px'
       }
     };
 
@@ -10085,140 +10200,245 @@ const normalizeLinkForMerge = (link) => {
     <div style={outerStyle}>
       <div {...wrapperProps}>
         <div {...cardProps}>
-          <div className={isMobileViewport ? 'mobile-auth-title' : undefined} style={isMobileViewport ? undefined : { textAlign: 'center', marginBottom: '18px' }}>
-            <h1 style={{ fontSize: isMobileViewport ? '26px' : '28px', fontWeight: 'bold', color: '#111', margin: '8px 0 16px 0' }}>
-              The Aspen Grove <br /> of Opera Singers
+          <div className={isMobileViewport ? 'mobile-auth-title' : undefined} style={{
+            textAlign: 'center',
+            marginBottom: '18px',
+            backgroundColor: '#ffffff',
+            padding: isMobileViewport ? '16px 14px' : '18px 16px',
+            borderRadius: isMobileViewport ? '12px' : '12px',
+            boxShadow: isMobileViewport ? '0 6px 18px rgba(15, 23, 42, 0.18)' : '0 8px 20px rgba(15, 23, 42, 0.15)'
+          }}>
+            <h1 style={{ fontSize: isMobileViewport ? '26px' : '30px', fontWeight: '700', color: '#111827', margin: 0, lineHeight: 1.25 }}>
+              The Aspen Grove of Opera Singers
             </h1>
-            <div style={{ display: 'inline-block', backgroundColor: '#ffffff', padding: isMobileViewport ? '8px 14px' : '8px 12px', borderRadius: isMobileViewport ? '12px' : '8px' }}>
-              <div style={{ fontSize: '16px', fontWeight: '600', color: '#111', lineHeight: 1.35, textAlign: 'center' }}>
-                Discover Connections Among Classical Singers, Opera Premieres, and Vocal Pedagogy Books
+            <p style={{ margin: '12px 0 0 0', fontSize: isMobileViewport ? '16px' : '17px', fontWeight: '500', color: '#1f2937', lineHeight: 1.4 }}>
+              Discover connections among classical singers, opera premieres, and vocal pedagogy books.
+            </p>
+          </div>
+  
+          {isForgotPassword ? (
+            <>
+              <div style={{ marginBottom: isMobileViewport ? 18 : 20, color: '#1f2937', lineHeight: 1.55, fontSize: isMobileViewport ? '15px' : '14px' }}>
+                Enter the email associated with your account and we’ll send you a secure link to reset your password.
               </div>
-            </div>
-          </div>
-  
-          <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
-            <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={inputStyle}
-              placeholder="your@email.com"
-              autoComplete="email"
-            />
-          </div>
-  
-          <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
-            <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={inputStyle}
-              placeholder="••••••••"
-            />
-          </div>
-  
-          {error && (
-            <div style={{
-              backgroundColor: '#fee',
-              border: '2px solid #3e96e2',
-              color: '#c33',
-              padding: '10px',
-              borderRadius: isMobileViewport ? '12px' : '8px'
-            }}>
-              {error}
-            </div>
-          )}
-  
-          <div
-            className={isMobileViewport ? 'mobile-auth-inline' : undefined}
-            style={isMobileViewport ? undefined : { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}
-          >
-            <button
-              type="button"
-              onClick={() => setShowTerms(true)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#111',
-                textDecoration: 'underline',
-                cursor: 'pointer',
-                fontSize: isMobileViewport ? '14px' : '12px',
-                padding: 0
-              }}
-            >
-              View disclaimer
-            </button>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: isMobileViewport ? '14px' : '12px', color: '#111' }}>
-              <input
-                type="checkbox"
-                checked={termsChecked}
-                onChange={(e) => {
-                  const v = e.target.checked;
-                  setTermsChecked(v);
-                  try {
-                    v ? localStorage.setItem('tosAccepted', '1') : localStorage.removeItem('tosAccepted');
-                  } catch (_) {}
-                }}
-              />
-              I acknowledge the disclaimer
-            </label>
-          </div>
-  
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            style={{
-              width: '100%',
-              backgroundColor: '#667eea',
-              color: '#ffffff',
-              padding: isMobileViewport ? '14px' : '12px',
-              border: 'none',
-              borderRadius: isMobileViewport ? '12px' : '8px',
-              fontSize: '16px',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              opacity: loading ? 0.7 : 1
-            }}
-          >
-            {loading ? 'Loading...' : (isLogin ? 'Sign In' : 'Create Account')}
-          </button>
-  
-          {isMobileViewport ? (
-            <div className="mobile-auth-actions">
+              {forgotError && (
+                <div style={{
+                  backgroundColor: '#fef2f2',
+                  border: '2px solid #fca5a5',
+                  color: '#b91c1c',
+                  padding: '10px',
+                  borderRadius: isMobileViewport ? '12px' : '8px',
+                  marginBottom: 12
+                }}>
+                  {forgotError}
+                </div>
+              )}
+              {forgotMessage && (
+                <div style={{
+                  backgroundColor: '#ecfdf5',
+                  border: '2px solid #6ee7b7',
+                  color: '#047857',
+                  padding: '10px',
+                  borderRadius: isMobileViewport ? '12px' : '8px',
+                  marginBottom: 12
+                }}>
+                  {forgotMessage}
+                </div>
+              )}
+              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
+                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Account email</label>
+                <input
+                  type="email"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  style={inputStyle}
+                  placeholder="your@email.com"
+                  autoComplete="email"
+                />
+              </div>
               <button
-                type="button"
-                onClick={() => setIsLogin(!isLogin)}
+                onClick={handleForgotSubmit}
+                disabled={forgotLoading}
                 style={{
-                  backgroundColor: '#f3f4f6',
-                  color: '#0f172a',
-                  border: '2px solid #3e96e2',
-                  borderRadius: '12px',
-                  fontWeight: 600
+                  width: '100%',
+                  backgroundColor: '#2563eb',
+                  color: '#ffffff',
+                  padding: isMobileViewport ? '14px' : '12px',
+                  border: 'none',
+                  borderRadius: isMobileViewport ? '12px' : '8px',
+                  fontSize: '16px',
+                  cursor: forgotLoading ? 'not-allowed' : 'pointer',
+                  opacity: forgotLoading ? 0.7 : 1
                 }}
               >
-                {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
+                {forgotLoading ? 'Sending reset link…' : 'Send reset link'}
               </button>
-            </div>
+              <button
+                type="button"
+                onClick={closeForgotPassword}
+                style={{
+                  marginTop: 16,
+                  background: 'none',
+                  border: 'none',
+                  color: '#2563eb',
+                  textDecoration: 'underline',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Back to sign in
+              </button>
+            </>
           ) : (
             <>
-              <div style={{ marginTop: '10px', textAlign: 'center' }}>
-                <div style={{ display: 'inline-block', backgroundColor: 'rgba(255,255,255,0.6)', padding: '6px 10px', borderRadius: '8px' }}>
+              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
+                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  style={inputStyle}
+                  placeholder="your@email.com"
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
+                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  style={inputStyle}
+                  placeholder="••••••••"
+                />
+              </div>
+
+              {error && (
+                <div style={{
+                  backgroundColor: '#fee',
+                  border: '2px solid #3e96e2',
+                  color: '#c33',
+                  padding: '10px',
+                  borderRadius: isMobileViewport ? '12px' : '8px'
+                }}>
+                  {error}
+                </div>
+              )}
+
+              <div
+                className={isMobileViewport ? 'mobile-auth-inline' : undefined}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  marginBottom: isMobileViewport ? 14 : 16
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowTerms(true)}
+                  style={{
+                    background: '#ffffff',
+                    border: '2px solid #3e96e2',
+                    color: '#0f172a',
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                    fontSize: isMobileViewport ? '15px' : '13px',
+                    padding: isMobileViewport ? '12px 18px' : '10px 16px',
+                    borderRadius: '14px',
+                    fontWeight: 600,
+                    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.18)'
+                  }}
+                >
+                  View and acknowledge disclaimer to continue
+                </button>
+              </div>
+
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                style={{
+                  width: '100%',
+                  backgroundColor: '#667eea',
+                  color: '#ffffff',
+                  padding: isMobileViewport ? '14px' : '12px',
+                  border: 'none',
+                  borderRadius: isMobileViewport ? '12px' : '8px',
+                  fontSize: '16px',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  opacity: loading ? 0.7 : 1
+                }}
+              >
+                {loading ? 'Loading...' : (isLogin ? 'Sign In' : 'Create Account')}
+              </button>
+
+              {isMobileViewport ? (
+                <div className="mobile-auth-actions">
                   <button
+                    type="button"
                     onClick={() => setIsLogin(!isLogin)}
                     style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#111',
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      textDecoration: 'underline'
+                      backgroundColor: '#f3f4f6',
+                      color: '#0f172a',
+                      border: '2px solid #3e96e2',
+                      borderRadius: '12px',
+                      fontWeight: 600
                     }}
                   >
                     {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
                   </button>
+                  <button
+                    type="button"
+                    onClick={openForgotPassword}
+                    style={{
+                      backgroundColor: '#ffffff',
+                      color: '#2563eb',
+                      border: '2px solid #3e96e2',
+                      borderRadius: '12px',
+                      fontWeight: 600
+                    }}
+                  >
+                    Forgot password?
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div style={{ marginTop: '10px', textAlign: 'center' }}>
+                    <div style={{ display: 'inline-block', backgroundColor: 'rgba(255,255,255,0.6)', padding: '6px 10px', borderRadius: '8px' }}>
+                      <button
+                        onClick={() => setIsLogin(!isLogin)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#111',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          textDecoration: 'underline'
+                        }}
+                      >
+                        {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: '12px', textAlign: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={openForgotPassword}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#2563eb',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        textDecoration: 'underline'
+                      }}
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -10275,22 +10495,9 @@ const normalizeLinkForMerge = (link) => {
                 <p className="mobile-auth-note">
                   If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know.</a> I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank" rel="noopener noreferrer">this form</a>, and I will incorporate it as quickly as I can.
                 </p>
-                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: '14px', color: '#111' }}>
-                  <input
-                    type="checkbox"
-                    checked={termsChecked}
-                    onChange={(e) => {
-                      const v = e.target.checked;
-                      setTermsChecked(v);
-                      try {
-                        v ? localStorage.setItem('tosAccepted', '1') : localStorage.removeItem('tosAccepted');
-                      } catch (_) {}
-                    }}
-                  />
-                  <span className="mobile-auth-note" style={{ color: '#111', fontSize: '14px' }}>
-                    By checking this box, I acknowledge the extent of the site's current contents and limitations expressed in this disclaimer.
-                  </span>
-                </label>
+                <p className="mobile-auth-note" style={{ color: '#111', fontSize: '14px' }}>
+                  By tapping Agree &amp; Continue you acknowledge the extent of the site's current contents and the limitations described above.
+                </p>
               </div>
               <div className="mobile-sheet__footer">
                 <button
@@ -10311,14 +10518,13 @@ const normalizeLinkForMerge = (link) => {
                     setTermsChecked(true);
                     setShowTerms(false);
                   }}
-                  disabled={!termsChecked}
                   style={{
                     padding: '12px 16px',
-                    backgroundColor: termsChecked ? '#2563eb' : '#93c5fd',
+                    backgroundColor: '#2563eb',
                     color: '#ffffff',
                     border: '2px solid #2563eb',
                     borderRadius: '12px',
-                    cursor: termsChecked ? 'pointer' : 'not-allowed'
+                    cursor: 'pointer'
                   }}
                 >
                   Agree & Continue
@@ -10340,18 +10546,113 @@ const normalizeLinkForMerge = (link) => {
                 If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank">this form</a>, and I will incorporate it as quickly as I can.
               </p>
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 14, color: '#111' }}>
-                  <input type="checkbox" checked={termsChecked} onChange={(e) => { const v = e.target.checked; setTermsChecked(v); try { v ? localStorage.setItem('tosAccepted', '1') : localStorage.removeItem('tosAccepted'); } catch(_){} }} />
-                  <span>By checking this box, I acknowledge the extent of the site's current contents and limitations expressed in this disclaimer.</span>
-                </label>
+                <p style={{ fontSize: 14, color: '#111' }}>
+                  By selecting Agree &amp; Continue you acknowledge the extent of the site's current contents and the limitations expressed in this disclaimer.
+                </p>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                   <button onClick={() => setShowTerms(false)} style={{ padding: '8px 12px', border: '2px solid #3e96e2', backgroundColor: '#fafafa', color: '#374151', borderRadius: 6, cursor: 'pointer' }}>Close</button>
-                  <button onClick={() => { try { localStorage.setItem('tosAccepted','1'); } catch(_){} setTermsChecked(true); setShowTerms(false); }} disabled={!termsChecked} style={{ padding: '8px 12px', border: '2px solid #3e96e2', backgroundColor: '#ffffff', color: '#374151', borderRadius: 6, cursor: termsChecked ? 'pointer' : 'not-allowed' }}>Agree & Continue</button>
+                  <button
+                    onClick={() => { try { localStorage.setItem('tosAccepted','1'); } catch(_){} setTermsChecked(true); setShowTerms(false); }}
+                    style={{ padding: '8px 12px', border: '2px solid #2563eb', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: 6, cursor: 'pointer' }}
+                  >
+                    Agree & Continue
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         )
+      )}
+
+      {showResetPasswordModal && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3005 }}>
+          <div style={{ backgroundColor: '#ffffff', width: 'min(520px, 92vw)', maxHeight: '85vh', overflowY: 'auto', borderRadius: 12, boxShadow: '0 24px 50px rgba(0,0,0,0.25)', padding: isMobileViewport ? 24 : 28 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 20, fontWeight: 600, color: '#0f172a' }}>Reset your password</h3>
+              <button
+                type="button"
+                onClick={closeResetPasswordModal}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#1f2937',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  padding: 4,
+                  width: 40,
+                  height: 40,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                aria-label="Close reset password modal"
+              >
+                ×
+              </button>
+            </div>
+            <p style={{ marginTop: 0, marginBottom: 18, color: '#374151', lineHeight: 1.5, fontSize: isMobileViewport ? 15 : 14 }}>
+              Paste the reset code from your email, choose a new password, and then sign in with your updated credentials.
+            </p>
+            {resetStatus.error && (
+              <div style={{ backgroundColor: '#fef2f2', border: '2px solid #fca5a5', color: '#b91c1c', padding: '10px', borderRadius: isMobileViewport ? 12 : 8, marginBottom: 14 }}>
+                {resetStatus.error}
+              </div>
+            )}
+            {resetStatus.message && (
+              <div style={{ backgroundColor: '#ecfdf5', border: '2px solid #6ee7b7', color: '#047857', padding: '10px', borderRadius: isMobileViewport ? 12 : 8, marginBottom: 14 }}>
+                {resetStatus.message}
+              </div>
+            )}
+            <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={{ marginBottom: 16 }}>
+              <label style={{ fontWeight: 500, fontSize: isMobileViewport ? '15px' : '16px' }}>Reset code</label>
+              <input
+                type="text"
+                value={resetTokenValue}
+                onChange={(e) => setResetTokenValue(e.target.value)}
+                style={inputStyle}
+                placeholder="Paste your reset code"
+              />
+            </div>
+            <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={{ marginBottom: 16 }}>
+              <label style={{ fontWeight: 500, fontSize: isMobileViewport ? '15px' : '16px' }}>New password</label>
+              <input
+                type="password"
+                value={resetPasswordValue}
+                onChange={(e) => setResetPasswordValue(e.target.value)}
+                style={inputStyle}
+                placeholder="••••••••"
+              />
+            </div>
+            <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={{ marginBottom: 20 }}>
+              <label style={{ fontWeight: 500, fontSize: isMobileViewport ? '15px' : '16px' }}>Confirm new password</label>
+              <input
+                type="password"
+                value={resetPasswordConfirm}
+                onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                style={inputStyle}
+                placeholder="Re-enter your new password"
+              />
+            </div>
+            <button
+              onClick={handleResetSubmit}
+              disabled={resetStatus.loading}
+              style={{
+                width: '100%',
+                backgroundColor: '#2563eb',
+                color: '#ffffff',
+                padding: isMobileViewport ? '14px' : '12px',
+                border: 'none',
+                borderRadius: isMobileViewport ? '12px' : '8px',
+                fontSize: '16px',
+                cursor: resetStatus.loading ? 'not-allowed' : 'pointer',
+                opacity: resetStatus.loading ? 0.7 : 1
+              }}
+            >
+              {resetStatus.loading ? 'Updating password…' : 'Update password'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

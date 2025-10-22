@@ -231,10 +231,10 @@
 
   .mobile-auth-card {
     border: var(--cmg-mobile-card-border);
-    border-radius: var(--cmg-mobile-card-radius);
-    box-shadow: var(--cmg-mobile-card-shadow);
-    background-color: rgba(255, 255, 255, 0.95);
-    padding: 24px 20px;
+    border-radius: 20px;
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+    background-color: rgba(255, 255, 255, 0.82);
+    padding: 28px 22px;
     display: flex;
     flex-direction: column;
     gap: 18px;

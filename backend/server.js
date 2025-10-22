@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import mysql from 'mysql2/promise';
+import sgMail from '@sendgrid/mail';
 
 dotenv.config();
 
@@ -30,6 +31,35 @@ const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD;
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE;
 const MYSQL_SSL = String(process.env.MYSQL_SSL || '').toLowerCase();
 const MYSQL_CONNECTION_LIMIT = parseInt(process.env.MYSQL_CONNECTION_LIMIT || '10', 10);
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || '';
+const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || '';
+const RESET_URL_BASE = (process.env.RESET_URL_BASE || '').trim();
+const CLIENT_BASE_URL = (process.env.CLIENT_BASE_URL || '').trim();
+const PASSWORD_RESET_TOKEN_TTL_MINUTES = parseInt(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES || '60', 10);
+const PASSWORD_RESET_TOKEN_BYTES = Math.max(parseInt(process.env.PASSWORD_RESET_TOKEN_BYTES || '32', 10), 16);
+
+const EFFECTIVE_RESET_URL_BASE = (RESET_URL_BASE || CLIENT_BASE_URL || '').replace(/\/$/, '');
+
+if (SENDGRID_API_KEY) {
+  try {
+    sgMail.setApiKey(SENDGRID_API_KEY);
+  } catch (err) {
+    console.error('[SendGrid] Failed to set API key:', err?.message || err);
+  }
+} else {
+  console.warn('[SendGrid] SENDGRID_API_KEY is not set. Password reset emails will be disabled.');
+}
+
+if (!SENDGRID_FROM_EMAIL) {
+  console.warn('[SendGrid] SENDGRID_FROM_EMAIL is not set. Password reset emails will be disabled.');
+}
+
+if (!EFFECTIVE_RESET_URL_BASE) {
+  console.warn('[Password Reset] RESET_URL_BASE or CLIENT_BASE_URL is not set. Reset links cannot be generated.');
+}
+
+const isPasswordResetEmailConfigured = () =>
+  Boolean(SENDGRID_API_KEY && SENDGRID_FROM_EMAIL && EFFECTIVE_RESET_URL_BASE);
 
 let mysqlPoolPromise = null;
 const getMysqlPool = () => {
@@ -87,10 +117,69 @@ const getMysqlPool = () => {
         )
         ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS password_resets (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_email VARCHAR(320) NOT NULL,
+          token_hash CHAR(64) NOT NULL UNIQUE,
+          expires_at DATETIME NOT NULL,
+          consumed_at DATETIME DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_password_resets_email (user_email),
+          INDEX idx_password_resets_expires (expires_at)
+        )
+        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
       return pool;
     })();
   }
   return mysqlPoolPromise;
+};
+
+const buildResetLink = (token) => {
+  if (!EFFECTIVE_RESET_URL_BASE) {
+    throw new Error('RESET_URL_BASE (or CLIENT_BASE_URL) is not configured.');
+  }
+  return `${EFFECTIVE_RESET_URL_BASE.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+};
+
+const sendPasswordResetEmail = async (recipientEmail, token) => {
+  if (!isPasswordResetEmailConfigured()) {
+    throw new Error('Password reset email configuration is incomplete.');
+  }
+  const resetUrl = buildResetLink(token);
+  const msg = {
+    to: recipientEmail,
+    from: SENDGRID_FROM_EMAIL,
+    subject: 'Reset your Aspen Grove password',
+    text: [
+      'You recently requested to reset your password for The Aspen Grove of Opera Singers.',
+      'Use the secure link below to choose a new password. This link expires in',
+      `${PASSWORD_RESET_TOKEN_TTL_MINUTES} minutes.`,
+      '',
+      resetUrl,
+      '',
+      'If you did not request this change, you can safely ignore this email.'
+    ].join('\n'),
+    html: `
+      <p>You recently requested to reset your password for <strong>The Aspen Grove of Opera Singers</strong>.</p>
+      <p>Use the secure link below to choose a new password. This link expires in ${PASSWORD_RESET_TOKEN_TTL_MINUTES} minutes.</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p>If you did not request this change, you can safely ignore this email.</p>
+    `
+  };
+  await sgMail.send(msg);
+};
+
+const createPasswordResetRecord = async (pool, userEmail) => {
+  const rawToken = crypto.randomBytes(PASSWORD_RESET_TOKEN_BYTES).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+  await pool.query(
+    'INSERT INTO password_resets (user_email, token_hash, expires_at) VALUES (?, ?, ?)',
+    [userEmail, tokenHash, expiresAt]
+  );
+  return { rawToken, expiresAt };
 };
 
 // Security middleware
@@ -351,6 +440,95 @@ app.post('/auth/login', async (req, res) => {
     res.json({ token, email });
   } catch (error) {
     console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return res.status(400).json({ error: 'Email required' });
+    }
+
+    if (!isPasswordResetEmailConfigured()) {
+      console.error('[Forgot Password] Email configuration incomplete.');
+      return res.status(500).json({ error: 'Password reset is not configured.' });
+    }
+
+    const pool = await getMysqlPool();
+    const [users] = await pool.query('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+
+    if (users.length === 0) {
+      // Respond with generic success to avoid account enumeration
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return res.json({ success: true });
+    }
+
+    await pool.query('DELETE FROM password_resets WHERE user_email = ? OR expires_at < NOW()', [normalizedEmail]);
+    const { rawToken } = await createPasswordResetRecord(pool, normalizedEmail);
+    try {
+      await sendPasswordResetEmail(normalizedEmail, rawToken);
+    } catch (err) {
+      console.error('[Forgot Password] Failed to send email:', err?.response?.body || err);
+      return res.status(500).json({ error: 'Failed to send reset email' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Reset token is required' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const pool = await getMysqlPool();
+    const [records] = await pool.query(
+      'SELECT id, user_email, expires_at, consumed_at FROM password_resets WHERE token_hash = ? LIMIT 1',
+      [tokenHash]
+    );
+
+    if (records.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const record = records[0];
+    if (record.consumed_at) {
+      return res.status(400).json({ error: 'Reset token has already been used' });
+    }
+    const expiresAt = record.expires_at instanceof Date ? record.expires_at : new Date(record.expires_at);
+    if (expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Reset token has expired' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query('UPDATE users SET password_hash = ? WHERE email = ?', [hashedPassword, record.user_email]);
+      await connection.query('UPDATE password_resets SET consumed_at = NOW() WHERE id = ?', [record.id]);
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Reset password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
