@@ -447,6 +447,7 @@ const ClassicalMusicGenealogy = () => {
   const backgroundAttachmentMode = isMobileViewport ? 'scroll' : 'fixed';
 
   const [token, setToken] = useState('');
+  const [initialResetToken, setInitialResetToken] = useState('');
 
 
   const [currentView, setCurrentView] = useState('search');
@@ -2194,6 +2195,19 @@ const attemptLoadSavedView = async () => {
     const visibleNodes = networkData.nodes.filter(isNodeVisible).length;
     return { totalNodes, visibleNodes };
   };
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const incomingResetToken = params.get('resetToken') || params.get('token') || '';
+      if (incomingResetToken) {
+        setInitialResetToken(incomingResetToken);
+        clearStoredToken();
+        setToken('');
+        setHasExecutedSearch(false);
+      }
+    } catch (_) {}
+  }, []);
 
   // Initialize token on component mount
   useEffect(() => {
@@ -9983,7 +9997,7 @@ const normalizeLinkForMerge = (link) => {
       </div>
     );
   };
-  const AuthForm = () => {
+  const AuthForm = ({ initialResetToken = '' }) => {
     const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -9994,8 +10008,8 @@ const normalizeLinkForMerge = (link) => {
     const [forgotLoading, setForgotLoading] = useState(false);
     const [forgotMessage, setForgotMessage] = useState('');
     const [forgotError, setForgotError] = useState('');
-    const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
-    const [resetTokenValue, setResetTokenValue] = useState('');
+    const [showResetPasswordModal, setShowResetPasswordModal] = useState(Boolean(initialResetToken));
+    const [resetTokenValue, setResetTokenValue] = useState(initialResetToken || '');
     const [resetPasswordValue, setResetPasswordValue] = useState('');
     const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
     const [resetStatus, setResetStatus] = useState({ loading: false, message: '', error: '' });
@@ -10008,10 +10022,17 @@ const normalizeLinkForMerge = (link) => {
     }, []);
 
     useEffect(() => {
+      if (initialResetToken) {
+        setResetTokenValue(initialResetToken);
+        setShowResetPasswordModal(true);
+      }
+    }, [initialResetToken]);
+
+    useEffect(() => {
       try {
         const params = new URLSearchParams(window.location.search);
         const incomingToken = params.get('resetToken') || params.get('token') || '';
-        if (incomingToken) {
+        if (incomingToken && !initialResetToken) {
           setResetTokenValue(incomingToken);
           setShowResetPasswordModal(true);
           params.delete('resetToken');
@@ -10677,7 +10698,7 @@ const normalizeLinkForMerge = (link) => {
   };
 
   if (!token) {
-    return <AuthForm />;
+    return <AuthForm initialResetToken={initialResetToken} />;
   }
   return (
     <div style={appBackgroundStyle}>
