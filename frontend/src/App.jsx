@@ -10031,6 +10031,8 @@ const normalizeLinkForMerge = (link) => {
 
     useEffect(() => {
       try {
+        if (typeof window === 'undefined') return;
+
         const params = new URLSearchParams(window.location.search);
         const searchToken = params.get('resetToken') || params.get('token') || '';
         params.delete('resetToken');
@@ -10049,13 +10051,39 @@ const normalizeLinkForMerge = (link) => {
           cleanedHash = hashString ? `#${hashString}` : '';
         }
 
-        const resolvedToken = initialResetToken || searchToken || hashToken;
+        const rawPathSegments = window.location.pathname.split('/').filter(Boolean);
+        const normalizedSegments = rawPathSegments.map((segment) => segment.toLowerCase());
+        const resetSegmentIndex = normalizedSegments.findIndex(
+          (segment) => segment === 'reset-password' || segment === 'forgot-password'
+        );
+        let pathToken = '';
+        if (resetSegmentIndex !== -1 && rawPathSegments.length > resetSegmentIndex + 1) {
+          pathToken = decodeURIComponent(rawPathSegments[resetSegmentIndex + 1] || '');
+        }
+
+        const resolvedToken = initialResetToken || searchToken || hashToken || pathToken;
+        const hasResetPath = resetSegmentIndex !== -1;
+        const isForgotPath = hasResetPath && normalizedSegments[resetSegmentIndex] === 'forgot-password';
+
         if (resolvedToken) {
           setResetTokenValue(resolvedToken);
           setShowResetPasswordModal(true);
+        } else if (hasResetPath && !isForgotPath) {
+          // Surface the reset modal even if we only have the path hint.
+          setShowResetPasswordModal(true);
         }
 
-        const newUrl = `${window.location.pathname}${cleanedQuery ? `?${cleanedQuery}` : ''}${cleanedHash}`;
+        if (isForgotPath && !resolvedToken) {
+          setIsForgotPassword(true);
+        }
+
+        let cleanedPath = window.location.pathname;
+        if (hasResetPath) {
+          const trimmedSegments = rawPathSegments.slice(0, resetSegmentIndex + 1);
+          cleanedPath = `/${trimmedSegments.join('/')}`;
+        }
+
+        const newUrl = `${cleanedPath}${cleanedQuery ? `?${cleanedQuery}` : ''}${cleanedHash}`;
         const currentRelative = `${window.location.pathname}${window.location.search}${window.location.hash}`;
         if (newUrl !== currentRelative) {
           window.history.replaceState({}, document.title, newUrl);
