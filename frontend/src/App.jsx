@@ -10065,7 +10065,7 @@ const normalizeLinkForMerge = (link) => {
         if (!response.ok) {
           throw new Error(data.error || 'Unable to send reset email. Please try again.');
         }
-        setForgotMessage('If an account exists for that email, a reset link has been sent.');
+        setForgotMessage('If an account exists for that email, a reset link has been sent. Please check your spam folder before requesting an additional password reset.');
       } catch (err) {
         setForgotError(err?.message || 'Failed to send reset email.');
       } finally {
@@ -10102,7 +10102,7 @@ const normalizeLinkForMerge = (link) => {
         setResetPasswordValue('');
         setResetPasswordConfirm('');
         setTimeout(() => {
-          setShowResetPasswordModal(false);
+        setShowResetPasswordModal(true);
           setResetStatus({ loading: false, message: '', error: '' });
           setResetTokenValue('');
         }, 1500);
