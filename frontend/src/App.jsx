@@ -448,6 +448,9 @@ const ClassicalMusicGenealogy = () => {
 
   const [token, setToken] = useState('');
   const [initialResetToken, setInitialResetToken] = useState('');
+  const [pendingTosToken, setPendingTosToken] = useState('');
+  const [pendingTosEmail, setPendingTosEmail] = useState('');
+  const [pendingTosRedirect, setPendingTosRedirect] = useState('');
 
 
   const [currentView, setCurrentView] = useState('search');
@@ -711,6 +714,9 @@ const ClassicalMusicGenealogy = () => {
   const clearStoredToken = () => {
     try { localStorage.removeItem('token'); } catch (_) {}
     try { localStorage.removeItem(TOKEN_LOGIN_TS_KEY); } catch (_) {}
+    setPendingTosToken('');
+    setPendingTosEmail('');
+    setPendingTosRedirect('');
   };
 
   const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
@@ -2522,6 +2528,7 @@ const attemptLoadSavedView = async () => {
   // Resize handler removed
 
   const login = async (email, password) => {
+    const normalizedEmail = (email || '').trim();
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/auth/login`, {
@@ -2536,26 +2543,41 @@ const attemptLoadSavedView = async () => {
       if (response.ok) {
         setJustLoggedIn(true);
         setToken(data.token);
-        localStorage.setItem('token', data.token);
+        try { localStorage.setItem('token', data.token); } catch (_) {}
         try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
         setError('');
-      } else {
-        setError(data.error || `Login failed (${response.status})`);
+        setPendingTosToken('');
+        setPendingTosEmail('');
+        setPendingTosRedirect('');
+        return { success: true };
       }
+
+      if (response.status === 403 && data?.requiresTos && data?.pendingToken) {
+        setPendingTosToken(data.pendingToken);
+        setPendingTosEmail(data.email || normalizedEmail);
+        setPendingTosRedirect('');
+        setError('');
+        return { success: false, requiresTos: true };
+      }
+
+      setError(data.error || `Login failed (${response.status})`);
+      return { success: false, error: data.error || `Login failed (${response.status})` };
     } catch (err) {
       setError(err?.message || 'Login failed - please try again');
+      return { success: false, error: err?.message || 'Login failed - please try again' };
     } finally {
       setLoading(false);
     }
   };
 
-  const register = async (email, password) => {
+  const register = async (email, password, options = {}) => {
+    const { acceptedDisclaimer = false } = options;
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, acceptedDisclaimer })
       });
       
       const text = await response.text();
@@ -2564,9 +2586,12 @@ const attemptLoadSavedView = async () => {
       if (response.ok) {
         setJustLoggedIn(true);
         setToken(data.token);
-        localStorage.setItem('token', data.token);
+        try { localStorage.setItem('token', data.token); } catch (_) {}
         try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
         setError('');
+        setPendingTosToken('');
+        setPendingTosEmail('');
+        setPendingTosRedirect('');
       } else {
         setError(data.error || `Registration failed (${response.status})`);
       }
@@ -10021,6 +10046,8 @@ const normalizeLinkForMerge = (link) => {
     const [resetPasswordValue, setResetPasswordValue] = useState('');
     const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
     const [resetStatus, setResetStatus] = useState({ loading: false, message: '', error: '' });
+    const [tosAcceptError, setTosAcceptError] = useState('');
+    const [acceptingTos, setAcceptingTos] = useState(false);
 
     useEffect(() => {
       try {
@@ -10028,6 +10055,15 @@ const normalizeLinkForMerge = (link) => {
         if (accepted) setTermsChecked(true);
       } catch (_) {}
     }, []);
+
+    useEffect(() => {
+      if (pendingTosToken) {
+        setTosAcceptError('');
+        setShowTerms(true);
+      }
+    }, [pendingTosToken]);
+
+    const isTosAcceptanceRequired = Boolean(pendingTosToken);
 
     useEffect(() => {
       try {
@@ -10090,10 +10126,90 @@ const normalizeLinkForMerge = (link) => {
         }
       } catch (_) {}
     }, [initialResetToken]);
-    
+
+    const handleCloseTerms = () => {
+      setShowTerms(false);
+      setTosAcceptError('');
+      setAcceptingTos(false);
+      if (pendingTosToken) {
+        setPendingTosToken('');
+        setPendingTosEmail('');
+        setPendingTosRedirect('');
+      }
+    };
+
+    const handleDisclaimerAgree = async () => {
+      if (pendingTosToken) {
+        setTosAcceptError('');
+        setAcceptingTos(true);
+        try {
+          const response = await fetch(`${API_BASE}/auth/accept-tos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pendingToken: pendingTosToken })
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to record acknowledgement.');
+          }
+          const acceptedEmail = typeof data.email === 'string' ? data.email.trim() : '';
+          if (acceptedEmail) {
+            setEmail(acceptedEmail);
+            setForgotEmail(acceptedEmail);
+          }
+          const authToken = typeof data.token === 'string' ? data.token : '';
+          if (authToken) {
+            setToken(authToken);
+            setJustLoggedIn(true);
+            try { localStorage.setItem('token', authToken); } catch (_) {}
+            try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
+            setError('');
+          }
+          setPendingTosToken('');
+          setPendingTosEmail('');
+          setTosAcceptError('');
+          setShowTerms(false);
+          setAcceptingTos(false);
+          try { localStorage.setItem('tosAccepted', '1'); } catch (_) {}
+          setTermsChecked(true);
+
+          if (pendingTosRedirect) {
+            const target = pendingTosRedirect;
+            setPendingTosRedirect('');
+            setTimeout(() => {
+              try { window.location.assign(target); } catch (_) {}
+            }, 400);
+          } else {
+            setPendingTosRedirect('');
+          }
+        } catch (err) {
+          setAcceptingTos(false);
+          setTosAcceptError(err?.message || 'Failed to record acknowledgement.');
+        }
+        return;
+      }
+
+      try { localStorage.setItem('tosAccepted', '1'); } catch (_) {}
+      setTermsChecked(true);
+      setShowTerms(false);
+    };
+
+    const computeRedirectTarget = () => {
+      if (typeof window === 'undefined' || !window?.location) {
+        return 'https://theaspengrove.org/';
+      }
+      const origin = window.location.origin || '';
+      if (!origin || origin === 'null') {
+        return 'https://theaspengrove.org/';
+      }
+      if (/theaspengrove\.org$/i.test(origin.replace(/^https?:\/\//, ''))) {
+        return `${origin.replace(/\/$/, '')}/`;
+      }
+      return `${origin.replace(/\/$/, '')}/`;
+    };
 
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
       // Add some basic validation
       if (!email || !password) {
         alert('Please enter both email and password');
@@ -10107,9 +10223,9 @@ const normalizeLinkForMerge = (link) => {
       }
       
       if (isLogin) {
-        login(email, password);
+        await login(email, password);
       } else {
-        register(email, password);
+        register(email, password, { acceptedDisclaimer: Boolean(termsChecked) });
       }
     };
 
@@ -10165,15 +10281,60 @@ const normalizeLinkForMerge = (link) => {
         if (!response.ok) {
           throw new Error(data.error || 'Unable to reset password. Please try again.');
         }
-        setResetStatus({ loading: false, message: 'Password updated. You may now sign in.', error: '' });
+
+        const nextEmail = typeof data.email === 'string' ? data.email.trim() : '';
+        if (nextEmail) {
+          setEmail(nextEmail);
+          setForgotEmail(nextEmail);
+        }
+
+        const nextToken = typeof data.token === 'string' ? data.token : '';
+        const pendingTokenValue = typeof data.pendingToken === 'string' ? data.pendingToken : '';
+        const requiresTos = Boolean(data.requiresTos && pendingTokenValue);
+
         setIsForgotPassword(false);
         setResetPasswordValue('');
         setResetPasswordConfirm('');
+        setResetTokenValue('');
+
+        if (requiresTos) {
+          setResetStatus({
+            loading: false,
+            message: 'Password updated. Please review the disclaimer to finish signing in.',
+            error: ''
+          });
+          setPendingTosToken(pendingTokenValue);
+          setPendingTosEmail(nextEmail || email || '');
+          setPendingTosRedirect(computeRedirectTarget());
+          setShowResetPasswordModal(false);
+          setShowTerms(true);
+          return;
+        }
+
+        if (!nextToken) {
+          setResetStatus({
+            loading: false,
+            message: 'Password updated. Please sign in with your new password.',
+            error: ''
+          });
+          return;
+        }
+
+        setToken(nextToken);
+        setJustLoggedIn(true);
+        try { localStorage.setItem('token', nextToken); } catch (_) {}
+        try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
+        setError('');
+
+        setResetStatus({ loading: false, message: 'Password updated. Redirecting…', error: '' });
+
+        const redirectTarget = computeRedirectTarget();
+        setPendingTosRedirect('');
         setTimeout(() => {
-        setShowResetPasswordModal(true);
-          setResetStatus({ loading: false, message: '', error: '' });
-          setResetTokenValue('');
-        }, 1500);
+          try {
+            window.location.assign(redirectTarget);
+          } catch (_) {}
+        }, 800);
       } catch (err) {
         setResetStatus({ loading: false, message: '', error: err?.message || 'Failed to reset password.' });
       }
@@ -10185,6 +10346,11 @@ const normalizeLinkForMerge = (link) => {
       setForgotMessage('');
       setForgotError('');
       setError('');
+      setPendingTosToken('');
+      setPendingTosEmail('');
+      setPendingTosRedirect('');
+      setTosAcceptError('');
+      setAcceptingTos(false);
     };
 
     const closeForgotPassword = () => {
@@ -10193,6 +10359,11 @@ const normalizeLinkForMerge = (link) => {
       setForgotMessage('');
       setForgotError('');
       setForgotEmail('');
+      setPendingTosToken('');
+      setPendingTosEmail('');
+      setPendingTosRedirect('');
+      setTosAcceptError('');
+      setAcceptingTos(false);
     };
 
     const closeResetPasswordModal = () => {
@@ -10200,6 +10371,7 @@ const normalizeLinkForMerge = (link) => {
       setResetStatus({ loading: false, message: '', error: '' });
       setResetPasswordValue('');
       setResetPasswordConfirm('');
+      setPendingTosRedirect('');
     };
 
 
@@ -10518,7 +10690,7 @@ const normalizeLinkForMerge = (link) => {
             <div
               className="mobile-overlay-backdrop is-open"
               style={{ zIndex: 3000 }}
-              onClick={() => setShowTerms(false)}
+              onClick={handleCloseTerms}
             />
             <div
               className="mobile-sheet is-open"
@@ -10532,7 +10704,7 @@ const normalizeLinkForMerge = (link) => {
                     The Aspen Grove of Opera Singers, Disclaimer
                   </h3>
                   <button
-                    onClick={() => setShowTerms(false)}
+                    onClick={handleCloseTerms}
                     style={{
                       background: 'none',
                       border: 'none',
@@ -10547,6 +10719,7 @@ const normalizeLinkForMerge = (link) => {
                       alignItems: 'center',
                       justifyContent: 'center'
                     }}
+                    disabled={acceptingTos}
                     aria-label="Close disclaimer"
                   >
                     ×
@@ -10566,10 +10739,29 @@ const normalizeLinkForMerge = (link) => {
                 <p className="mobile-auth-note" style={{ color: '#111', fontSize: '14px' }}>
                   By tapping Agree &amp; Continue you acknowledge the extent of the site's current contents and the limitations described above.
                 </p>
+                {isTosAcceptanceRequired && (
+                  <p className="mobile-auth-note" style={{ color: '#0f172a', fontSize: '14px', fontWeight: 600 }}>
+                    To finish signing in{pendingTosEmail ? ` as ${pendingTosEmail}` : ''}, please tap Agree &amp; Continue below.
+                  </p>
+                )}
+                {tosAcceptError && (
+                  <div
+                    style={{
+                      backgroundColor: '#fef2f2',
+                      border: '2px solid #fca5a5',
+                      color: '#b91c1c',
+                      padding: '10px',
+                      borderRadius: 12,
+                      marginTop: 8
+                    }}
+                  >
+                    {tosAcceptError}
+                  </div>
+                )}
               </div>
               <div className="mobile-sheet__footer">
                 <button
-                  onClick={() => setShowTerms(false)}
+                  onClick={handleCloseTerms}
                   style={{
                     padding: '12px 16px',
                     backgroundColor: '#ffffff',
@@ -10577,25 +10769,24 @@ const normalizeLinkForMerge = (link) => {
                     border: '2px solid #3e96e2',
                     borderRadius: '12px'
                   }}
+                  disabled={acceptingTos}
                 >
                   Close
                 </button>
                 <button
-                  onClick={() => {
-                    try { localStorage.setItem('tosAccepted', '1'); } catch (_) {}
-                    setTermsChecked(true);
-                    setShowTerms(false);
-                  }}
+                  onClick={handleDisclaimerAgree}
                   style={{
                     padding: '12px 16px',
                     backgroundColor: '#2563eb',
                     color: '#ffffff',
                     border: '2px solid #2563eb',
                     borderRadius: '12px',
-                    cursor: 'pointer'
+                    cursor: acceptingTos ? 'not-allowed' : 'pointer',
+                    opacity: acceptingTos ? 0.65 : 1
                   }}
+                  disabled={acceptingTos}
                 >
-                  Agree & Continue
+                  {acceptingTos ? 'Recording acknowledgement…' : 'Agree & Continue'}
                 </button>
               </div>
             </div>
@@ -10617,13 +10808,30 @@ const normalizeLinkForMerge = (link) => {
                 <p style={{ fontSize: 14, color: '#111' }}>
                   By selecting Agree &amp; Continue you acknowledge the extent of the site's current contents and the limitations expressed in this disclaimer.
                 </p>
+                {isTosAcceptanceRequired && (
+                  <p style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                    To finish signing in{pendingTosEmail ? ` as ${pendingTosEmail}` : ''}, please choose Agree &amp; Continue.
+                  </p>
+                )}
+                {tosAcceptError && (
+                  <div style={{ backgroundColor: '#fef2f2', border: '2px solid #fca5a5', color: '#b91c1c', padding: '10px', borderRadius: 8 }}>
+                    {tosAcceptError}
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                  <button onClick={() => setShowTerms(false)} style={{ padding: '8px 12px', border: '2px solid #3e96e2', backgroundColor: '#fafafa', color: '#374151', borderRadius: 6, cursor: 'pointer' }}>Close</button>
                   <button
-                    onClick={() => { try { localStorage.setItem('tosAccepted','1'); } catch(_){} setTermsChecked(true); setShowTerms(false); }}
-                    style={{ padding: '8px 12px', border: '2px solid #2563eb', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: 6, cursor: 'pointer' }}
+                    onClick={handleCloseTerms}
+                    style={{ padding: '8px 12px', border: '2px solid #3e96e2', backgroundColor: '#fafafa', color: '#374151', borderRadius: 6, cursor: acceptingTos ? 'not-allowed' : 'pointer', opacity: acceptingTos ? 0.65 : 1 }}
+                    disabled={acceptingTos}
                   >
-                    Agree & Continue
+                    Close
+                  </button>
+                  <button
+                    onClick={handleDisclaimerAgree}
+                    style={{ padding: '8px 12px', border: '2px solid #2563eb', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: 6, cursor: acceptingTos ? 'not-allowed' : 'pointer', opacity: acceptingTos ? 0.65 : 1 }}
+                    disabled={acceptingTos}
+                  >
+                    {acceptingTos ? 'Recording acknowledgement…' : 'Agree & Continue'}
                   </button>
                 </div>
               </div>

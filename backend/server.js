@@ -37,6 +37,7 @@ const RESET_URL_BASE = (process.env.RESET_URL_BASE || '').trim();
 const CLIENT_BASE_URL = (process.env.CLIENT_BASE_URL || '').trim();
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = parseInt(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES || '60', 10);
 const PASSWORD_RESET_TOKEN_BYTES = Math.max(parseInt(process.env.PASSWORD_RESET_TOKEN_BYTES || '32', 10), 16);
+const ACTIVE_TOS_VERSION = parseInt(process.env.ACTIVE_TOS_VERSION || '1', 10);
 
 const EFFECTIVE_RESET_URL_BASE = (RESET_URL_BASE || CLIENT_BASE_URL || '').replace(/\/$/, '');
 
@@ -60,6 +61,12 @@ if (!EFFECTIVE_RESET_URL_BASE) {
 
 const isPasswordResetEmailConfigured = () =>
   Boolean(SENDGRID_API_KEY && SENDGRID_FROM_EMAIL && EFFECTIVE_RESET_URL_BASE);
+
+const generateAuthToken = (email) =>
+  jwt.sign({ email, tosVersion: ACTIVE_TOS_VERSION }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+
+const generatePendingTosToken = (email) =>
+  jwt.sign({ email, purpose: 'tos_accept', tosVersion: ACTIVE_TOS_VERSION }, JWT_SECRET, { expiresIn: '15m' });
 
 let mysqlPoolPromise = null;
 const getMysqlPool = () => {
@@ -104,6 +111,14 @@ const getMysqlPool = () => {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      await pool.query(`
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS tos_accepted_at DATETIME DEFAULT NULL
+      `);
+      await pool.query(`
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS tos_version TINYINT UNSIGNED NOT NULL DEFAULT 0
       `);
       await pool.query(`
         CREATE TABLE IF NOT EXISTS saved_views (
@@ -367,12 +382,18 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, (err, payload) => {
     if (err) {
       console.error('JWT verification error:', err);
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
-    req.user = user;
+    if (payload?.purpose === 'tos_accept') {
+      return res.status(403).json({ error: 'Disclaimer acknowledgement pending', requiresTos: true });
+    }
+    if (payload?.tosVersion !== ACTIVE_TOS_VERSION) {
+      return res.status(403).json({ error: 'Disclaimer acknowledgement required', requiresTos: true });
+    }
+    req.user = payload;
     next();
   });
 };
@@ -384,10 +405,16 @@ app.get('/health', (req, res) => {
 
 // Authentication endpoints
 app.post('/auth/register', async (req, res) => {
-  const { email, password } = req.body;
+  const rawEmail = (req.body?.email || '').trim();
+  const email = rawEmail.toLowerCase();
+  const password = req.body?.password || '';
+  const acceptedDisclaimer = Boolean(req.body?.acceptedDisclaimer);
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password required' });
+  }
+  if (!acceptedDisclaimer) {
+    return res.status(400).json({ error: 'You must agree to the disclaimer.' });
   }
 
   try {
@@ -401,14 +428,14 @@ app.post('/auth/register', async (req, res) => {
 
       const hashedPassword = await bcrypt.hash(password, 10);
       await connection.query(
-        'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-        [email, hashedPassword]
+        'INSERT INTO users (email, password_hash, tos_version, tos_accepted_at) VALUES (?, ?, ?, NOW())',
+        [email, hashedPassword, ACTIVE_TOS_VERSION]
       );
     } finally {
       connection.release();
     }
 
-    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = generateAuthToken(email);
     res.status(201).json({ token, email });
   } catch (error) {
     console.error('Registration error:', error);
@@ -417,34 +444,82 @@ app.post('/auth/register', async (req, res) => {
 });
 
 app.post('/auth/login', async (req, res) => {
+  const rawEmail = (req.body?.email || '').trim();
+  const email = rawEmail.toLowerCase();
+  const password = req.body?.password || '';
+
   // TEST USER OVERRIDE: Always allow test@example.com / password123
-  if (req.body.email === 'test@example.com' && req.body.password === 'password123') {
-    const token = jwt.sign({ email: 'test@example.com' }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  if (email === 'test@example.com' && password === 'password123') {
+    const token = generateAuthToken('test@example.com');
     return res.json({ token, email: 'test@example.com' });
   }
   try {
-    const { email, password } = req.body;
-
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
     const pool = await getMysqlPool();
-    const [rows] = await pool.query('SELECT id, password_hash FROM users WHERE email = ?', [email]);
+    const [rows] = await pool.query('SELECT id, password_hash, tos_version FROM users WHERE email = ?', [email]);
     if (rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const { password_hash: passwordHash } = rows[0];
+    const { password_hash: passwordHash, tos_version: tosVersion } = rows[0];
     const isValidPassword = await bcrypt.compare(password, passwordHash);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    if ((tosVersion || 0) < ACTIVE_TOS_VERSION) {
+      const pendingToken = generatePendingTosToken(email);
+      return res.status(403).json({
+        error: 'Please review and accept the disclaimer to continue.',
+        requiresTos: true,
+        pendingToken,
+        email
+      });
+    }
+
+    const token = generateAuthToken(email);
     res.json({ token, email });
   } catch (error) {
     console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/auth/accept-tos', async (req, res) => {
+  try {
+    const token = (req.body?.pendingToken || req.body?.token || '').trim();
+    if (!token) {
+      return res.status(400).json({ error: 'Acceptance token required.' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid or expired acceptance token.' });
+    }
+
+    const email = (payload?.email || '').toLowerCase();
+    if (!email || payload?.purpose !== 'tos_accept' || payload?.tosVersion !== ACTIVE_TOS_VERSION) {
+      return res.status(400).json({ error: 'Malformed acceptance token.' });
+    }
+
+    const pool = await getMysqlPool();
+    const [result] = await pool.query(
+      'UPDATE users SET tos_version = ?, tos_accepted_at = NOW() WHERE email = ?',
+      [ACTIVE_TOS_VERSION, email]
+    );
+    if (!result.affectedRows) {
+      return res.status(404).json({ error: 'User account not found.' });
+    }
+
+    const authToken = generateAuthToken(email);
+    res.json({ success: true, token: authToken, email });
+  } catch (error) {
+    console.error('Accept TOS error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -521,7 +596,10 @@ app.post('/auth/reset-password', async (req, res) => {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      await connection.query('UPDATE users SET password_hash = ? WHERE email = ?', [hashedPassword, record.user_email]);
+      const [updateResult] = await connection.query('UPDATE users SET password_hash = ? WHERE email = ?', [hashedPassword, record.user_email]);
+      if (!updateResult.affectedRows) {
+        throw new Error('Reset password attempted for missing user');
+      }
       await connection.query('UPDATE password_resets SET consumed_at = NOW() WHERE id = ?', [record.id]);
       await connection.commit();
     } catch (err) {
@@ -531,7 +609,16 @@ app.post('/auth/reset-password', async (req, res) => {
       connection.release();
     }
 
-    res.json({ success: true });
+    const normalizedEmail = (record.user_email || '').toLowerCase();
+    const [userRows] = await pool.query('SELECT tos_version FROM users WHERE email = ? LIMIT 1', [normalizedEmail]);
+    const tosVersion = userRows?.[0]?.tos_version || 0;
+    if ((tosVersion || 0) < ACTIVE_TOS_VERSION) {
+      const pendingToken = generatePendingTosToken(normalizedEmail);
+      return res.json({ success: true, requiresTos: true, pendingToken, email: normalizedEmail });
+    }
+
+    const authToken = generateAuthToken(normalizedEmail);
+    res.json({ success: true, token: authToken, email: normalizedEmail });
   } catch (error) {
     console.error('Reset password error:', error);
     res.status(500).json({ error: 'Internal server error' });
