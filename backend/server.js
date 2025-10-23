@@ -112,14 +112,17 @@ const getMysqlPool = () => {
         )
         ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
-      await pool.query(`
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS tos_accepted_at DATETIME DEFAULT NULL
-      `);
-      await pool.query(`
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS tos_version TINYINT UNSIGNED NOT NULL DEFAULT 0
-      `);
+      const ensureColumnExists = async (column, definition) => {
+        const [columns] = await pool.query(
+          `SHOW COLUMNS FROM users LIKE ?`,
+          [column]
+        );
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE users ADD COLUMN ${definition}`);
+        }
+      };
+      await ensureColumnExists('tos_accepted_at', 'tos_accepted_at DATETIME NULL DEFAULT NULL');
+      await ensureColumnExists('tos_version', 'tos_version TINYINT UNSIGNED NOT NULL DEFAULT 0');
       await pool.query(`
         CREATE TABLE IF NOT EXISTS saved_views (
           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
