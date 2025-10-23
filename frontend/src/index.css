@@ -233,11 +233,7 @@ input[type="range"]::-moz-range-thumb:active {
     margin: 0;
     font-size: 14px;
     text-align: center;
-    background: rgba(255, 255, 255, 0.95);
-    border: 2px solid #3e96e2;
-    color: #1f2937;
-    padding: 6px 18px;
-    box-shadow: 0 8px 22px rgba(37, 99, 235, 0.2);
+    padding: 6px 14px;
   }
 
   .mobile-toolbar {

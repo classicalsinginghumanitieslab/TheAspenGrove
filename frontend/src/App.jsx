@@ -451,8 +451,6 @@ const ClassicalMusicGenealogy = () => {
   const [pendingTosToken, setPendingTosToken] = useState('');
   const [pendingTosEmail, setPendingTosEmail] = useState('');
   const [pendingTosRedirect, setPendingTosRedirect] = useState('');
-
-
   const [currentView, setCurrentView] = useState('search');
   const [searchType, setSearchType] = useState('singers');
   const [originalSearchType, setOriginalSearchType] = useState('singers');
@@ -569,6 +567,9 @@ const ClassicalMusicGenealogy = () => {
   const [isExpansionSimulation, setIsExpansionSimulation] = useState(false); // Track if simulation is for expansion
   const [filtersVersion, setFiltersVersion] = useState(0); // Bump to force viz refresh on Apply
   const [showFilterPanel, setShowFilterPanel] = useState(false); // Control filter panel visibility
+  const toggleFilterPanel = (force) => {
+    setShowFilterPanel((prev) => (typeof force === 'boolean' ? force : !prev));
+  };
   const [selectedVoiceTypes, setSelectedVoiceTypes] = useState(new Set()); // Selected voice type filters
   const [selectedBirthplaces, setSelectedBirthplaces] = useState(new Set()); // Selected birthplace filters
   const [birthYearRange, setBirthYearRange] = useState([1534, 2005]); // Birth year range filter
@@ -1820,8 +1821,12 @@ const attemptLoadSavedView = async () => {
     
     // Other/Special Categories
     { name: 'Non-singing', color: '#7c8b23' }, // Pale blue
-    { name: 'Unknown', color: '##7c8b23' } // Pale blue
+    { name: 'Unknown', color: '#7c8b23' } // Pale blue
   ];
+  const TYPE_FILTER_COLORS = {
+    Opera: '#8b5cf6',
+    Book: '#14b8a6'
+  };
 
   // Enhanced filter setter functions
   const updateSelectedVoiceTypes = (newSelection) => {
@@ -2125,17 +2130,36 @@ const attemptLoadSavedView = async () => {
   const getVisibleVoiceTypes = () => {
     const personNodes = networkData.nodes.filter(node => node.type === 'person');
     const counts = new Map();
+    const colors = new Map();
+    const register = (name, color) => {
+      const nextCount = (counts.get(name) || 0) + 1;
+      counts.set(name, nextCount);
+      if (color && !colors.has(name)) {
+        colors.set(name, color);
+      }
+    };
+    const voiceColorMap = {};
+    VOICE_TYPES.forEach(v => { voiceColorMap[v.name] = v.color; });
     personNodes.forEach(node => {
       if (!isNodeVisibleWithoutVoiceFilter(node)) return;
-      const vt = (node.voiceType && String(node.voiceType).trim()) || 'Unknown';
-      counts.set(vt, (counts.get(vt) || 0) + 1);
+      const vtRaw = node.voiceType && String(node.voiceType).trim();
+      const voiceName = vtRaw && vtRaw.length > 0 ? vtRaw : 'Unknown';
+      register(voiceName, voiceColorMap[voiceName] || '#6B7280');
     });
-    // Build color map from the static VOICE_TYPES palette
-    const colorMap = {};
-    VOICE_TYPES.forEach(v => { colorMap[v.name] = v.color; });
+    networkData.nodes.forEach((node) => {
+      if (node.type === 'opera') {
+        register('Opera', TYPE_FILTER_COLORS.Opera);
+      } else if (node.type === 'book') {
+        register('Book', TYPE_FILTER_COLORS.Book);
+      }
+    });
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([name, count]) => ({ name, color: colorMap[name] || '#6B7280', count }));
+      .map(([name, count]) => ({
+        name,
+        color: colors.get(name) || voiceColorMap[name] || '#6B7280',
+        count
+      }));
   };
 
   const resetDateRanges = () => {
@@ -2151,10 +2175,9 @@ const attemptLoadSavedView = async () => {
     if (node.type === 'person') {
       // Voice type filter
       if (selectedVoiceTypes.size > 0) {
-        const voiceTypeMatch = !node.voiceType ? 
-          selectedVoiceTypes.has('Unknown') : 
-          selectedVoiceTypes.has(node.voiceType);
-        if (!voiceTypeMatch) return false;
+        const rawVoice = node.voiceType && String(node.voiceType).trim();
+        const voiceName = rawVoice && rawVoice.length > 0 ? rawVoice : 'Unknown';
+        if (!selectedVoiceTypes.has(voiceName)) return false;
       }
 
       // Birthplace filter
@@ -2182,7 +2205,15 @@ const attemptLoadSavedView = async () => {
         }
       }
     }
-    
+    if (selectedVoiceTypes.size > 0) {
+      if (node.type === 'opera' && !selectedVoiceTypes.has('Opera')) {
+        return false;
+      }
+      if (node.type === 'book' && !selectedVoiceTypes.has('Book')) {
+        return false;
+      }
+    }
+
     // Show opera and book nodes by default (could add filters for these later)
     return true;
   };
@@ -11031,7 +11062,7 @@ const normalizeLinkForMerge = (link) => {
                   </span>
                 </button>
               <button
-                onClick={() => setShowFilterPanel(true)}
+                onClick={() => toggleFilterPanel()}
                 style={{
                   padding: '8px 16px',
                   backgroundColor: selectedVoiceTypes.size > 0 ? '#e3f2fd' : 'transparent',
@@ -11374,7 +11405,7 @@ const normalizeLinkForMerge = (link) => {
                         <span style={{ fontSize: 12 }}>→</span>
                       </span>
                     </button>
-                    <button onClick={() => setShowFilterPanel(true)} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#666', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px', opacity: 1, height: '48px', boxSizing: 'border-box' }}>
+                    <button onClick={() => toggleFilterPanel()} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#666', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px', opacity: 1, height: '48px', boxSizing: 'border-box' }}>
                       🔍 Filters
                       {selectedVoiceTypes.size > 0 && (
                         <span style={{ backgroundColor: '#1976d2', color: 'white', borderRadius: '8px', padding: '2px 6px', fontSize: '12px', fontWeight: 'bold' }}>
@@ -11479,7 +11510,7 @@ const normalizeLinkForMerge = (link) => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <button type="button" onClick={() => { goBack(); }} disabled={historyCounts.past === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.past ? 'pointer' : 'not-allowed', opacity: historyCounts.past ? 1 : 0.6 }}>Back</button>
                   <button type="button" onClick={() => { goForward(); }} disabled={historyCounts.future === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.future ? 'pointer' : 'not-allowed', opacity: historyCounts.future ? 1 : 0.6 }}>Forward</button>
-                  <button type="button" onClick={() => { setShowFilterPanel(true); setShowHeaderMenu(false); }} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'center', gap: 8 }}>
+                  <button type="button" onClick={() => { toggleFilterPanel(); setShowHeaderMenu(false); }} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'center', gap: 8 }}>
                     🔍 Filters
                     {selectedVoiceTypes.size > 0 && (
                       <span style={{ backgroundColor: '#1976d2', color: '#ffffff', borderRadius: 8, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>
@@ -11923,7 +11954,7 @@ const normalizeLinkForMerge = (link) => {
                     From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who their teachers were. Like <a href="https://www.songhelix.com" target="_blank">SongHelix</a> (released in 2019), I wanted to make another useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. Note that when Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequently another language's version will have different information from the English version.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, APIs, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been <i>created</i> through the use of AI.
+                    I have used various methods for gathering data at scale including querying Wikidata, webscraping, APIs, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been created through the use of AI.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
                     For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
@@ -11972,14 +12003,18 @@ const normalizeLinkForMerge = (link) => {
         {/* Active Filter Indicators - show when in network view and filters are active */}
         {currentView === 'network' && selectedVoiceTypes.size > 0 && (
           <div style={{
-            maxWidth: '600px',
+            maxWidth: '640px',
             margin: '0 auto 20px',
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
             flexWrap: isMobileViewport ? 'nowrap' : 'wrap',
             overflowX: isMobileViewport ? 'auto' : 'visible',
-            paddingBottom: isMobileViewport ? '6px' : 0
+            padding: isMobileViewport ? '10px 14px' : '12px 18px',
+            backgroundColor: 'rgba(255, 255, 255, 0.82)',
+            borderRadius: '12px',
+            boxShadow: '0 18px 44px rgba(15, 23, 42, 0.18)',
+            border: '2px solid rgba(62, 150, 226, 0.4)'
           }}>
             <span style={{
               fontSize: '16px',
@@ -12155,7 +12190,15 @@ const normalizeLinkForMerge = (link) => {
               }}
             >
               <div className="network-hint">
-                Drag nodes to reposition • Scroll to zoom • Drag to pan
+                {isMobileViewport ? (
+                  <>
+                    Drag nodes to reposition • Pinch to zoom • Drag to pan • Long-press a node or relationship for more information
+                  </>
+                ) : (
+                  <>
+                    Drag nodes to reposition • Scroll to zoom • Drag to pan • Right-click (two-finger press) on a node or relationship for more information
+                  </>
+                )}
               </div>
             </div>
             <NetworkVisualization viewport={viewport} />
@@ -12381,7 +12424,7 @@ const normalizeLinkForMerge = (link) => {
                         </p>
                       )}
                       {displaySource && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                           Relationship source: {renderRelationshipSourceLink(...sourceValues)}
                         </p>
                       )}
@@ -12457,7 +12500,7 @@ const normalizeLinkForMerge = (link) => {
                         </p>
                       )}
                       {displaySource && (
-                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                           Relationship source: {renderRelationshipSourceLink(...sourceValues)}
                         </p>
                       )}
@@ -12527,7 +12570,7 @@ const normalizeLinkForMerge = (link) => {
                           }
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                         Relationship source: {renderRelationshipSourceLink(relative.teacher_rel_source_text, relative.teacher_rel_source_url, relative.teacher_rel_source, relative.relationshipSourceDisplay, relative.relationship_source, relative.source)}
                       </p>
                     </div>
@@ -12602,7 +12645,7 @@ const normalizeLinkForMerge = (link) => {
                           <strong>Role premiered:</strong> {role.role}
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                         Source: {renderRelationshipSourceLink(role.opera_source_text, role.opera_source_url, role.relationshipSourceDisplay, role.source, role.relationship_source)}
                       </p>
                     </div>
@@ -12738,7 +12781,7 @@ const normalizeLinkForMerge = (link) => {
                           }}
                         >
                           <p style={{ margin: '4px 0', fontWeight: '500' }}>{opera.title}</p>
-                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                             Source: {renderRelationshipSourceLink(opera.opera_source_text, opera.opera_source_url, opera.relationshipSourceDisplay, opera.source, opera.relationship_source)}
                           </p>
                         </div>
@@ -12890,7 +12933,7 @@ const normalizeLinkForMerge = (link) => {
                           <strong>Voice type:</strong> {performer.voice_type}
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
                         Source: {renderRelationshipSourceLink(performer.opera_source_text, performer.opera_source_url, performer.relationshipSourceDisplay, performer.source, performer.relationship_source)}
                       </p>
                     </div>
@@ -13078,7 +13121,7 @@ const normalizeLinkForMerge = (link) => {
               type="button"
               className="mobile-toolbar__button"
               onClick={() => {
-                setShowFilterPanel(true);
+                toggleFilterPanel();
               }}
             >
               Filters
