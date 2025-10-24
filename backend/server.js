@@ -292,6 +292,34 @@ const toPlainNumber = (value, defaultValue = 0) => {
   return Number.isFinite(num) ? num : defaultValue;
 };
 
+const toPlainString = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (typeof value === 'object') {
+    try {
+      const text = value.toString();
+      if (typeof text === 'string') {
+        const trimmed = text.trim();
+        return trimmed || null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+  try {
+    const text = String(value).trim();
+    return text || null;
+  } catch (_) {
+    return null;
+  }
+};
+
 // In-memory cache for pathfinding results
 // Key format: `${fromNorm}|${toNorm}|${hops}` where names are lowercased & diacritics removed
 const PATH_CACHE_TTL_MS = parseInt(process.env.PATH_CACHE_TTL_MS || '600000', 10); // 10 minutes
@@ -677,6 +705,7 @@ app.post('/debug/eric-tappy-roles', authenticateToken, async (req, res) => {
 
     const data = result.records[0];
     
+    console.log('[debug composedOperas] singer', singerName, composedOperas);
     res.json({
       eric_id: data.get('eric_id'),
       roles_in_operas: data.get('roles_in_operas'),
@@ -1112,7 +1141,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       return {
         opera_name: r.get('opera_name'),
         role: r.get('role'),
-        source: resolvedSourceText || 'Unknown',
+        source: resolvedSourceText || null,
         opera_source_text: resolvedSourceText || null,
         opera_source_url: resolvedSourceUrl || null
       };
@@ -1132,7 +1161,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       return {
         opera_name: r.get('opera_name'),
         role: r.get('role'),
-        source: resolvedSourceText || 'Unknown',
+        source: resolvedSourceText || null,
         opera_source_text: resolvedSourceText || null,
         opera_source_url: resolvedSourceUrl || null
       };
@@ -1149,12 +1178,38 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
 
     const composedOperasResult = await session.run(
       `MATCH (s:Person {full_name: $name})-[r:COMPOSED|WROTE]->(o:Opera)
-       RETURN o.title as title, r AS relationship`,
+       RETURN o AS opera_node,
+              o.opera_name AS opera_name,
+              o.title AS title,
+              o.name AS name,
+              o.operaTitle AS operaTitle,
+              o.label AS label,
+              o.version AS version,
+              o.opera_id AS opera_id,
+              r AS relationship`,
       { name: singerName }
     );
-    const composedOperasRaw = composedOperasResult.records.map(r => {
+    console.log('[debug composedOperas raw] count', composedOperasResult.records.length);
+    const composedOperasRaw = composedOperasResult.records.map((r, index) => {
+      const operaNodeValue = r.get('opera_node');
+      const operaProps = operaNodeValue ? operaNodeValue.properties || {} : {};
       const relationshipValue = r.get('relationship');
       const relationshipProps = relationshipValue ? relationshipValue.properties || {} : {};
+      console.log('[debug composedOperas entry]', index, {
+        operaProps,
+        relationshipProps
+      });
+
+      const directOperaValues = {
+        opera_name: toPlainString(r.get('opera_name')),
+        title: toPlainString(r.get('title')),
+        name: toPlainString(r.get('name')),
+        operaTitle: toPlainString(r.get('operaTitle')),
+        label: toPlainString(r.get('label')),
+        version: toPlainString(r.get('version')),
+        opera_id: r.get('opera_id')
+      };
+
       const sourceText = pickRelationshipSourceValue(
         relationshipProps.opera_source_text,
         relationshipProps.opera_source,
@@ -1167,9 +1222,62 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         relationshipProps.citation
       );
       const sourceUrl = normalizeRelationshipSourceValue(relationshipProps.opera_source_url);
+
+      const nameCandidates = [
+        directOperaValues.title,
+        directOperaValues.opera_name,
+        directOperaValues.name,
+        directOperaValues.operaTitle,
+        directOperaValues.label,
+        toPlainString(relationshipProps.opera_title),
+        toPlainString(relationshipProps.opera_name),
+        toPlainString(relationshipProps.title),
+        toPlainString(relationshipProps.name),
+        toPlainString(relationshipProps.target),
+        toPlainString(operaProps.opera_name),
+        toPlainString(operaProps.title),
+        toPlainString(operaProps.name),
+        toPlainString(operaProps.operaTitle),
+        toPlainString(operaProps.label)
+      ].filter(Boolean);
+
+      const resolvedTitle = nameCandidates.length > 0 ? nameCandidates[0] : null;
+      const resolvedOperaName = directOperaValues.opera_name || toPlainString(operaProps.opera_name);
+      const resolvedVersion = directOperaValues.version || toPlainString(operaProps.version);
+      const resolvedNameCandidate =
+        directOperaValues.name ||
+        resolvedTitle ||
+        directOperaValues.operaTitle ||
+        directOperaValues.label ||
+        toPlainString(operaProps.name) ||
+        toPlainString(operaProps.operaTitle) ||
+        toPlainString(operaProps.label);
+
+      const resolvedIdCandidate =
+        directOperaValues.opera_id ??
+        operaProps.opera_id ??
+        operaProps.id ??
+        null;
+
+      const numericOperaId = resolvedIdCandidate !== null && resolvedIdCandidate !== undefined
+        ? toPlainNumber(resolvedIdCandidate, null)
+        : null;
+      const resolvedDisplayName =
+        resolvedNameCandidate ||
+        (numericOperaId !== null
+          ? `Opera ${numericOperaId}`
+          : null);
+
       return {
-        title: r.get('title'),
-        source: sourceText || 'Unknown',
+        title: resolvedTitle,
+        opera_name: resolvedOperaName,
+        name: resolvedNameCandidate || resolvedDisplayName,
+        display_name: resolvedDisplayName,
+        operaTitle: directOperaValues.operaTitle || toPlainString(operaProps.operaTitle),
+        label: directOperaValues.label || toPlainString(operaProps.label),
+        version: resolvedVersion,
+        opera_id: numericOperaId,
+        source: sourceText || null,
         opera_source_text: sourceText || null,
         opera_source_url: sourceUrl || null
       };
@@ -1177,9 +1285,15 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
     const composedOperas = [];
     const seenComposedTitles = new Set();
     for (const opera of composedOperasRaw) {
-      const key = opera.title || '';
-      if (seenComposedTitles.has(key)) continue;
-      seenComposedTitles.add(key);
+      const key =
+        toPlainString(opera.title) ||
+        toPlainString(opera.opera_name) ||
+        toPlainString(opera.display_name) ||
+        (opera.opera_id !== null && opera.opera_id !== undefined ? String(opera.opera_id) : '');
+      if (key && seenComposedTitles.has(key)) continue;
+      if (key) {
+        seenComposedTitles.add(key);
+      }
       composedOperas.push(opera);
     }
 
@@ -1423,7 +1537,7 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
         singer: r.get('singer'),
         role: r.get('role'),
         voice_type: r.get('voice_type'),
-        source: sourceText || 'Unknown',
+        source: sourceText || null,
         opera_source_text: sourceText || null,
         opera_source_url: sourceUrl || null
       };
@@ -1441,7 +1555,7 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
       const sourceUrl = normalizeRelationshipSourceValue(r.get('opera_source_url'));
       return {
         composer: r.get('composer'),
-        source: sourceText || 'Unknown',
+        source: sourceText || null,
         opera_source_text: sourceText || null,
         opera_source_url: sourceUrl || null
       };
@@ -1701,7 +1815,8 @@ app.post('/path/find', authenticateToken, async (req, res) => {
       if (sourceUrl) {
         link.sourceUrl = sourceUrl;
       }
-      if (frontType === 'taught' || frontType === 'family') {
+      const teacherLikeTypes = new Set(['taught', 'family', 'parent', 'grandparent', 'sibling', 'spouse', 'coach', 'coached']);
+      if (teacherLikeTypes.has(frontType)) {
         link.teacher_rel_source_text = sourceText || null;
         link.teacher_rel_source_url = sourceUrl || null;
         link.teacher_rel_source = sourceText || null;

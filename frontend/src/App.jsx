@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
@@ -65,15 +65,33 @@ const deriveRelationshipSourceText = (...values) => {
 };
 
 const URL_DETECT_REGEX = /https?:\/\/[^\s)]+/i;
+const TRAILING_PUNCTUATION_REGEX = /[),.;:]+$/g;
+const WWW_URL_REGEX = /^www\.[^\s)]+/i;
+const isDebugRelSourcesEnabled = () =>
+  typeof window !== 'undefined' && window.__CMG_DEBUG_REL_SOURCES === true;
+const isProbablyHttpUrl = (value) => {
+  if (value == null) return false;
+  if (typeof value !== 'string') return false;
+  return /^https?:\/\//i.test(value.trim());
+};
+const sanitizeUrlCandidate = (value) => {
+  if (value == null) return '';
+  const str = String(value).trim();
+  if (!str) return '';
+  const match = str.match(URL_DETECT_REGEX);
+  if (match && match[0]) {
+    return match[0].replace(TRAILING_PUNCTUATION_REGEX, '');
+  }
+  if (WWW_URL_REGEX.test(str)) {
+    return `https://${str.replace(TRAILING_PUNCTUATION_REGEX, '')}`;
+  }
+  return '';
+};
+
 const extractFirstUrlFromValue = (value) => {
   if (value == null) return '';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    const str = String(value);
-    const match = str.match(URL_DETECT_REGEX);
-    if (match && match[0]) {
-      return match[0].replace(/[),.;:]+$/g, '');
-    }
-    return '';
+    return sanitizeUrlCandidate(value);
   }
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -87,6 +105,7 @@ const extractFirstUrlFromValue = (value) => {
       const found = extractFirstUrlFromValue(entry);
       if (found) return found;
     }
+    return '';
   }
   return '';
 };
@@ -99,6 +118,57 @@ const deriveRelationshipSourceUrl = (...values) => {
   return '';
 };
 
+const deriveOperaName = (opera = {}, fallback = 'Unknown Opera') => {
+  if (opera === null || opera === undefined) return fallback;
+
+  const collectCandidates = (entry, seen = new Set()) => {
+    if (!entry || typeof entry !== 'object' || seen.has(entry)) return [];
+    seen.add(entry);
+    const directValues = [
+      entry.opera_name,
+      entry.operaName,
+      entry.operaTitle,
+      entry.opera_title,
+      entry.title,
+      entry.name,
+      entry.label,
+      entry.display_name,
+      entry.displayName
+    ];
+    const nestedValues = [];
+    if (entry.properties && typeof entry.properties === 'object') {
+      nestedValues.push(...collectCandidates(entry.properties, seen));
+    }
+    if (entry.opera && typeof entry.opera === 'object') {
+      nestedValues.push(...collectCandidates(entry.opera, seen));
+    }
+    if (entry.allOperaProps && typeof entry.allOperaProps === 'object') {
+      nestedValues.push(...collectCandidates(entry.allOperaProps, seen));
+    }
+    return [...directValues, ...nestedValues];
+  };
+
+  const candidateFields = collectCandidates(opera);
+  for (const field of candidateFields) {
+    if (field === null || field === undefined) continue;
+    const trimmed = String(field).trim();
+    if (trimmed && !/^unknown\b/i.test(trimmed)) return trimmed;
+  }
+
+  const version = typeof opera.version === 'string' ? opera.version.trim() : '';
+  const operaId = opera.opera_id ?? opera.id;
+  if (version) {
+    return version;
+  }
+  if (operaId !== null && operaId !== undefined) {
+    const idString = String(operaId).trim();
+    if (idString) {
+      return `Opera ${idString}`;
+    }
+  }
+  return fallback;
+};
+
 const SOURCE_LINK_STYLE = {
   color: '#2563eb',
   textDecoration: 'underline',
@@ -107,13 +177,59 @@ const SOURCE_LINK_STYLE = {
   display: 'inline-block'
 };
 
-const formatRelationshipSource = (...values) => {
-  const raw = deriveRelationshipSourceText(...values);
-  const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
-  return text || 'Unknown';
-};
-
 const renderRelationshipSourceLink = (...values) => {
+  const findExplicitPair = () => {
+    for (const entry of values) {
+      if (!entry || typeof entry !== 'object') continue;
+      const textKeys = [
+        'text',
+        'label',
+        'title',
+        'relationshipSourceDisplay',
+        'teacher_rel_source_text'
+      ];
+      const urlKeys = [
+        'url',
+        'href',
+        'link',
+        'sourceUrl',
+        'teacher_rel_source_url'
+      ];
+
+      let textCandidate = '';
+      for (const key of textKeys) {
+        if (entry[key] !== undefined) {
+          textCandidate = normalizeSourceValue(entry[key]);
+          if (textCandidate) break;
+        }
+      }
+
+      let urlCandidate = '';
+      for (const key of urlKeys) {
+        if (entry[key] !== undefined) {
+          const extracted = extractFirstUrlFromValue(entry[key]);
+          if (extracted) {
+            urlCandidate = extracted;
+            break;
+          }
+          if (typeof entry[key] === 'string') {
+            const trimmed = entry[key].trim();
+            if (trimmed) {
+              urlCandidate = trimmed;
+              break;
+            }
+          }
+        }
+      }
+
+      if (textCandidate || urlCandidate) {
+        return { text: textCandidate, url: urlCandidate };
+      }
+    }
+    return null;
+  };
+
+  const explicitPair = findExplicitPair();
   const stopPropagation = (event) => {
     if (event && typeof event.stopPropagation === 'function') {
       event.stopPropagation();
@@ -126,10 +242,67 @@ const renderRelationshipSourceLink = (...values) => {
     onPointerDown: stopPropagation,
     onPointerUp: stopPropagation
   };
-  const url = deriveRelationshipSourceUrl(...values);
-  const raw = deriveRelationshipSourceText(...values);
+  const collectCandidateUrls = () => {
+    const candidates = [];
+    const pushCandidate = (candidate) => {
+      if (!candidate) return;
+      const extracted = extractFirstUrlFromValue(candidate);
+      if (extracted) {
+        candidates.push(extracted);
+        return;
+      }
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed) {
+          candidates.push(trimmed);
+        }
+      }
+    };
+
+    if (explicitPair?.url) {
+      pushCandidate(explicitPair.url);
+    }
+
+    for (const value of values) {
+      pushCandidate(value);
+      if (value && typeof value === 'object') {
+        const secondaryUrl =
+          value.url ??
+          value.href ??
+          value.link ??
+          value.sourceUrl ??
+          value.teacher_rel_source_url;
+        if (secondaryUrl) {
+          pushCandidate(secondaryUrl);
+        }
+      }
+    }
+    return candidates;
+  };
+
+  const urlCandidates = collectCandidateUrls();
+  const url = urlCandidates.find(isProbablyHttpUrl) || '';
+  const raw = explicitPair?.text ?? deriveRelationshipSourceText(...values);
   const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
   const textContainsUrl = URL_DETECT_REGEX.test(text || '');
+  if (isDebugRelSourcesEnabled()) {
+    const debugEntry = {
+      values,
+      explicitPair,
+      urlCandidates,
+      url,
+      text,
+      textContainsUrl
+    };
+    if (typeof window !== 'undefined') {
+      window.__CMG_REL_SOURCE_LOGS = window.__CMG_REL_SOURCE_LOGS || [];
+      window.__CMG_REL_SOURCE_LOGS.push(debugEntry);
+    }
+    try {
+      // eslint-disable-next-line no-console
+      console.debug('[cmg] Relationship source render', debugEntry);
+    } catch (_) {}
+  }
 
   if (url && !textContainsUrl) {
     const display = text || url;
@@ -152,7 +325,7 @@ const renderRelationshipSourceLink = (...values) => {
     );
   }
 
-  if (!text) return 'Unknown';
+  if (!text) return null;
 
   const urlRegex = /https?:\/\/[^\s)]+/gi;
   const nodes = [];
@@ -165,7 +338,7 @@ const renderRelationshipSourceLink = (...values) => {
       nodes.push(text.slice(lastIndex, index));
     }
     const matchedText = match[0];
-    const url = matchedText.replace(/[),.;:]+$/g, '');
+    const url = matchedText.replace(TRAILING_PUNCTUATION_REGEX, '');
     const trailing = matchedText.slice(url.length);
     const anchor = (
       <a
@@ -296,12 +469,22 @@ const formatRelationshipTypeLabel = (value) => {
   }
 };
 
+const isPersonOperaPair = (typeA, typeB) => {
+  const normalizedA = typeof typeA === 'string' ? typeA.trim().toLowerCase() : '';
+  const normalizedB = typeof typeB === 'string' ? typeB.trim().toLowerCase() : '';
+  if (!normalizedA || !normalizedB) return false;
+  return (
+    (normalizedA === 'person' && normalizedB === 'opera') ||
+    (normalizedA === 'opera' && normalizedB === 'person')
+  );
+};
+
 const createLinkContextMenuState = () => ({
   show: false,
   x: 0,
   y: 0,
   role: '',
-  source: ''
+  sourceValues: []
 });
 
 const normalizeDetailsRelationshipSources = (details = {}) => {
@@ -672,45 +855,6 @@ const ClassicalMusicGenealogy = () => {
   const filtersResetRef = useRef(false);
   const headerContainerRef = useRef(null);
   const [headerWidth, setHeaderWidth] = useState(null);
-
-  const centerName = itemDetails?.center?.full_name || itemDetails?.center?.name || '';
-  const { teacherSourcesByName, studentSourcesByName } = useMemo(() => {
-    const normalizeEndpoint = (value) => {
-      if (!value) return '';
-      if (typeof value === 'string') return value;
-      if (typeof value === 'object') {
-        return value.id || value.name || value.full_name || '';
-      }
-      return String(value);
-    };
-    const toText = (value) => {
-      if (value == null) return '';
-      if (typeof value === 'string') return value.trim();
-      try {
-        return String(value).trim();
-      } catch (_) {
-        return '';
-      }
-    };
-    const teacherMap = new Map();
-    const studentMap = new Map();
-    if (!centerName) return { teacherSourcesByName: teacherMap, studentSourcesByName: studentMap };
-    (networkData?.links || []).forEach((link) => {
-      if (!link) return;
-      const type = typeof link.type === 'string' ? link.type.toLowerCase() : '';
-      if (type !== 'taught') return;
-      const sourceId = normalizeEndpoint(link.source);
-      const targetId = normalizeEndpoint(link.target);
-      const text = toText(link.teacher_rel_source);
-      if (!text) return;
-      if (targetId === centerName) {
-        teacherMap.set(sourceId, text);
-      } else if (sourceId === centerName) {
-        studentMap.set(targetId, text);
-      }
-    });
-    return { teacherSourcesByName: teacherMap, studentSourcesByName: studentMap };
-  }, [networkData, centerName]);
 
   const clearStoredToken = () => {
     try { localStorage.removeItem('token'); } catch (_) {}
@@ -2855,6 +2999,10 @@ const attemptLoadSavedView = async () => {
       if (!nodeId || attachedToAnchor.has(nodeId)) return;
       if (isPlaceholderName(nodeId)) return;
 
+      if (fallbackConfig.type === 'related' && isPersonOperaPair(node?.type, anchorType)) {
+        return;
+      }
+
       const sourceId = fallbackConfig.source === 'node' ? nodeId : anchorId;
       const targetId = fallbackConfig.source === 'node' ? anchorId : nodeId;
       if (!sourceId || !targetId) return;
@@ -2878,6 +3026,14 @@ const attemptLoadSavedView = async () => {
       if (value === null || value === undefined) return '';
       return String(value).replace(/\s+/g, ' ').trim();
     };
+    const idToNode = new Map();
+    (nodes || []).forEach((node) => {
+      const id = normalize(node?.id ?? node?.name);
+      if (!id || isPlaceholderName(id)) return;
+      if (!idToNode.has(id)) {
+        idToNode.set(id, node);
+      }
+    });
     const nodeIds = nodes
       .map((node) => normalize(node?.id ?? node?.name))
       .filter(id => id && !isPlaceholderName(id));
@@ -2938,6 +3094,16 @@ const attemptLoadSavedView = async () => {
       }
       const key = `${fallbackId}|${nodeId}|${fallbackTypeKey}`;
       if (linkKeys.has(key)) return;
+      const sourceNode = idToNode.get(fallbackId);
+      const targetNode = idToNode.get(nodeId);
+      if (
+        fallbackTypeKey === 'related' &&
+        sourceNode &&
+        targetNode &&
+        isPersonOperaPair(sourceNode.type, targetNode.type)
+      ) {
+        return;
+      }
       links.push({
         source: fallbackId,
         target: nodeId,
@@ -2958,11 +3124,11 @@ const attemptLoadSavedView = async () => {
     const nodes = [];
     const links = [];
     
-    results.forEach((item, index) => {
-      if (type === 'singers') {
-        const name = item.name || item.properties.full_name || `Unknown Singer ${index}`;
-        nodes.push({
-          id: name,
+  results.forEach((item, index) => {
+    if (type === 'singers') {
+      const name = item.name || item.properties.full_name || `Unknown Singer ${index}`;
+      nodes.push({
+        id: name,
           name: name,
           type: 'person',
           voiceType: item.properties.voice_type,
@@ -2973,7 +3139,7 @@ const attemptLoadSavedView = async () => {
           y: 0
         });
       } else if (type === 'operas') {
-        const operaName = item.properties.opera_name || `Unknown Opera ${index}`;
+        const operaName = deriveOperaName(item.properties, `Unknown Opera ${index}`);
         nodes.push({
           id: operaName,
           name: operaName,
@@ -2993,23 +3159,18 @@ const attemptLoadSavedView = async () => {
           y: 0
         });
       }
-    });
+  });
 
-    // Apply anti-overlap positioning to all nodes
-    positionNodesWithoutOverlap(nodes);
-    ensureNodeConnectivity(nodes, links, {
-      primaryId: nodes[0]?.id,
-      fallbackType: 'related',
-      fallbackLabel: 'Search result'
-    });
+  // Apply anti-overlap positioning to all nodes
+  positionNodesWithoutOverlap(nodes);
 
-    setNetworkData(sanitizeGraphData({ nodes, links }));
+  setNetworkData(sanitizeGraphData({ nodes, links }));
     resetFiltersForNodeSet(nodes);
     setShowFilterPanel(false);
     setCurrentCenterNode(null); // Reset center tracking for search results
     setShouldRunSimulation(true); // Trigger simulation for search results
   };
-  const generateNetworkFromDetails = (details, centerName, type) => {
+  const generateNetworkFromDetails = (details, centerName, type, options = {}) => {
     const nodes = [];
     const links = [];
     const addedNodes = new Set(); // Track which people have been added
@@ -3074,8 +3235,8 @@ const attemptLoadSavedView = async () => {
   addedNodes.add(centerId);
 
   // Add composer(s) for opera center via wrote list; fallback to single property if present
-  if (type === 'operas') {
-    const wroteList = Array.isArray(details.wrote) ? details.wrote : [];
+    if (type === 'operas') {
+      const wroteList = Array.isArray(details.wrote) ? details.wrote : [];
     if (wroteList.length > 0) {
       wroteList.forEach((row, idx) => {
         const composerRaw = row && (row.composer || row.name || row.full_name);
@@ -3095,6 +3256,28 @@ const attemptLoadSavedView = async () => {
           relationshipSourceDisplay: relationshipSource,
           sourceInfo: relationshipSource,
           relationship_source: row?.relationship_source || null
+        });
+      });
+    } else if (type === 'singers' && Array.isArray(details.works?.composedOperas) && details.works.composedOperas.length > 0) {
+      details.works.composedOperas.forEach((operaEntry, idx) => {
+        const fallbackLabel = `Unknown Opera ${idx}`;
+        const name = deriveOperaName(operaEntry, fallbackLabel);
+        if (!name) return;
+        const operaId = normalizeNodeId(name);
+        if (!operaId || isPlaceholderName(operaId)) return;
+        if (!addedNodes.has(operaId)) {
+          nodes.push({ id: operaId, name, type: 'opera', x: 150 + idx * 80, y: 420 });
+          addedNodes.add(operaId);
+        }
+        const relationshipSource = deriveRelationshipSourceText(operaEntry?.source, operaEntry?.opera_source_text, operaEntry?.relationship_source);
+        links.push({
+          source: centerId,
+          target: operaId,
+          type: 'wrote',
+          label: 'wrote',
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: operaEntry?.relationship_source || null
         });
       });
     } else if (details.opera && details.opera.composer) {
@@ -3117,6 +3300,36 @@ const attemptLoadSavedView = async () => {
           relationship_source: details.opera?.relationship_source || null
         });
       }
+    }
+  } else if (options?.context === 'composer') {
+    if (details.works?.composedOperas && details.works.composedOperas.length > 0) {
+      details.works.composedOperas.forEach((opera, index) => {
+        const fallbackLabel = `Unknown Opera ${index}`;
+        const operaName = deriveOperaName(opera, fallbackLabel);
+        if (!operaName) return;
+        const operaId = normalizeNodeId(operaName);
+        if (!operaId || isPlaceholderName(operaId)) return;
+        if (!addedNodes.has(operaId)) {
+          nodes.push({
+            id: operaId,
+            name: operaName,
+            type: 'opera',
+            x: 120 + (index * 100),
+            y: 420
+          });
+          addedNodes.add(operaId);
+        }
+        const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.source);
+        links.push({
+          source: centerId,
+          target: operaId,
+          type: 'wrote',
+          label: 'wrote',
+          relationshipSourceDisplay: relationshipSource,
+          sourceInfo: relationshipSource,
+          relationship_source: opera.relationship_source || null
+        });
+      });
     }
   }
 
@@ -3206,8 +3419,9 @@ const attemptLoadSavedView = async () => {
       // Add operas
       if (details.works.operas) {
         details.works.operas.forEach((opera, index) => {
-          const operaId = opera.opera_name || opera.title || `Unknown Opera ${index}`;
-          const operaName = opera.opera_name || opera.title || `Unknown Opera ${index}`;
+          const fallbackLabel = `Unknown Opera ${index}`;
+          const operaName = deriveOperaName(opera, fallbackLabel);
+          const operaId = operaName;
           nodes.push({
             id: operaId,
             name: operaName,
@@ -3263,12 +3477,14 @@ const attemptLoadSavedView = async () => {
       // Add composed operas (person center) - keep 'composed' label for legacy, but also treat as 'wrote'
       if (details.works.composedOperas) {
         details.works.composedOperas.forEach((opera, index) => {
-          const operaTitle = opera.title || `Unknown Opera ${index}`;
-          const operaId = `composed_opera_${operaTitle}`;
+          const fallbackLabel = `Unknown Opera ${index}`;
+          const operaName = deriveOperaName(opera, fallbackLabel);
+          const operaId = operaName;
           nodes.push({
             id: operaId,
-            name: operaTitle,
+            name: operaName,
             type: 'opera',
+            source: opera.source,
             x: 100 + (index * 80),
             y: 400
           });
@@ -3511,6 +3727,9 @@ const isPlaceholderName = (value) => {
     .trim();
   if (!simplified) return true;
   if (simplified === 'unknown') return true;
+  if (simplified.includes('unknown opera')) return true;
+  if (simplified.includes('unknown book')) return true;
+  if (simplified.startsWith('unknown ')) return true;
   if (
     simplified.includes('teacher provided') ||
     simplified.includes('teacherprovided')
@@ -3532,9 +3751,15 @@ const isPlaceholderName = (value) => {
         return;
       }
       if (key === 'name') {
-        const name = String(value).trim();
-        if (!String(result.name || '').trim()) {
-          result.name = name || result.id || '';
+        const incomingName = String(value).trim();
+        const existingName = String(result.name || '').trim();
+        const shouldReplace =
+          !existingName ||
+          /^unknown\b/i.test(existingName);
+        if (incomingName && shouldReplace) {
+          result.name = incomingName;
+        } else if (!existingName) {
+          result.name = incomingName || result.id || '';
         }
         return;
       }
@@ -4047,9 +4272,10 @@ const normalizeLinkForMerge = (link) => {
             if (data.works) {
               if (data.works.operas) {
                 data.works.operas.forEach(opera => {
+                  const operaName = deriveOperaName(opera, 'Unknown Opera');
                   const operaId = registerNode({
-                    id: opera.opera_name || opera.title || 'Unknown Opera',
-                    name: opera.opera_name || opera.title || 'Unknown Opera',
+                    id: operaName,
+                    name: operaName,
                     type: 'opera',
                     role: opera.role,
                     composer: opera.composer,
@@ -4066,10 +4292,12 @@ const normalizeLinkForMerge = (link) => {
 
               if (Array.isArray(data.works.composedOperas) && data.works.composedOperas.length > 0) {
                 data.works.composedOperas.forEach(opera => {
+                  const operaName = deriveOperaName(opera, 'Unknown Opera');
                   const operaId = registerNode({
-                    id: opera.title || opera.opera_name || 'Unknown Opera',
-                    name: opera.title || opera.opera_name || 'Unknown Opera',
-                    type: 'opera'
+                    id: operaName,
+                    name: operaName,
+                    type: 'opera',
+                    source: opera.source
                   });
                   if (!operaId) return;
                   addLink(anchorId, operaId, 'wrote', {
@@ -4501,9 +4729,10 @@ const normalizeLinkForMerge = (link) => {
             
             if (relationshipType === 'premieredRoleIn' && data.works && data.works.operas) {
               data.works.operas.forEach(opera => {
+                const operaName = deriveOperaName(opera, 'Unknown Opera');
                 const operaId = registerNode({
-                  id: opera.opera_name || opera.title || 'Unknown Opera',
-                  name: opera.opera_name || opera.title || 'Unknown Opera',
+                  id: operaName,
+                  name: operaName,
                   type: 'opera',
                   role: opera.role,
                   composer: opera.composer,
@@ -6077,21 +6306,65 @@ const normalizeLinkForMerge = (link) => {
             const srcNode = getEndpointNode(d.source);
             const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
-            const resolvedSource = formatRelationshipSource(
+            const baseSourceValues = [
+              d.teacher_rel_source_text,
               d.relationshipSourceDisplay,
               d.relationship_source_display,
               d.sourceInfo,
               d.teacher_rel_source,
               d.relationship_source,
               d.source,
-              d.meta?.source
+              d.meta?.source,
+              d.opera_source_text,
+              d.opera_source_url,
+              d.teacher_rel_source_url,
+              d.sourceUrl,
+              d.meta?.sourceUrl
+            ];
+            const derivedSourceText = deriveRelationshipSourceText(...baseSourceValues);
+            const derivedSourceUrl = deriveRelationshipSourceUrl(
+              d.teacher_rel_source_url,
+              d.sourceUrl,
+              ...baseSourceValues
             );
+            const sourceValues = [
+              {
+                text: derivedSourceText,
+                url: derivedSourceUrl
+              },
+              {
+                text: d.teacher_rel_source_text,
+                url: d.teacher_rel_source_url
+              },
+              ...baseSourceValues
+            ];
+            if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+              window.__CMG_LINK_CONTEXT_LOGS = window.__CMG_LINK_CONTEXT_LOGS || [];
+              window.__CMG_LINK_CONTEXT_LOGS.push({
+                type: d?.type,
+                link: d,
+                derivedSourceText,
+                derivedSourceUrl,
+                sourceValues
+              });
+              try {
+                // eslint-disable-next-line no-console
+                console.debug('[cmg] link context menu', {
+                  type: d?.type,
+                  derivedSourceText,
+                  derivedSourceUrl,
+                  teacher_rel_source_text: d?.teacher_rel_source_text,
+                  teacher_rel_source_url: d?.teacher_rel_source_url,
+                  sourceUrl: d?.sourceUrl
+                });
+              } catch (_) {}
+            }
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              source: resolvedSource
+              sourceValues
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -6168,21 +6441,27 @@ const normalizeLinkForMerge = (link) => {
             const srcNode = getEndpointNode(d.source);
             const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
-            const resolvedSource = formatRelationshipSource(
+            const sourceValues = [
               d.relationshipSourceDisplay,
               d.relationship_source_display,
               d.sourceInfo,
+              d.teacher_rel_source_text,
               d.teacher_rel_source,
               d.relationship_source,
               d.source,
-              d.meta?.source
-            );
+              d.meta?.source,
+              d.opera_source_text,
+              d.opera_source_url,
+              d.teacher_rel_source_url,
+              d.sourceUrl,
+              d.meta?.sourceUrl
+            ];
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              source: resolvedSource
+              sourceValues
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -7625,9 +7904,16 @@ const normalizeLinkForMerge = (link) => {
                 </div>
                   </>
                 )}
-                <div style={{ color: '#374151' }}>
-                  <strong>Relationship source:</strong> {formatRelationshipSource(linkContextMenu.source)}
-                </div>
+                {(() => {
+                  const content = renderRelationshipSourceLink(...(linkContextMenu.sourceValues || []));
+                  if (!content) return null;
+                  return (
+                    <div style={{ color: '#374151' }}>
+                      <strong>Relationship source:</strong>{' '}
+                      {content}
+                    </div>
+                  );
+                })()}
               </div>
             )}
             <ProfileCard />
@@ -8612,18 +8898,53 @@ const normalizeLinkForMerge = (link) => {
             else if (relType.includes('sibling')) counts.sibling++;
           });
         }
+        const composedOperas = Array.isArray(data.works?.composedOperas) ? data.works.composedOperas : [];
+        const wroteRelationships = Array.isArray(data.wrote) ? data.wrote : [];
+
         if (data.works) {
-          if (data.works.operas) counts.premieredRoleIn = data.works.operas.length;
-          if (data.works.books) counts.authored = data.works.books.length;
+          if (Array.isArray(data.works.operas)) counts.premieredRoleIn = data.works.operas.length;
+          if (Array.isArray(data.works.books)) counts.authored = data.works.books.length;
+        }
+
+        const combinedWrote = [...composedOperas, ...wroteRelationships];
+        if (combinedWrote.length > 0) {
+          const uniqueWrote = new Set(
+            combinedWrote
+              .map(entry => {
+                const candidate =
+                  entry?.title ||
+                  entry?.opera_name ||
+                  entry?.name ||
+                  entry?.operaTitle ||
+                  entry?.label ||
+                  entry?.display_name;
+                if (candidate) {
+                  return normalizeNodeId(candidate);
+                }
+                const derived = deriveOperaName(entry, '');
+                return normalizeNodeId(derived);
+              })
+              .filter(Boolean)
+          );
+          counts.wrote = uniqueWrote.size || combinedWrote.length;
         }
         
         // Note: All people are persons in Neo4j regardless of activity (singer, composer, etc.)
         // The API should return comprehensive data for all persons through the network endpoint
       } else if (node.type === 'opera') {
         // Operas have people who premiered roles in them (incoming relationships)
-        if (data.premieredRoles) counts.premieredRoleIn = data.premieredRoles.length;
-        // Most operas have one composer (outgoing relationship)
-        if (data.opera && data.opera.composer) counts.wrote = 1;
+        if (Array.isArray(data.premieredRoles)) counts.premieredRoleIn = data.premieredRoles.length;
+        const composerRows = Array.isArray(data.wrote) ? data.wrote : [];
+        if (composerRows.length > 0) {
+          const uniqueComposers = new Set(
+            composerRows
+              .map(row => normalizeNodeId(row?.composer || row?.name || row?.full_name))
+              .filter(Boolean)
+          );
+          counts.wrote = uniqueComposers.size || composerRows.length;
+        } else if (data.opera && data.opera.composer) {
+          counts.wrote = 1;
+        }
       } else if (node.type === 'book') {
         if (data.book && data.book.author) counts.authored = 1;
       }
@@ -12181,27 +12502,23 @@ const normalizeLinkForMerge = (link) => {
             className={isMobileViewport ? 'mobile-safe-area-inline' : undefined}
             style={{ width: '100%', marginBottom: '30px' }}
           >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: isMobileViewport ? 'center' : 'flex-end',
-                alignItems: 'center',
-                marginBottom: '15px'
-              }}
-            >
-              <div className="network-hint">
+            <NetworkVisualization viewport={viewport} />
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
+              <div className="network-hint" style={{ textAlign: 'center' }}>
                 {isMobileViewport ? (
                   <>
                     Drag nodes to reposition • Pinch to zoom • Drag to pan • Long-press a node or relationship for more information
                   </>
                 ) : (
                   <>
-                    Drag nodes to reposition • Scroll to zoom • Drag to pan • Right-click (two-finger press) on a node or relationship for more information
+                    Drag nodes to reposition • Scroll to zoom • Drag to pan
+                    <span style={{ display: 'block', marginTop: 4 }}>
+                      Right-click (or two-finger press on a trackpad) on a node or relationship for more information
+                    </span>
                   </>
                 )}
               </div>
             </div>
-            <NetworkVisualization viewport={viewport} />
           </div>
         )}
 
@@ -12373,16 +12690,35 @@ const normalizeLinkForMerge = (link) => {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
               👤 Teachers ({itemDetails.teachers.length})
                   </h3>
-                  {itemDetails.teachers.map((teacher, index) => {
-                    const fallbackSource = teacherSourcesByName.get(teacher.full_name) || '';
-                    const sourceValues = [
+                  {(() => {
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES = window.__CMG_CARD_SOURCES || {};
+                      window.__CMG_CARD_SOURCES.teachers = [];
+                    }
+                    return itemDetails.teachers;
+                  })().map((teacher, index) => {
+                    const relationshipSourceArgs = [
+                      { text: teacher.teacher_rel_source_text, url: teacher.teacher_rel_source_url },
                       teacher.teacher_rel_source_text,
                       teacher.teacher_rel_source_url,
-                      teacher.teacher_rel_source_display,
+                      teacher.relationshipSourceDisplay,
                       teacher.teacher_rel_source,
-                      fallbackSource
+                      teacher.relationship_source,
+                      teacher.source
                     ];
-                    const displaySource = deriveRelationshipSourceText(...sourceValues);
+                    const derivedSourceText = deriveRelationshipSourceText(...relationshipSourceArgs);
+                    const derivedSourceUrl = deriveRelationshipSourceUrl(...relationshipSourceArgs);
+                    const relationshipSourceContent = renderRelationshipSourceLink(...relationshipSourceArgs);
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES.teachers.push({
+                        full_name: teacher.full_name,
+                        teacher_rel_source_text: teacher.teacher_rel_source_text,
+                        teacher_rel_source_url: teacher.teacher_rel_source_url,
+                        derivedSourceText,
+                        derivedSourceUrl,
+                        hasRenderedContent: Boolean(relationshipSourceContent)
+                      });
+                    }
                     return (
                     <div 
                       key={index} 
@@ -12423,9 +12759,10 @@ const normalizeLinkForMerge = (link) => {
                           }
                         </p>
                       )}
-                      {displaySource && (
+                      {relationshipSourceContent && (
                         <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                          Relationship source: {renderRelationshipSourceLink(...sourceValues)}
+                          Relationship source:{' '}
+                          {relationshipSourceContent}
                         </p>
                       )}
                     </div>
@@ -12449,16 +12786,35 @@ const normalizeLinkForMerge = (link) => {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
                   👤 Students ({itemDetails.students.length})
                   </h3>
-                  {itemDetails.students.map((student, index) => {
-                    const fallbackSource = studentSourcesByName.get(student.full_name) || '';
-                    const sourceValues = [
+                  {(() => {
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES = window.__CMG_CARD_SOURCES || {};
+                      window.__CMG_CARD_SOURCES.students = [];
+                    }
+                    return itemDetails.students;
+                  })().map((student, index) => {
+                    const relationshipSourceArgs = [
+                      { text: student.teacher_rel_source_text, url: student.teacher_rel_source_url },
                       student.teacher_rel_source_text,
                       student.teacher_rel_source_url,
-                      student.teacher_rel_source_display,
+                      student.relationshipSourceDisplay,
                       student.teacher_rel_source,
-                      fallbackSource
+                      student.relationship_source,
+                      student.source
                     ];
-                    const displaySource = deriveRelationshipSourceText(...sourceValues);
+                    const derivedSourceText = deriveRelationshipSourceText(...relationshipSourceArgs);
+                    const derivedSourceUrl = deriveRelationshipSourceUrl(...relationshipSourceArgs);
+                    const relationshipSourceContent = renderRelationshipSourceLink(...relationshipSourceArgs);
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES.students.push({
+                        full_name: student.full_name,
+                        teacher_rel_source_text: student.teacher_rel_source_text,
+                        teacher_rel_source_url: student.teacher_rel_source_url,
+                        derivedSourceText,
+                        derivedSourceUrl,
+                        hasRenderedContent: Boolean(relationshipSourceContent)
+                      });
+                    }
                     return (
                     <div 
                       key={index} 
@@ -12499,9 +12855,10 @@ const normalizeLinkForMerge = (link) => {
                           }
                         </p>
                       )}
-                      {displaySource && (
+                      {relationshipSourceContent && (
                         <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                          Relationship source: {renderRelationshipSourceLink(...sourceValues)}
+                          Relationship source:{' '}
+                          {relationshipSourceContent}
                         </p>
                       )}
                     </div>
@@ -12525,7 +12882,38 @@ const normalizeLinkForMerge = (link) => {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
                     {(() => { const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : []; return `👤 Family (${fam.length})`; })()}
                   </h3>
-                  {(() => { const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : []; return fam; })().map((relative, index) => (
+                  {(() => {
+                    const fam = itemDetails ? (itemDetails.family || itemDetails.center?.family || []) : [];
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES = window.__CMG_CARD_SOURCES || {};
+                      window.__CMG_CARD_SOURCES.family = [];
+                    }
+                    return fam;
+                  })().map((relative, index) => {
+                    const relationshipSourceArgs = [
+                      { text: relative.teacher_rel_source_text, url: relative.teacher_rel_source_url },
+                      relative.teacher_rel_source_text,
+                      relative.teacher_rel_source_url,
+                      relative.relationshipSourceDisplay,
+                      relative.teacher_rel_source,
+                      relative.relationship_source,
+                      relative.source
+                    ];
+                    const derivedSourceText = deriveRelationshipSourceText(...relationshipSourceArgs);
+                    const derivedSourceUrl = deriveRelationshipSourceUrl(...relationshipSourceArgs);
+                    const relationshipSourceContent = renderRelationshipSourceLink(...relationshipSourceArgs);
+                    if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
+                      window.__CMG_CARD_SOURCES.family.push({
+                        full_name: relative.full_name,
+                        relationship_type: relative.relationship_type,
+                        teacher_rel_source_text: relative.teacher_rel_source_text,
+                        teacher_rel_source_url: relative.teacher_rel_source_url,
+                        derivedSourceText,
+                        derivedSourceUrl,
+                        hasRenderedContent: Boolean(relationshipSourceContent)
+                      });
+                    }
+                    return (
                     <div 
                       key={index} 
                       style={{ 
@@ -12570,11 +12958,15 @@ const normalizeLinkForMerge = (link) => {
                           }
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                        Relationship source: {renderRelationshipSourceLink(relative.teacher_rel_source_text, relative.teacher_rel_source_url, relative.teacher_rel_source, relative.relationshipSourceDisplay, relative.relationship_source, relative.source)}
-                      </p>
+                      {relationshipSourceContent && (
+                        <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
+                          Relationship source:{' '}
+                          {relationshipSourceContent}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                   </div>
                 </div>
               )}
@@ -12645,9 +13037,33 @@ const normalizeLinkForMerge = (link) => {
                           <strong>Role premiered:</strong> {role.role}
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                        Source: {renderRelationshipSourceLink(role.opera_source_text, role.opera_source_url, role.relationshipSourceDisplay, role.source, role.relationship_source)}
-                      </p>
+                      {(() => {
+                        const roleSourceText = deriveRelationshipSourceText(
+                          role.opera_source_text,
+                          role.relationshipSourceDisplay,
+                          role.relationship_source,
+                          role.source
+                        );
+                        if (!roleSourceText) return null;
+                        const roleSourceUrl = deriveRelationshipSourceUrl(role.opera_source_url);
+                        return (
+                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
+                            Source:{' '}
+                            {roleSourceUrl ? (
+                              <a
+                                href={roleSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: '#2563eb', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word', display: 'inline-block' }}
+                              >
+                                {roleSourceText}
+                              </a>
+                            ) : (
+                              roleSourceText
+                            )}
+                          </p>
+                        );
+                      })()}
                     </div>
                   ))}
                   </div>
@@ -12735,7 +13151,10 @@ const normalizeLinkForMerge = (link) => {
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
                         🎼 Composed Operas ({itemDetails.works.composedOperas.length})
                       </h3>
-                      {itemDetails.works.composedOperas.map((opera, index) => (
+                      {itemDetails.works.composedOperas.map((opera, index) => {
+                        const operaLabel = String(opera?.title || opera?.opera_name || opera?.name || opera?.operaTitle || '').trim();
+                        const safeLabel = operaLabel || `Opera ${index + 1}`;
+                        return (
                         <div 
                           key={index} 
                           style={{ 
@@ -12759,16 +13178,16 @@ const normalizeLinkForMerge = (link) => {
                                   'Content-Type': 'application/json',
                                   'Authorization': `Bearer ${token}`
                                 },
-                                body: JSON.stringify({ operaName: opera.title })
+                                body: JSON.stringify({ operaName: safeLabel })
                               });
 
                               const data = await response.json();
                               if (response.ok) {
                                 setItemDetails(data);
-                                setSelectedItem({ properties: { title: opera.title } });
+                                setSelectedItem({ properties: { title: safeLabel } });
                                 setSearchType('operas');
                                 setCurrentView('network');
-                                generateNetworkFromDetails(data, opera.title, 'operas');
+                                generateNetworkFromDetails(data, safeLabel, 'operas');
                                 setShouldRunSimulation(true); // Trigger simulation for clicked composed opera
                               } else {
                                 setError(data.error);
@@ -12780,12 +13199,36 @@ const normalizeLinkForMerge = (link) => {
                             }
                           }}
                         >
-                          <p style={{ margin: '4px 0', fontWeight: '500' }}>{opera.title}</p>
-                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                            Source: {renderRelationshipSourceLink(opera.opera_source_text, opera.opera_source_url, opera.relationshipSourceDisplay, opera.source, opera.relationship_source)}
-                          </p>
+                          <p style={{ margin: '4px 0', fontWeight: '500' }}>{safeLabel}</p>
+                          {(() => {
+                            const composedSourceText = deriveRelationshipSourceText(
+                              opera.opera_source_text,
+                              opera.relationshipSourceDisplay,
+                              opera.relationship_source,
+                              opera.source
+                            );
+                            if (!composedSourceText) return null;
+                            const composedSourceUrl = deriveRelationshipSourceUrl(opera.opera_source_url);
+                            return (
+                              <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
+                                Source:{' '}
+                                {composedSourceUrl ? (
+                                  <a
+                                    href={composedSourceUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ color: '#2563eb', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word', display: 'inline-block' }}
+                                  >
+                                    {composedSourceText}
+                                  </a>
+                                ) : (
+                                  composedSourceText
+                                )}
+                              </p>
+                            );
+                          })()}
                         </div>
-                      ))}
+                      );})}
                     </div>
                   )}
                 </>
@@ -12933,9 +13376,21 @@ const normalizeLinkForMerge = (link) => {
                           <strong>Voice type:</strong> {performer.voice_type}
                         </p>
                       )}
-                      <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
-                        Source: {renderRelationshipSourceLink(performer.opera_source_text, performer.opera_source_url, performer.relationshipSourceDisplay, performer.source, performer.relationship_source)}
-                      </p>
+                      {(() => {
+                        const sourceNode = renderRelationshipSourceLink(
+                          performer.opera_source_text,
+                          performer.opera_source_url,
+                          performer.relationshipSourceDisplay,
+                          performer.source,
+                          performer.relationship_source
+                        );
+                        if (!sourceNode) return null;
+                        return (
+                          <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
+                            Source: {sourceNode}
+                          </p>
+                        );
+                      })()}
                     </div>
                   ))}
                   </div>
