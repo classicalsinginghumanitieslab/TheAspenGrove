@@ -380,6 +380,228 @@ const renderRelationshipSourceLink = (...values) => {
   );
 };
 
+const renderPathPanelContent = ({
+  isMobile,
+  pathFromRef,
+  pathToRef,
+  pathFromValRef,
+  pathToValRef,
+  pathInfo,
+  pathListRef,
+  handleClearPath,
+  onFindPath,
+  renderRelationshipSourceLink,
+  onClose
+}) => {
+  const showInputs = !isMobile || !pathInfo;
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, color: '#1f2937' }}>Find path</div>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'none',
+            border: 'none',
+            fontSize: 18,
+            cursor: 'pointer',
+            color: '#666',
+            padding: isMobile ? '6px' : 0
+          }}
+        >
+          ×
+        </button>
+      </div>
+      {showInputs && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>From (Person full name)</label>
+            <input
+              ref={pathFromRef}
+              defaultValue=""
+              onInput={(e) => { pathFromValRef.current = e.target.value; }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onFindPath();
+                }
+              }}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              inputMode="text"
+              name="cmg-path-from"
+              data-lpignore="true"
+              data-1p-ignore
+              style={{
+                width: '100%',
+                padding: isMobile ? '12px 14px' : '6px 8px',
+                border: '2px solid #3e96e2',
+                borderRadius: isMobile ? 12 : 4,
+                fontSize: isMobile ? '16px' : '14px'
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>To (Person full name)</label>
+            <input
+              ref={pathToRef}
+              defaultValue=""
+              onInput={(e) => { pathToValRef.current = e.target.value; }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onFindPath();
+                }
+              }}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              inputMode="text"
+              name="cmg-path-to"
+              data-lpignore="true"
+              data-1p-ignore
+              style={{
+                width: '100%',
+                padding: isMobile ? '12px 14px' : '6px 8px',
+                border: '2px solid #3e96e2',
+                borderRadius: isMobile ? 12 : 4,
+                fontSize: isMobile ? '16px' : '14px'
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+            <button
+              onClick={onFindPath}
+              style={{
+                backgroundColor: '#2563eb',
+                color: 'white',
+                border: '2px solid #3e96e2',
+                padding: isMobile ? '12px 16px' : '6px 10px',
+                borderRadius: isMobile ? 12 : 4,
+                cursor: 'pointer',
+                flex: isMobile ? 1 : 'initial',
+                fontSize: isMobile ? '16px' : '14px'
+              }}
+            >
+              Find path
+            </button>
+            {!isMobile && (
+              <button
+                aria-label="Clear path"
+                title="Clear path"
+                onClick={handleClearPath}
+                style={{
+                  backgroundColor: '#f9fafb',
+                  color: '#111827',
+                  border: '2px solid #3e96e2',
+                  padding: '6px 10px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  flex: 'initial',
+                  fontSize: '14px'
+                }}
+              >
+                Clear path
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {pathInfo && (
+        <div
+          ref={pathListRef}
+          style={{
+            marginTop: 10,
+            maxHeight: 200,
+            overflowY: 'auto',
+            fontSize: 12,
+            color: '#374151',
+            borderTop: '1px solid #eee',
+            paddingTop: 8,
+            overscrollBehavior: 'contain',
+            WebkitOverflowScrolling: 'touch'
+          }}
+          onWheelCapture={(e) => {
+            e.stopPropagation();
+          }}
+          onMouseEnter={() => {
+            try { window.__cmg_disableZoomWhileScrolling && window.__cmg_disableZoomWhileScrolling(true); } catch (_) {}
+          }}
+          onMouseLeave={() => {
+            try { window.__cmg_disableZoomWhileScrolling && window.__cmg_disableZoomWhileScrolling(false); } catch (_) {}
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Path summary</div>
+          <div>Nodes: {pathInfo.nodes.length}, Links: {pathInfo.links.length}</div>
+          {Array.isArray(pathInfo.steps) && pathInfo.steps.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {pathInfo.steps.map((step, idx) => {
+                const hasSource = !!(step.relationshipSourceDisplay || step.sourceInfo || step.sourceUrl);
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: '6px 8px',
+                      borderRadius: 4,
+                      marginBottom: 4,
+                      border: '2px solid #3e96e2',
+                      background: '#fff',
+                      cursor: 'default'
+                    }}
+                  >
+                    <div>
+                      <strong>{step.source?.name || step.source?.id}</strong> — {step.label}
+                      {step.type === 'premiered' && step.role && (
+                        <> (Role: {step.role})</>
+                      )}
+                      {' '}→ <strong>{step.target?.name || step.target?.id}</strong>
+                    </div>
+                    {hasSource && (
+                      <div style={{ marginTop: 4 }}>
+                        <strong>Source:</strong>{' '}
+                        {renderRelationshipSourceLink(
+                          step.relationshipSourceDisplay,
+                          step.sourceUrl,
+                          step.sourceInfo
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {isMobile && (
+            <button
+              aria-label="Clear path"
+              title="Clear path"
+              onClick={handleClearPath}
+              style={{
+                marginTop: 12,
+                width: '100%',
+                backgroundColor: '#f9fafb',
+                color: '#111827',
+                border: '2px solid #3e96e2',
+                padding: '12px 16px',
+                borderRadius: 12,
+                cursor: 'pointer',
+                fontSize: '16px'
+              }}
+            >
+              Clear path
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+};
+
 const normalizeLinks = (links = []) =>
   (Array.isArray(links) ? links : []).map((link) => {
     const sourceText = deriveRelationshipSourceText(
@@ -621,10 +843,12 @@ const normalizeDetailsRelationshipSources = (details = {}) => {
 };
 
 const ClassicalMusicGenealogy = () => {
-  const viewport = useViewport();
-  const { width: viewportWidth, height: viewportHeight, isTablet, isPhone } = viewport;
-  const isMobileViewport = !!isPhone;
-  const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
+const viewport = useViewport();
+const { width: viewportWidth, height: viewportHeight, isTablet, isPhone } = viewport;
+const isMobileViewport = !!isPhone;
+const viewportIsPhone = !!isPhone;
+const viewportIsTablet = !!isTablet;
+const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   const debouncedViewportHeight = useDebounce(viewportHeight, 150);
   const backgroundMinHeight = isMobileViewport ? '100dvh' : '100vh';
   const backgroundAttachmentMode = isMobileViewport ? 'scroll' : 'fixed';
@@ -777,7 +1001,13 @@ const ClassicalMusicGenealogy = () => {
   const prePathNetworkRef = useRef(null);
   const pathPanelRef = useRef(null);
   const pathListRef = useRef(null);
+  const pathPreviousViewRef = useRef(null);
+  const nodeClickTimeoutRef = useRef(null);
+  const helperMessageTimeoutRef = useRef(null);
+  const lastTappedNodeIdRef = useRef(null);
+  const suppressNextClickRef = useRef(false);
   const [pathInfo, setPathInfo] = useState(null);
+  const [helperMessage, setHelperMessage] = useState('');
   const handleClearPath = () => {
     try { setPathInfo(null); } catch (_) {}
     try { if (pathFromRef.current) pathFromRef.current.value = ''; } catch (_) {}
@@ -832,11 +1062,11 @@ const ClassicalMusicGenealogy = () => {
   const historyRef = useRef({ past: [], future: [] });
   const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0 });
   const [savedViews, setSavedViews] = useState([]);
-  const [isSavingView, setIsSavingView] = useState(false);
-  const [saveLabel, setSaveLabel] = useState('');
-  const [loadToken, setLoadToken] = useState('');
-  const [isLoadingView, setIsLoadingView] = useState(false);
-  const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
+const [isSavingView, setIsSavingView] = useState(false);
+const [saveLabel, setSaveLabel] = useState('');
+const [loadToken, setLoadToken] = useState('');
+const [isLoadingView, setIsLoadingView] = useState(false);
+const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
   const isLoadingViewRef = useRef(false);
   // Temporary halo effect for search result cards after a search
   const [showResultsHalo, setShowResultsHalo] = useState(false);
@@ -864,14 +1094,92 @@ const ClassicalMusicGenealogy = () => {
     setPendingTosRedirect('');
   };
 
-  const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
+const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
 
-  const isSaveExportEligible = hasExecutedSearch && Array.isArray(networkData?.nodes) && networkData.nodes.length > 0;
+const isSaveExportEligible = hasExecutedSearch && Array.isArray(networkData?.nodes) && networkData.nodes.length > 0;
 
-  const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } = {}) => {
-    const disabledSave = !isSaveExportEligible || !token || isSavingView;
-    const disabledExport = !isSaveExportEligible;
-    const actionButtonBase = {
+useEffect(() => {
+  if (!isSaveExportEligible && showSaveExportMenu) {
+    setShowSaveExportMenu(false);
+  }
+}, [isSaveExportEligible, showSaveExportMenu]);
+
+const ensureNetworkView = () => {
+  if (currentView !== 'network') {
+    setCurrentView('network');
+  }
+};
+
+const openPathPanel = () => {
+  if (pathPreviousViewRef.current == null && currentView !== 'network') {
+    pathPreviousViewRef.current = currentView;
+  }
+  ensureNetworkView();
+  setShowSaveExportMenu(false);
+  if (currentView === 'network') {
+    setShowPathPanel(true);
+  } else {
+    setTimeout(() => {
+      setShowPathPanel(true);
+    }, 0);
+  }
+};
+
+const togglePathPanel = () => {
+  if (showPathPanel) {
+    closePathPanel();
+  } else {
+    openPathPanel();
+  }
+};
+
+const closePathPanel = () => {
+  setShowSaveExportMenu(false);
+  setShowPathPanel(false);
+  if (pathPreviousViewRef.current && pathPreviousViewRef.current !== 'network') {
+    setCurrentView(pathPreviousViewRef.current);
+  } else if (!hasExecutedSearch && networkData.nodes.length === 0) {
+    setCurrentView('search');
+  }
+  pathPreviousViewRef.current = null;
+};
+
+const runPathFind = () => {
+  if (typeof window !== 'undefined' && typeof window.__cmg_runFindPath === 'function') {
+    window.__cmg_runFindPath();
+  }
+};
+
+useEffect(() => {
+  if (showPathPanel && pathFromRef.current && !viewportIsPhone) {
+    try {
+      pathFromRef.current.focus();
+    } catch (_) {}
+  }
+}, [showPathPanel, viewportIsPhone]);
+
+useEffect(() => {
+  }, [showPathPanel, currentView]);
+
+  useEffect(() => {
+    return () => {
+      if (nodeClickTimeoutRef.current) {
+        clearTimeout(nodeClickTimeoutRef.current);
+        nodeClickTimeoutRef.current = null;
+      }
+      if (helperMessageTimeoutRef.current) {
+        clearTimeout(helperMessageTimeoutRef.current);
+        helperMessageTimeoutRef.current = null;
+      }
+      lastTappedNodeIdRef.current = null;
+      suppressNextClickRef.current = false;
+    };
+  }, []);
+
+const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } = {}) => {
+  const disabledSave = !isSaveExportEligible || !token || isSavingView;
+  const disabledExport = !isSaveExportEligible;
+  const actionButtonBase = {
       padding: '8px 12px',
       backgroundColor: '#ffffff',
       color: '#374151',
@@ -915,6 +1223,75 @@ const ClassicalMusicGenealogy = () => {
         >
           Export text file
         </button>
+      </div>
+    );
+};
+
+const renderSaveExportToggle = ({
+  containerStyle = {},
+  buttonStyle = {},
+    menuStyle = {},
+    align = 'right',
+    isMobileLayout = false
+  } = {}) => {
+    const justify = align === 'left' ? { left: 0, right: 'auto' } : { right: 0, left: 'auto' };
+    return (
+      <div style={{ position: 'relative', ...containerStyle }}>
+        <button
+          ref={saveExportBtnRef}
+          onMouseDown={(e) => {
+            if (isSaveExportEligible) {
+              e.stopPropagation();
+              try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {}
+            }
+          }}
+          onClick={(e) => {
+            if (!isSaveExportEligible) return;
+            e.stopPropagation();
+            setShowSaveExportMenu((v) => !v);
+          }}
+          disabled={!isSaveExportEligible}
+          style={{
+            padding: '8px 16px',
+            backgroundColor: showSaveExportMenu ? '#f3f4f6' : '#ffffff',
+            color: '#374151',
+            border: '2px solid #3e96e2',
+            borderRadius: '8px',
+            cursor: isSaveExportEligible ? 'pointer' : 'not-allowed',
+            fontSize: '16px',
+            lineHeight: '20px',
+            height: '48px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            boxSizing: 'border-box',
+            opacity: isSaveExportEligible ? 1 : 0.6,
+            ...buttonStyle
+          }}
+        >
+          Save/Export ▾
+        </button>
+        {showSaveExportMenu && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '110%',
+              border: '2px solid #3e96e2',
+              borderRadius: 8,
+              boxShadow: '0 8px 20px rgba(0,0,0,0.12)',
+              padding: 12,
+              minWidth: isMobileLayout ? 'min(280px, 80vw)' : 260,
+              backgroundColor: 'white',
+              zIndex: 1000,
+              ...justify,
+              ...menuStyle
+            }}
+            onMouseLeave={() => setShowSaveExportMenu(false)}
+            onMouseDown={(e) => { e.stopPropagation(); try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {} }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderSaveExportFields({ isMobileLayout })}
+          </div>
+        )}
       </div>
     );
   };
@@ -2906,9 +3283,9 @@ const attemptLoadSavedView = async () => {
   const resolveFallbackConfig = (relationshipType = '', anchorType = '') => {
     const normalizedLabel = String(relationshipType || '').trim().toLowerCase();
     const base = {
-      source: 'anchor',
-      type: 'related',
-      label: relationshipType || 'related'
+      source: null,
+      type: null,
+      label: ''
     };
 
     if (!normalizedLabel) return base;
@@ -2992,16 +3369,15 @@ const attemptLoadSavedView = async () => {
     });
 
     const fallbackConfig = resolveFallbackConfig(relationshipType, anchorType);
-    const fallbackTypeKey = String(fallbackConfig.type || 'related').toLowerCase();
+    const fallbackTypeKey = typeof fallbackConfig.type === 'string' ? fallbackConfig.type.toLowerCase() : '';
+    if (!fallbackTypeKey || fallbackTypeKey === 'related') {
+      return;
+    }
 
     newNodes.forEach(node => {
       const nodeId = normalize(node?.id ?? node?.name);
       if (!nodeId || attachedToAnchor.has(nodeId)) return;
       if (isPlaceholderName(nodeId)) return;
-
-      if (fallbackConfig.type === 'related' && isPersonOperaPair(node?.type, anchorType)) {
-        return;
-      }
 
       const sourceId = fallbackConfig.source === 'node' ? nodeId : anchorId;
       const targetId = fallbackConfig.source === 'node' ? anchorId : nodeId;
@@ -3018,10 +3394,28 @@ const attemptLoadSavedView = async () => {
     links,
     {
       primaryId = null,
-      fallbackType = 'related',
-      fallbackLabel = 'related'
+      fallbackType = null,
+      fallbackLabel = ''
     } = {}
   ) => {
+    const allowedFallbackTypes = new Set([
+      'taught',
+      'family',
+      'spouse',
+      'sibling',
+      'parent',
+      'grandparent',
+      'wrote',
+      'composed',
+      'premiered',
+      'premiered_role_in',
+      'authored',
+      'edited'
+    ]);
+    const fallbackTypeKey = typeof fallbackType === 'string' ? fallbackType.toLowerCase().trim() : '';
+    if (!fallbackTypeKey || fallbackTypeKey === 'related' || !allowedFallbackTypes.has(fallbackTypeKey)) {
+      return;
+    }
     const normalize = (value) => {
       if (value === null || value === undefined) return '';
       return String(value).replace(/\s+/g, ' ').trim();
@@ -3079,7 +3473,6 @@ const attemptLoadSavedView = async () => {
       }
       return null;
     };
-    const fallbackTypeKey = fallbackType.toLowerCase();
     nodeIds.forEach((nodeId) => {
       if (!nodeId) return;
       if ((adjacency.get(nodeId) || 0) > 0) return;
@@ -3096,14 +3489,6 @@ const attemptLoadSavedView = async () => {
       if (linkKeys.has(key)) return;
       const sourceNode = idToNode.get(fallbackId);
       const targetNode = idToNode.get(nodeId);
-      if (
-        fallbackTypeKey === 'related' &&
-        sourceNode &&
-        targetNode &&
-        isPersonOperaPair(sourceNode.type, targetNode.type)
-      ) {
-        return;
-      }
       links.push({
         source: fallbackId,
         target: nodeId,
@@ -3126,22 +3511,26 @@ const attemptLoadSavedView = async () => {
     
   results.forEach((item, index) => {
     if (type === 'singers') {
-      const name = item.name || item.properties.full_name || `Unknown Singer ${index}`;
+      const name = item.name || item.properties.full_name || `Unknown Singer ${index + 1}`;
+      const typedIdRaw = item.id || (item.person_id ? `person:${item.person_id}` : '');
+      const personId = normalizeNodeId(typedIdRaw || name);
       nodes.push({
-        id: name,
-          name: name,
-          type: 'person',
-          voiceType: item.properties.voice_type,
-          birthYear: (item.properties.birth_year ?? (item.properties.birth && (item.properties.birth.low ?? item.properties.birth))) || null,
-          deathYear: (item.properties.death_year ?? (item.properties.death && (item.properties.death.low ?? item.properties.death))) || null,
+        id: personId,
+        name: name,
+        type: 'person',
+        voiceType: item.properties.voice_type,
+        birthYear: (item.properties.birth_year ?? (item.properties.birth && (item.properties.birth.low ?? item.properties.birth))) || null,
+        deathYear: (item.properties.death_year ?? (item.properties.death && (item.properties.death.low ?? item.properties.death))) || null,
           birthplace: item.properties.birthplace || item.properties.citizen || null,
           x: 0, // Will be positioned by anti-overlap system
           y: 0
         });
       } else if (type === 'operas') {
-        const operaName = deriveOperaName(item.properties, `Unknown Opera ${index}`);
+        const operaName = deriveOperaName(item.properties, `Unknown Opera ${index + 1}`);
+        const typedIdRaw = item.id || (item.opera_id ? `opera:${item.opera_id}` : '');
+        const operaId = normalizeNodeId(typedIdRaw || operaName);
         nodes.push({
-          id: operaName,
+          id: operaId,
           name: operaName,
           type: 'opera',
           composer: item.properties.composer,
@@ -3149,9 +3538,11 @@ const attemptLoadSavedView = async () => {
           y: 0
         });
       } else if (type === 'books') {
-        const bookTitle = item.properties.title || `Unknown Book ${index}`;
+        const bookTitle = item.properties.title || `Unknown Book ${index + 1}`;
+        const typedIdRaw = item.id || (item.book_id ? `book:${item.book_id}` : '');
+        const bookId = normalizeNodeId(typedIdRaw || bookTitle);
         nodes.push({
-          id: bookTitle,
+          id: bookId,
           name: bookTitle,
           type: 'book',
           author: item.properties.author,
@@ -3178,12 +3569,13 @@ const attemptLoadSavedView = async () => {
     // Helper function to add a person node only if not already added
   const addPersonNode = (person, defaultX, defaultY) => {
     const candidateName = person?.full_name || person?.name;
-    const normalizedName = normalizeNodeId(candidateName);
-    if (!normalizedName || isPlaceholderName(normalizedName)) return null;
-    const displayName = String(candidateName || normalizedName).trim() || normalizedName;
-    if (!addedNodes.has(normalizedName)) {
+    const typedIdRaw = person?.id || (person?.person_id ? `person:${person.person_id}` : '');
+    const normalizedId = normalizeNodeId(typedIdRaw || candidateName);
+    if (!normalizedId || isPlaceholderName(normalizedId)) return null;
+    const displayName = String(candidateName || normalizedId).trim() || normalizedId;
+    if (!addedNodes.has(normalizedId)) {
       nodes.push({
-        id: normalizedName,
+        id: normalizedId,
         name: displayName,
         type: 'person',
         voiceType: person.voice_type,
@@ -3197,13 +3589,26 @@ const attemptLoadSavedView = async () => {
         x: defaultX,
         y: defaultY
       });
-      addedNodes.add(normalizedName);
+      addedNodes.add(normalizedId);
     }
-    return normalizedName;
+    return normalizedId;
   };
     
-  const rawCenterName = String(centerName || '').trim();
-  const centerId = normalizeNodeId(rawCenterName);
+  const centerData = details?.center || {};
+  const centerIdCandidates = [
+    centerData?.id,
+    centerData?.person_id ? `person:${centerData.person_id}` : '',
+    type === 'operas' ? details?.opera?.id : '',
+    type === 'operas' && details?.opera?.opera_id ? `opera:${details.opera.opera_id}` : '',
+    type === 'books' ? details?.book?.id : '',
+    type === 'books' && details?.book?.book_id ? `book:${details.book.book_id}` : ''
+  ];
+  const centerTypedIdRaw = centerIdCandidates.find((candidate) => typeof candidate === 'string' && candidate.trim()) || '';
+  const fallbackCenterName = centerData?.full_name || centerData?.name ||
+    (type === 'operas' ? details?.opera?.opera_name : type === 'books' ? details?.book?.title : '') ||
+    centerName || '';
+  const rawCenterName = String(fallbackCenterName || '').trim();
+  const centerId = normalizeNodeId(centerTypedIdRaw || rawCenterName);
   if (!centerId || isPlaceholderName(centerId)) {
     console.warn('[generateNetworkFromDetails] Skipping network with placeholder center', { centerName });
     return;
@@ -3260,13 +3665,14 @@ const attemptLoadSavedView = async () => {
       });
     } else if (type === 'singers' && Array.isArray(details.works?.composedOperas) && details.works.composedOperas.length > 0) {
       details.works.composedOperas.forEach((operaEntry, idx) => {
-        const fallbackLabel = `Unknown Opera ${idx}`;
+        const fallbackLabel = `Unknown Opera ${idx + 1}`;
         const name = deriveOperaName(operaEntry, fallbackLabel);
-        if (!name) return;
-        const operaId = normalizeNodeId(name);
+        const typedIdRaw = operaEntry?.id || (operaEntry?.opera_id ? `opera:${operaEntry.opera_id}` : '');
+        const operaId = normalizeNodeId(typedIdRaw || name);
         if (!operaId || isPlaceholderName(operaId)) return;
+        const displayName = name || operaId;
         if (!addedNodes.has(operaId)) {
-          nodes.push({ id: operaId, name, type: 'opera', x: 150 + idx * 80, y: 420 });
+          nodes.push({ id: operaId, name: displayName, type: 'opera', x: 150 + idx * 80, y: 420 });
           addedNodes.add(operaId);
         }
         const relationshipSource = deriveRelationshipSourceText(operaEntry?.source, operaEntry?.opera_source_text, operaEntry?.relationship_source);
@@ -3304,15 +3710,16 @@ const attemptLoadSavedView = async () => {
   } else if (options?.context === 'composer') {
     if (details.works?.composedOperas && details.works.composedOperas.length > 0) {
       details.works.composedOperas.forEach((opera, index) => {
-        const fallbackLabel = `Unknown Opera ${index}`;
+        const fallbackLabel = `Unknown Opera ${index + 1}`;
         const operaName = deriveOperaName(opera, fallbackLabel);
-        if (!operaName) return;
-        const operaId = normalizeNodeId(operaName);
+        const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
+        const operaId = normalizeNodeId(typedIdRaw || operaName);
         if (!operaId || isPlaceholderName(operaId)) return;
+        const displayName = operaName || operaId;
         if (!addedNodes.has(operaId)) {
           nodes.push({
             id: operaId,
-            name: operaName,
+            name: displayName,
             type: 'opera',
             x: 120 + (index * 100),
             y: 420
@@ -3419,12 +3826,14 @@ const attemptLoadSavedView = async () => {
       // Add operas
       if (details.works.operas) {
         details.works.operas.forEach((opera, index) => {
-          const fallbackLabel = `Unknown Opera ${index}`;
+          const fallbackLabel = `Unknown Opera ${index + 1}`;
           const operaName = deriveOperaName(opera, fallbackLabel);
-          const operaId = operaName;
+          const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
+          const operaId = normalizeNodeId(typedIdRaw || operaName);
+          if (!operaId || isPlaceholderName(operaId)) return;
           nodes.push({
             id: operaId,
-            name: operaName,
+            name: operaName || operaId,
             type: 'opera',
             role: opera.role,
             composer: opera.composer,
@@ -3452,10 +3861,13 @@ const attemptLoadSavedView = async () => {
       // Add books
       if (details.works.books) {
         details.works.books.forEach((book, index) => {
-          const bookId = book.title; // Use just the title for consistency
+          const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
+          const bookLabel = String(book.title || `Unknown Book ${index + 1}`).trim();
+          const bookId = normalizeNodeId(typedIdRaw || bookLabel);
+          if (!bookId || isPlaceholderName(bookId)) return;
           nodes.push({
             id: bookId,
-            name: book.title,
+            name: bookLabel || bookId,
             type: 'book',
             x: 500 + (index * 80),
             y: 500
@@ -3477,12 +3889,14 @@ const attemptLoadSavedView = async () => {
       // Add composed operas (person center) - keep 'composed' label for legacy, but also treat as 'wrote'
       if (details.works.composedOperas) {
         details.works.composedOperas.forEach((opera, index) => {
-          const fallbackLabel = `Unknown Opera ${index}`;
+          const fallbackLabel = `Unknown Opera ${index + 1}`;
           const operaName = deriveOperaName(opera, fallbackLabel);
-          const operaId = operaName;
+          const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
+          const operaId = normalizeNodeId(typedIdRaw || operaName);
+          if (!operaId || isPlaceholderName(operaId)) return;
           nodes.push({
             id: operaId,
-            name: operaName,
+            name: operaName || operaId,
             type: 'opera',
             source: opera.source,
             x: 100 + (index * 80),
@@ -3618,9 +4032,7 @@ const attemptLoadSavedView = async () => {
   // Apply anti-overlap positioning to all nodes
   positionNodesWithoutOverlap(nodes);
   ensureNodeConnectivity(nodes, links, {
-    primaryId: centerId,
-    fallbackType: 'related',
-    fallbackLabel: 'related'
+    primaryId: centerId
   });
 
   clearFiltersForNewSearch(nodes);
@@ -3655,13 +4067,19 @@ const attemptLoadSavedView = async () => {
           }
         }
       } else if (node.type === 'opera') {
+        const { type: typedType, value: typedValue } = parseTypedId(node.id);
+        const payload = { operaName: node.name };
+        if (typedType === 'opera' && typedValue) {
+          payload.operaId = typedValue;
+          payload.opera_id = typedValue;
+        }
         response = await fetchWithRetry(`${API_BASE}/opera/details`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ operaName: node.name })
+          body: JSON.stringify(payload)
         }, { retries: 2, baseDelay: 600 });
         {
           const text = await response.text();
@@ -3705,6 +4123,18 @@ const normalizeNodeId = (value) => {
     .replace(/[\u0000-\u001F\u007F]+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+};
+
+const parseTypedId = (value) => {
+  const normalized = normalizeNodeId(value);
+  if (!normalized) return { type: '', value: '' };
+  const colonIndex = normalized.indexOf(':');
+  if (colonIndex === -1) {
+    return { type: '', value: normalized };
+  }
+  const type = normalized.slice(0, colonIndex).toLowerCase();
+  const rawValue = normalized.slice(colonIndex + 1).trim();
+  return { type, value: rawValue };
 };
 
 const resolveLinkEndpointId = (endpoint) => {
@@ -4078,6 +4508,7 @@ const normalizeLinkForMerge = (link) => {
     try {
       pushHistory('expand-all');
       setLoading(true);
+      showHelperMessage('', 0);
       const relationshipType = 'all';
       let response, data;
       
@@ -4091,13 +4522,19 @@ const normalizeLinkForMerge = (link) => {
           body: JSON.stringify({ singerName: node.name, depth: 5 })
         });
       } else if (node.type === 'opera') {
+        const { type: typedType, value: typedValue } = parseTypedId(node.id);
+        const payload = { operaName: node.name };
+        if (typedType === 'opera' && typedValue) {
+          payload.operaId = typedValue;
+          payload.opera_id = typedValue;
+        }
         response = await fetch(`${API_BASE}/opera/details`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ operaName: node.name })
+          body: JSON.stringify(payload)
         });
       } else if (node.type === 'book') {
         response = await fetch(`${API_BASE}/book/details`, {
@@ -4187,20 +4624,22 @@ const normalizeLinkForMerge = (link) => {
           // Handle different node types and their data structures
           if (node.type === 'person') {
             // Add new nodes from the expanded data for people
-            if (data.teachers) {
-              data.teachers.forEach(teacher => {
-                const teacherId = registerNode({
-                  id: teacher.full_name || teacher.name,
-                  name: teacher.full_name || teacher.name,
-                  type: 'person',
-                  voiceType: teacher.voice_type,
-                  spelling_source: teacher.spelling_source || null,
-                  voice_type_source: teacher.voice_type_source || null,
-                  dates_source: teacher.dates_source || null,
-                  birthplace_source: teacher.birthplace_source || null,
-                  birthYear: teacher.birth_year,
-                  deathYear: teacher.death_year
-                });
+              if (data.teachers) {
+                data.teachers.forEach(teacher => {
+                  const teacherName = teacher.full_name || teacher.name || teacher.label || 'Unknown Teacher';
+                  const typedIdRaw = teacher?.id || (teacher?.person_id ? `person:${teacher.person_id}` : '');
+                  const teacherId = registerNode({
+                    id: typedIdRaw || teacherName,
+                    name: teacherName,
+                    type: 'person',
+                    voiceType: teacher.voice_type,
+                    spelling_source: teacher.spelling_source || null,
+                    voice_type_source: teacher.voice_type_source || null,
+                    dates_source: teacher.dates_source || null,
+                    birthplace_source: teacher.birthplace_source || null,
+                    birthYear: teacher.birth_year,
+                    deathYear: teacher.death_year
+                  });
                 if (!teacherId) return;
                 addLink(teacherId, anchorId, 'taught', {
                   label: 'taught',
@@ -4211,20 +4650,22 @@ const normalizeLinkForMerge = (link) => {
               enrichPersonNodes((data.teachers || []).map(t => t.full_name));
             }
             
-            if (data.students) {
-              data.students.forEach(student => {
-                const studentId = registerNode({
-                  id: student.full_name || student.name,
-                  name: student.full_name || student.name,
-                  type: 'person',
-                  voiceType: student.voice_type,
-                  spelling_source: student.spelling_source || null,
-                  voice_type_source: student.voice_type_source || null,
-                  dates_source: student.dates_source || null,
-                  birthplace_source: student.birthplace_source || null,
-                  birthYear: student.birth_year,
-                  deathYear: student.death_year
-                });
+              if (data.students) {
+                data.students.forEach(student => {
+                  const studentName = student.full_name || student.name || student.label || 'Unknown Student';
+                  const typedIdRaw = student?.id || (student?.person_id ? `person:${student.person_id}` : '');
+                  const studentId = registerNode({
+                    id: typedIdRaw || studentName,
+                    name: studentName,
+                    type: 'person',
+                    voiceType: student.voice_type,
+                    spelling_source: student.spelling_source || null,
+                    voice_type_source: student.voice_type_source || null,
+                    dates_source: student.dates_source || null,
+                    birthplace_source: student.birthplace_source || null,
+                    birthYear: student.birth_year,
+                    deathYear: student.death_year
+                  });
                 if (!studentId) return;
                 addLink(anchorId, studentId, 'taught', {
                   label: 'taught',
@@ -4238,9 +4679,11 @@ const normalizeLinkForMerge = (link) => {
             {
               const familyList = (data.family || data.center?.family || []);
               if (familyList && familyList.length > 0) familyList.forEach(relative => {
+                const relName = relative.full_name || relative.name || relative.label || 'Unknown Relative';
+                const typedIdRaw = relative?.id || (relative?.person_id ? `person:${relative.person_id}` : '');
                 const relId = registerNode({
-                  id: relative.full_name || relative.name,
-                  name: relative.full_name || relative.name,
+                  id: typedIdRaw || relName,
+                  name: relName,
                   type: 'person',
                   voiceType: relative.voice_type,
                   spelling_source: relative.spelling_source || null,
@@ -4272,10 +4715,11 @@ const normalizeLinkForMerge = (link) => {
             if (data.works) {
               if (data.works.operas) {
                 data.works.operas.forEach(opera => {
-                  const operaName = deriveOperaName(opera, 'Unknown Opera');
+                  const displayName = deriveOperaName(opera, 'Unknown Opera');
+                  const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
                   const operaId = registerNode({
-                    id: operaName,
-                    name: operaName,
+                    id: typedIdRaw || displayName,
+                    name: displayName,
                     type: 'opera',
                     role: opera.role,
                     composer: opera.composer,
@@ -4292,10 +4736,11 @@ const normalizeLinkForMerge = (link) => {
 
               if (Array.isArray(data.works.composedOperas) && data.works.composedOperas.length > 0) {
                 data.works.composedOperas.forEach(opera => {
-                  const operaName = deriveOperaName(opera, 'Unknown Opera');
+                  const displayName = deriveOperaName(opera, 'Unknown Opera');
+                  const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
                   const operaId = registerNode({
-                    id: operaName,
-                    name: operaName,
+                    id: typedIdRaw || displayName,
+                    name: displayName,
                     type: 'opera',
                     source: opera.source
                   });
@@ -4314,9 +4759,11 @@ const normalizeLinkForMerge = (link) => {
 
               if (data.works.books) {
                 data.works.books.forEach(book => {
+                  const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
+                  const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
                   const bookId = registerNode({
-                    id: book.title,
-                    name: book.title,
+                    id: typedIdRaw || bookLabel,
+                    name: bookLabel,
                     type: 'book'
                   });
                   if (!bookId) return;
@@ -4444,7 +4891,7 @@ const normalizeLinkForMerge = (link) => {
           attachNewNodesToAnchor({
             anchorId,
             anchorType: node.type,
-            relationshipType: 'related',
+            relationshipType,
             newNodes,
             newLinks,
             existingLinks: networkData.links,
@@ -4469,13 +4916,18 @@ const normalizeLinkForMerge = (link) => {
             const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
             ensureNodeConnectivity(merged.nodes, ensuredLinks, {
               primaryId: anchorId,
-              fallbackType: fallback.type || 'related',
-              fallbackLabel: fallback.label || 'related'
+              fallbackType: fallback.type,
+              fallbackLabel: fallback.label || ''
             });
             const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
             console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
             return next;
           });
+          if (newNodes.length === 0) {
+            showHelperMessage('No additional related nodes.');
+          } else {
+            showHelperMessage('', 0);
+          }
           // Refresh counts for the expanded node to keep context menu accurate
           try {
             const updatedCounts = await fetchActualCounts(node);
@@ -4513,13 +4965,19 @@ const normalizeLinkForMerge = (link) => {
           body: JSON.stringify({ singerName: node.name, depth: 2 })
         }, { retries: 2, baseDelay: 600 });
       } else if (node.type === 'opera') {
+        const { type: typedType, value: typedValue } = parseTypedId(node.id);
+        const payload = { operaName: node.name };
+        if (typedType === 'opera' && typedValue) {
+          payload.operaId = typedValue;
+          payload.opera_id = typedValue;
+        }
         response = await fetchWithRetry(`${API_BASE}/opera/details`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ operaName: node.name })
+          body: JSON.stringify(payload)
         }, { retries: 2, baseDelay: 600 });
       } else if (node.type === 'book') {
         response = await fetchWithRetry(`${API_BASE}/book/details`, {
@@ -4612,9 +5070,11 @@ const normalizeLinkForMerge = (link) => {
           if (node.type === 'person') {
             if (relationshipType === 'taughtBy' && data.teachers) {
               data.teachers.forEach(teacher => {
+                const teacherName = teacher.full_name || teacher.name || teacher.label || 'Unknown Teacher';
+                const typedIdRaw = teacher?.id || (teacher?.person_id ? `person:${teacher.person_id}` : '');
                 const teacherId = registerNode({
-                  id: teacher.full_name || teacher.name,
-                  name: teacher.full_name || teacher.name,
+                  id: typedIdRaw || teacherName,
+                  name: teacherName,
                   type: 'person',
                   voiceType: teacher.voice_type,
                   spelling_source: teacher.spelling_source || null,
@@ -4635,9 +5095,11 @@ const normalizeLinkForMerge = (link) => {
             
             if (relationshipType === 'taught' && data.students) {
               data.students.forEach(student => {
+                const studentName = student.full_name || student.name || student.label || 'Unknown Student';
+                const typedIdRaw = student?.id || (student?.person_id ? `person:${student.person_id}` : '');
                 const studentId = registerNode({
-                  id: student.full_name || student.name,
-                  name: student.full_name || student.name,
+                  id: typedIdRaw || studentName,
+                  name: studentName,
                   type: 'person',
                   voiceType: student.voice_type,
                   spelling_source: student.spelling_source || null,
@@ -4681,9 +5143,11 @@ const normalizeLinkForMerge = (link) => {
                 }
                 
                 if (shouldInclude) {
+                  const relName = relative.full_name || relative.name || relative.label || 'Unknown Relative';
+                  const typedIdRaw = relative?.id || (relative?.person_id ? `person:${relative.person_id}` : '');
                   const relId = registerNode({
-                    id: relative.full_name || relative.name,
-                    name: relative.full_name || relative.name,
+                    id: typedIdRaw || relName,
+                    name: relName,
                     type: 'person',
                     voiceType: relative.voice_type,
                     spelling_source: relative.spelling_source || null,
@@ -4714,9 +5178,11 @@ const normalizeLinkForMerge = (link) => {
             
             if (relationshipType === 'authored' && data.works && data.works.books) {
               data.works.books.forEach(book => {
+                const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
+                const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
                 const bookId = registerNode({
-                  id: book.title,
-                  name: book.title,
+                  id: typedIdRaw || bookLabel,
+                  name: bookLabel,
                   type: 'book'
                 });
                 if (!bookId) return;
@@ -4729,10 +5195,11 @@ const normalizeLinkForMerge = (link) => {
             
             if (relationshipType === 'premieredRoleIn' && data.works && data.works.operas) {
               data.works.operas.forEach(opera => {
-                const operaName = deriveOperaName(opera, 'Unknown Opera');
+                const displayName = deriveOperaName(opera, 'Unknown Opera');
+                const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
                 const operaId = registerNode({
-                  id: operaName,
-                  name: operaName,
+                  id: typedIdRaw || displayName,
+                  name: displayName,
                   type: 'opera',
                   role: opera.role,
                   composer: opera.composer,
@@ -4820,7 +5287,7 @@ const normalizeLinkForMerge = (link) => {
 
             const relationshipLabel = typeof relationshipType === 'string' && relationshipType.trim()
               ? relationshipType.trim()
-              : 'related';
+              : '';
             const normalizedLabel = relationshipLabel.toLowerCase();
             const fallbackType = normalizedLabel.includes('parent') ||
               normalizedLabel.includes('sibling') ||
@@ -4837,12 +5304,13 @@ const normalizeLinkForMerge = (link) => {
               ? 'authored'
               : normalizedLabel.includes('edited')
               ? 'edited'
-              : 'related';
+              : '';
 
             newNodes.forEach(n => {
               const nodeId = normalizeNodeId(n.id);
               if (!nodeId || attachedToAnchor.has(nodeId)) return;
-              addLink(anchorId, nodeId, fallbackType, { label: relationshipLabel });
+              if (!fallbackType) return;
+              addLink(anchorId, nodeId, fallbackType, { label: relationshipLabel || fallbackType });
               attachedToAnchor.add(nodeId);
             });
 
@@ -4908,12 +5376,12 @@ const normalizeLinkForMerge = (link) => {
           console.log('[expandAll] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'anchor:', anchorId);
           setNetworkData(prev => {
             const merged = mergeNetworkUpdates(prev, newNodes, newLinks);
-            const fallback = resolveFallbackConfig('related', node.type);
+            const fallback = resolveFallbackConfig(relationshipType, node.type);
             const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
             ensureNodeConnectivity(merged.nodes, ensuredLinks, {
               primaryId: anchorId,
-              fallbackType: fallback.type || 'related',
-              fallbackLabel: fallback.label || 'related'
+              fallbackType: fallback.type,
+              fallbackLabel: fallback.label || ''
             });
             const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
             console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
@@ -4931,6 +5399,106 @@ const normalizeLinkForMerge = (link) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const showHelperMessage = (message, duration = 3200) => {
+    if (helperMessageTimeoutRef.current) {
+      clearTimeout(helperMessageTimeoutRef.current);
+      helperMessageTimeoutRef.current = null;
+    }
+    setHelperMessage(message);
+    if (message && duration > 0) {
+      helperMessageTimeoutRef.current = setTimeout(() => {
+        setHelperMessage('');
+        helperMessageTimeoutRef.current = null;
+      }, duration);
+    }
+  };
+
+  const clearPendingNodeAction = () => {
+    if (nodeClickTimeoutRef.current) {
+      clearTimeout(nodeClickTimeoutRef.current);
+      nodeClickTimeoutRef.current = null;
+    }
+  };
+
+  const closeNodeMenusAndCards = () => {
+    try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch (_) {}
+    try { setLinkContextMenu(createLinkContextMenuState()); } catch (_) {}
+    try { setProfileCard({ show: false, data: null }); } catch (_) {}
+  };
+
+  const selectNodeForFeedback = (node) => {
+    if (!node) return;
+    setTimeout(() => {
+      setSelectedNode(node);
+    }, 0);
+  };
+
+  const scheduleNodeExpansion = (node) => {
+    clearPendingNodeAction();
+    nodeClickTimeoutRef.current = setTimeout(() => {
+      nodeClickTimeoutRef.current = null;
+      lastTappedNodeIdRef.current = null;
+      expandAllRelationships(node);
+    }, 220);
+  };
+
+  const handleNodeSingleActivation = (node) => {
+    closeNodeMenusAndCards();
+    selectNodeForFeedback(node);
+    scheduleNodeExpansion(node);
+  };
+
+  const handleNodeDoubleActivation = (node) => {
+    closeNodeMenusAndCards();
+    selectNodeForFeedback(node);
+    clearPendingNodeAction();
+    lastTappedNodeIdRef.current = null;
+    pushHistory('node-search');
+    triggerNodeSearch(node);
+  };
+
+  const triggerNodeSearch = (node) => {
+    if (!node) return;
+    showHelperMessage('', 0);
+    if (currentCenterNode !== node.id) {
+      setCurrentCenterNode(node.id);
+    }
+    if (node.type === 'person') {
+      const mockSearchItem = {
+        name: node.name,
+        properties: {
+          full_name: node.name,
+          voice_type: node.voiceType,
+          birth_year: node.birthYear,
+          death_year: node.deathYear
+        }
+      };
+      setSearchType('singers');
+      getItemDetails(mockSearchItem, 'singers');
+    } else if (node.type === 'opera') {
+      const mockSearchItem = {
+        properties: {
+          title: node.name,
+          composer: node.composer
+        }
+      };
+      setSearchType('operas');
+      getItemDetails(mockSearchItem, 'operas');
+    } else if (node.type === 'book') {
+      const mockSearchItem = {
+        properties: {
+          title: node.name,
+          author: node.author
+        }
+      };
+      setSearchType('books');
+      getItemDetails(mockSearchItem, 'books');
+    }
+    setTimeout(() => {
+      setSelectedNode(node);
+    }, 0);
   };
 
   // Function to dismiss other nodes (keep only the selected node, no relationships)
@@ -4989,13 +5557,21 @@ const normalizeLinkForMerge = (link) => {
           setError(data.error || `Failed (${response.status})`);
         }
       } else if (typeToUse === 'operas') {
+        const { type: typedType, value: typedValue } = parseTypedId(item.id);
+        const payload = {
+          operaName: item.properties.opera_name || item.properties.title
+        };
+        if (typedType === 'opera' && typedValue) {
+          payload.operaId = typedValue;
+          payload.opera_id = typedValue;
+        }
         const response = await fetchWithRetry(`${API_BASE}/opera/details`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ operaName: item.properties.opera_name || item.properties.title })
+          body: JSON.stringify(payload)
         }, { retries: 2, baseDelay: 600 });
 
         const text = await response.text();
@@ -6667,78 +7243,54 @@ const normalizeLinkForMerge = (link) => {
             clearNodeLongPress({ releasePointer: true });
           }
         })
-        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
+        .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event, d) {
           if (event.pointerType !== 'touch') return;
           const isSamePointer = nodeLongPressState.pointerId === event.pointerId;
           const longPressFired = nodeLongPressState.fired && isSamePointer;
           clearNodeLongPress({ releasePointer: isSamePointer });
-          if (longPressFired && event.cancelable) {
-            event.preventDefault();
+          if (longPressFired) {
+            if (event.cancelable) {
+              event.preventDefault();
+            }
             event.stopPropagation();
-          }
-        })
-        .on("click", (event, d) => {
-          // Snapshot before potentially changing the network by click
-          pushHistory('node-click');
-          // Prevent event from bubbling to background
-          event.stopPropagation();
-          // Close any open menus when clicking a node
-          try { setContextMenu({ show: false, x: 0, y: 0, node: null }); } catch(_) {}
-          try { setLinkContextMenu(createLinkContextMenuState()); } catch(_) {}
-          // Also clear any open Full information card
-          try { setProfileCard({ show: false, data: null }); } catch(_) {}
-          
-          // Only trigger new simulation if this is a different node than current center
-          if (currentCenterNode === d.id) {
-            // Same node clicked - only update visual selection, no simulation
-            // Use setTimeout to avoid setState in useEffect
-            setTimeout(() => {
-              setSelectedNode(selectedNode && selectedNode.id === d.id ? null : d);
-            }, 0);
             return;
           }
-          
-          // New node clicked - trigger full details and simulation
-          setCurrentCenterNode(d.id);
-          
-          // Create appropriate mock item based on node type
-          if (d.type === 'person') {
-            const mockSearchItem = {
-              name: d.name,
-              properties: {
-                full_name: d.name,
-                voice_type: d.voiceType,
-                birth_year: d.birthYear,
-                death_year: d.deathYear
-              }
-            };
-            setSearchType('singers'); // Update UI state
-            getItemDetails(mockSearchItem, 'singers'); // Pass type directly
-          } else if (d.type === 'opera') {
-            const mockSearchItem = {
-              properties: {
-                title: d.name,
-                composer: d.composer
-              }
-            };
-            setSearchType('operas'); // Update UI state
-            getItemDetails(mockSearchItem, 'operas'); // Pass type directly
-          } else if (d.type === 'book') {
-            const mockSearchItem = {
-              properties: {
-                title: d.name,
-                author: d.author
-              }
-            };
-            setSearchType('books'); // Update UI state
-            getItemDetails(mockSearchItem, 'books'); // Pass type directly
-          }
-          
-          // Set selected node for visual feedback
-          // Use setTimeout to avoid setState in useEffect
+          if (event.type !== 'pointerup' || !d) return;
+          suppressNextClickRef.current = true;
           setTimeout(() => {
-            setSelectedNode(d);
-          }, 0);
+            suppressNextClickRef.current = false;
+          }, 320);
+          const nodeId = d.id || null;
+          const isDoubleTap = nodeClickTimeoutRef.current && lastTappedNodeIdRef.current && lastTappedNodeIdRef.current === nodeId;
+          if (isDoubleTap) {
+            clearPendingNodeAction();
+            lastTappedNodeIdRef.current = null;
+            handleNodeDoubleActivation(d);
+          } else {
+            lastTappedNodeIdRef.current = nodeId;
+            handleNodeSingleActivation(d);
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          event.stopPropagation();
+        })
+        .on("click", (event, d) => {
+          const pointerType = event?.sourceEvent?.pointerType || event.pointerType || '';
+          if (pointerType === 'touch' && suppressNextClickRef.current) {
+            event.stopPropagation();
+            return;
+          }
+          event.stopPropagation();
+          lastTappedNodeIdRef.current = null;
+          handleNodeSingleActivation(d);
+        })
+        .on("dblclick", (event, d) => {
+          event.preventDefault();
+          event.stopPropagation();
+          clearPendingNodeAction();
+          lastTappedNodeIdRef.current = null;
+          handleNodeDoubleActivation(d);
         })
         .on("contextmenu", (event, d) => {
           event.preventDefault();
@@ -7926,11 +8478,14 @@ const normalizeLinkForMerge = (link) => {
                 const from = pathFromValRef.current?.trim();
                 const to = pathToValRef.current?.trim();
                 if (!from || !to) return;
+                let previousPathSnapshot = prePathNetworkRef.current;
                 try {
                   // Snapshot before mutating the network with path overlay
                   pushHistory('path-find');
                   setLoading(true);
+                  setError('');
                   // Snapshot current network before overlay so Clear can restore baseline
+                  previousPathSnapshot = prePathNetworkRef.current;
                   prePathNetworkRef.current = {
                     nodes: networkData.nodes.map(n => ({ ...n })),
                     links: networkData.links.map(l => ({
@@ -7953,12 +8508,32 @@ const normalizeLinkForMerge = (link) => {
                   if (!resp) {
                     throw new Error('No response from path service');
                   }
-                  if (resp.status === 404) {
-                    pathApiUnavailableRef.current = true;
-                    throw new Error('Path finding is currently unavailable.');
+                  const textResp = await resp.text();
+                  let data;
+                  try {
+                    data = textResp ? JSON.parse(textResp) : {};
+                  } catch (_) {
+                    data = { error: textResp || 'Invalid response' };
                   }
-                  const data = await resp.json();
-                  if (!resp.ok) throw new Error(data.error || 'Failed');
+                  if (resp.status === 404) {
+                    const errorMessage = typeof data?.error === 'string' ? data.error : '';
+                    if (errorMessage.toLowerCase().includes('no path')) {
+                      const friendlyMessage = `No path found between "${from}" and "${to}".`;
+                      setError(friendlyMessage);
+                      prePathNetworkRef.current = previousPathSnapshot || null;
+                      pathApiUnavailableRef.current = false;
+                      return;
+                    }
+                  }
+                  if (!resp.ok) {
+                    prePathNetworkRef.current = previousPathSnapshot || null;
+                    if (resp.status >= 500) {
+                      pathApiUnavailableRef.current = true;
+                      throw new Error(data?.error || 'Path finding service is temporarily unavailable. Please try again later.');
+                    }
+                    throw new Error((data && data.error) || `Path find failed (${resp.status})`);
+                  }
+                  pathApiUnavailableRef.current = false;
                   const rawPathNodes = Array.isArray(data.nodes) ? data.nodes : [];
                   const sanitizedPathNodes = rawPathNodes
                     .map(node => {
@@ -8133,8 +8708,9 @@ const normalizeLinkForMerge = (link) => {
                   try {
                     const pathPersonNames = Array.from(new Set(
                       sanitizedPathNodes
-                        .filter(n => n && n.type === 'person' && n.id)
-                        .map(n => n.id)
+                        .filter(n => n && n.type === 'person' && (n.name || n.id))
+                        .map(n => n.name || n.id)
+                        .filter(Boolean)
                     ));
                     await Promise.all(pathPersonNames.map(nm => fetchAndCachePersonDetails(nm)));
                   } catch (_) {}
@@ -8316,8 +8892,8 @@ const normalizeLinkForMerge = (link) => {
                   extendDateRangesForNodes(pathPersons, { resetUserRangeFlags: true });
                   // Enrich newly added path person nodes so CSV has full details
                   const newPersonNames = sanitizedPathNodes
-                    .filter(n => n && n.type === 'person')
-                    .map(n => n.id)
+                    .filter(n => n && n.type === 'person' && (n.name || n.id))
+                    .map(n => n.name || n.id)
                     .filter(Boolean);
                   enrichPersonNodes(newPersonNames);
                   // After path overlay, briefly run an expansion-style simulation so nodes settle
@@ -8326,6 +8902,7 @@ const normalizeLinkForMerge = (link) => {
                     setShouldRunSimulation(true);
                   }, 120);
                 } catch (e) {
+                  prePathNetworkRef.current = previousPathSnapshot || prePathNetworkRef.current;
                   setError(e.message || 'Path find failed');
                 } finally {
                   setLoading(false);
@@ -8344,10 +8921,10 @@ const normalizeLinkForMerge = (link) => {
             };
             return null;
           })()}
-          {showPathPanel && (
+          {viewportIsPhone && showPathPanel && (
             <div
               ref={pathPanelRef}
-              style={viewportIsPhone ? {
+              style={{
                 position: 'fixed',
                 left: '16px',
                 right: '16px',
@@ -8361,207 +8938,25 @@ const normalizeLinkForMerge = (link) => {
                 overflowY: 'auto',
                 zIndex: 1401,
                 overscrollBehavior: 'contain'
-              } : {
-                position: 'absolute',
-                top: 12,
-                right: 12,
-                backgroundColor: 'white',
-                border: '2px solid #3e96e2',
-                borderRadius: '8px',
-                boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-                padding: '12px',
-                width: '340px',
-                zIndex: 1000,
-                overscrollBehavior: 'contain'
               }}
               onWheel={(e) => { e.stopPropagation(); }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontWeight: 600, color: '#1f2937' }}>Find path</div>
-                <button
-                  onClick={() => setShowPathPanel(false)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: 18,
-                    cursor: 'pointer',
-                    color: '#666',
-                    padding: viewportIsPhone ? '6px' : 0
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-              {(!viewportIsPhone || !pathInfo) && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>From (Person full name)</label>
-                    <input
-                      ref={pathFromRef}
-                      defaultValue=""
-                      onInput={e => { pathFromValRef.current = e.target.value; }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      inputMode="text"
-                      name="cmg-path-from"
-                      data-lpignore="true"
-                      data-1p-ignore
-                      style={{
-                        width: '100%',
-                        padding: viewportIsPhone ? '12px 14px' : '6px 8px',
-                        border: '2px solid #3e96e2',
-                        borderRadius: viewportIsPhone ? 12 : 4,
-                        fontSize: viewportIsPhone ? '16px' : '14px'
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>To (Person full name)</label>
-                    <input
-                      ref={pathToRef}
-                      defaultValue=""
-                      onInput={e => { pathToValRef.current = e.target.value; }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__cmg_runFindPath && window.__cmg_runFindPath(); } }}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      inputMode="text"
-                      name="cmg-path-to"
-                      data-lpignore="true"
-                      data-1p-ignore
-                      style={{
-                        width: '100%',
-                        padding: viewportIsPhone ? '12px 14px' : '6px 8px',
-                        border: '2px solid #3e96e2',
-                        borderRadius: viewportIsPhone ? 12 : 4,
-                        fontSize: viewportIsPhone ? '16px' : '14px'
-                      }}
-                    />
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexDirection: viewportIsPhone ? 'column' : 'row' }}>
-                    <button
-                      onClick={() => { window.__cmg_runFindPath && window.__cmg_runFindPath(); }}
-                      style={{
-                        backgroundColor: '#2563eb',
-                        color: 'white',
-                        border: '2px solid #3e96e2',
-                        padding: viewportIsPhone ? '12px 16px' : '6px 10px',
-                        borderRadius: viewportIsPhone ? 12 : 4,
-                        cursor: 'pointer',
-                        flex: viewportIsPhone ? 1 : 'initial',
-                        fontSize: viewportIsPhone ? '16px' : '14px'
-                      }}
-                    >
-                      Find path
-                    </button>
-                    {!viewportIsPhone && (
-                      <button
-                        aria-label="Clear path"
-                        title="Clear path"
-                        onClick={handleClearPath}
-                        style={{
-                          backgroundColor: '#f9fafb',
-                          color: '#111827',
-                          border: '2px solid #3e96e2',
-                          padding: viewportIsPhone ? '12px 16px' : '6px 10px',
-                          borderRadius: viewportIsPhone ? 12 : 4,
-                          cursor: 'pointer',
-                          flex: viewportIsPhone ? 1 : 'initial',
-                          fontSize: viewportIsPhone ? '16px' : '14px'
-                        }}
-                      >
-                        Clear path
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-              {pathInfo && (
-                <div
-                  ref={pathListRef}
-                  style={{ marginTop: 10, maxHeight: 200, overflowY: 'auto', fontSize: 12, color: '#374151', borderTop: '1px solid #eee', paddingTop: 8, overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch' }}
-                  onWheelCapture={(e) => {
-                    // Let the browser perform smooth scrolling; just prevent D3 zoom from receiving the wheel
-                    e.stopPropagation();
-                  }}
-                  onMouseEnter={() => {
-                    // disable svg zoom while hovering the list
-                    try { window.__cmg_disableZoomWhileScrolling && window.__cmg_disableZoomWhileScrolling(true); } catch (_) {}
-                  }}
-                  onMouseLeave={() => {
-                    try { window.__cmg_disableZoomWhileScrolling && window.__cmg_disableZoomWhileScrolling(false); } catch (_) {}
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Path summary</div>
-                  <div>Nodes: {pathInfo.nodes.length}, Links: {pathInfo.links.length}</div>
-                  {Array.isArray(pathInfo.steps) && pathInfo.steps.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      {pathInfo.steps.map((step, idx) => {
-                        const hasSource = !!(step.relationshipSourceDisplay || step.sourceInfo || step.sourceUrl);
-                        return (
-                          <div
-                            key={idx}
-                            style={{
-                              padding: '6px 8px',
-                              borderRadius: 4,
-                              marginBottom: 4,
-                              border: '2px solid #3e96e2',
-                              background: '#fff',
-                              cursor: 'default'
-                            }}
-                          >
-                            <div>
-                              <strong>{step.source?.name || step.source?.id}</strong> — {step.label}
-                              {step.type === 'premiered' && step.role && (
-                                <> (Role: {step.role})</>
-                              )}
-                              {' '}→ <strong>{step.target?.name || step.target?.id}</strong>
-                            </div>
-                            {hasSource && (
-                              <div style={{ marginTop: 4 }}>
-                                <strong>Source:</strong>{' '}
-                                {renderRelationshipSourceLink(
-                                  step.relationshipSourceDisplay,
-                                  step.sourceUrl,
-                                  step.sourceInfo
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {viewportIsPhone && (
-                    <button
-                      aria-label="Clear path"
-                      title="Clear path"
-                      onClick={handleClearPath}
-                      style={{
-                        marginTop: 12,
-                        width: '100%',
-                        backgroundColor: '#f9fafb',
-                        color: '#111827',
-                        border: '2px solid #3e96e2',
-                        padding: '12px 16px',
-                        borderRadius: 12,
-                        cursor: 'pointer',
-                        fontSize: '16px'
-                      }}
-                    >
-                      Clear path
-                    </button>
-                  )}
-                </div>
-              )}
+              {renderPathPanelContent({
+              isMobile: true,
+              pathFromRef,
+              pathToRef,
+              pathFromValRef,
+              pathToValRef,
+              pathInfo,
+              pathListRef,
+              handleClearPath,
+              onFindPath: runPathFind,
+              renderRelationshipSourceLink,
+              onClose: closePathPanel
+            })}
             </div>
           )}
-        
-        {/* Resizer removed */}
+          {/* Resizer removed */}
         
         {/* Height indicator removed */}
       </div>
@@ -8839,13 +9234,19 @@ const normalizeLinkForMerge = (link) => {
           body: JSON.stringify({ singerName: node.name, depth: 1 })
         }, { retries: 2, baseDelay: 600 });
       } else if (node.type === 'opera') {
+        const { type: typedType, value: typedValue } = parseTypedId(node.id);
+        const payload = { operaName: node.name };
+        if (typedType === 'opera' && typedValue) {
+          payload.operaId = typedValue;
+          payload.opera_id = typedValue;
+        }
         response = await fetchWithRetry(`${API_BASE}/opera/details`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ operaName: node.name })
+          body: JSON.stringify(payload)
         }, { retries: 2, baseDelay: 600 });
       } else if (node.type === 'book') {
         response = await fetchWithRetry(`${API_BASE}/book/details`, {
@@ -11412,7 +11813,7 @@ const normalizeLinkForMerge = (link) => {
                 )}
               </button>
                 <button
-                  onClick={() => { setCurrentView('network'); setShowPathPanel(v => !v); }}
+                  onClick={togglePathPanel}
                   style={{
                     padding: '8px 16px',
                     backgroundColor: '#ffffff',
@@ -11430,41 +11831,7 @@ const normalizeLinkForMerge = (link) => {
             )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
-            {/* Save/Export dropdown (right-aligned with viz) */}
-            <div style={{ position: 'relative' }}>
-              <button
-                onClick={() => {
-                  if (!isSaveExportEligible) return;
-                  setShowSaveExportMenu(v => !v);
-                }}
-                disabled={!isSaveExportEligible}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: showSaveExportMenu ? '#f3f4f6' : '#fafafa',
-                  color: '#374151',
-                  border: '2px solid #3e96e2',
-                  borderRadius: '8px',
-                  cursor: isSaveExportEligible ? 'pointer' : 'not-allowed',
-                  fontSize: '16px',
-                  lineHeight: '20px',
-                  height: '48px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  boxSizing: 'border-box',
-                  opacity: isSaveExportEligible ? 1 : 0.6
-                }}
-              >
-                Save/Export ▾
-              </button>
-              {showSaveExportMenu && (
-                <div
-                  style={{ position: 'absolute', right: 0, top: '110%', backgroundColor: 'white', border: '2px solid #3e96e2', borderRadius: 6, boxShadow: '0 8px 20px rgba(0,0,0,0.12)', padding: 12, minWidth: 260, zIndex: 1000 }}
-                  onMouseLeave={() => setShowSaveExportMenu(false)}
-                >
-                  {renderSaveExportFields()}
-                </div>
-              )}
-            </div>
+            {renderSaveExportToggle()}
             <button
               onClick={() => {
                 setToken('');
@@ -11624,75 +11991,155 @@ const normalizeLinkForMerge = (link) => {
               </button>
             ) : (
               <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <button
-                    onClick={() => { setCurrentView('help'); setShowSaveExportMenu(false); try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {} }}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8
+                  }}
+                >
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => {
+                        if (showPathPanel) {
+                          closePathPanel();
+                        } else {
+                          openPathPanel();
+                        }
+                      }}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: showPathPanel ? '#f3f4f6' : '#ffffff',
+                        color: '#374151',
+                        border: '2px solid #3e96e2',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '16px',
+                        lineHeight: '20px',
+                        height: '48px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      Path ▾
+                    </button>
+                    {!viewportIsPhone && showPathPanel && (
+                      <div
+                        ref={pathPanelRef}
+                        style={{
+                          position: 'absolute',
+                          top: '110%',
+                          left: 0,
+                          border: '2px solid #3e96e2',
+                          borderRadius: 8,
+                          boxShadow: '0 8px 20px rgba(0,0,0,0.12)',
+                          padding: 12,
+                          backgroundColor: 'white',
+                          minWidth: 320,
+                          zIndex: 1100
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {renderPathPanelContent({
+                          isMobile: false,
+                          pathFromRef,
+                          pathToRef,
+                          pathFromValRef,
+                          pathToValRef,
+                          pathInfo,
+                          pathListRef,
+                          handleClearPath,
+                          onFindPath: runPathFind,
+                          renderRelationshipSourceLink,
+                          onClose: closePathPanel
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <button
+                      onClick={() => { setCurrentView('help'); setShowSaveExportMenu(false); try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {} }}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#ffffff',
+                        color: '#374151',
+                        border: '2px solid #3e96e2',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '16px',
+                        lineHeight: '20px',
+                        height: '48px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      Help center
+                    </button>
+                  </div>
+                  <div>
+                    <button
+                      ref={logoutBtnRef}
+                      onClick={() => { setToken(''); clearStoredToken(); setCurrentView('search'); setHasExecutedSearch(false); }}
+                      style={{ backgroundColor: '#ffffff', color: '#374151', padding: '8px 16px', height: '48px', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box', opacity: 1, fontSize: '16px' }}
+                    >
+                      Logout
+                    </button>
+                  </div>
+                </div>
+                {(isSaveExportEligible || currentView === 'network') && (
+                  <div
                     style={{
-                      padding: '8px 16px',
-                      backgroundColor: '#ffffff',
-                      color: '#374151',
-                      border: '2px solid #3e96e2',
-                      borderRadius: '8px',
-                      cursor: 'pointer',
-                      fontSize: '16px',
-                      lineHeight: '20px',
-                      height: '48px',
-                      display: 'inline-flex',
+                      alignSelf: 'stretch',
+                      display: 'flex',
                       alignItems: 'center',
-                      boxSizing: 'border-box'
+                      gap: 8,
+                      flexWrap: 'wrap'
                     }}
                   >
-                    Help center
-                  </button>
-                  {hasSearchResults && (
-                    <div style={{ position: 'relative' }}>
-                      <button
-                        ref={saveExportBtnRef}
-                        onMouseDown={(e) => { if (isSaveExportEligible) { e.stopPropagation(); try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {} }}}
-                        onClick={(e) => {
-                          if (!isSaveExportEligible) return;
-                          e.stopPropagation();
-                          setShowSaveExportMenu(v => !v);
-                        }}
-                        disabled={!isSaveExportEligible}
+                    {currentView === 'network' && (
+                      <div
                         style={{
-                          padding: '8px 16px',
-                          backgroundColor: '#ffffff',
-                          color: '#374151',
-                          border: '2px solid #3e96e2',
-                          borderRadius: '8px',
-                          cursor: isSaveExportEligible ? 'pointer' : 'not-allowed',
-                          fontSize: '16px',
-                          lineHeight: '20px',
-                          height: '48px',
-                          display: 'inline-flex',
+                          display: 'flex',
                           alignItems: 'center',
-                          boxSizing: 'border-box',
-                          opacity: isSaveExportEligible ? 1 : 0.6
+                          gap: 8,
+                          flexWrap: 'wrap'
                         }}
                       >
-                        Save/Export ▾
-                      </button>
-                      {showSaveExportMenu && (
-                        <div
-                          style={{ position: 'absolute', right: 0, top: '110%', backgroundColor: 'white', border: '2px solid #3e96e2', borderRadius: 8, boxShadow: '0 8px 20px rgba(0,0,0,0.12)', padding: 12, minWidth: 260, zIndex: 1000 }}
-                          onMouseLeave={() => setShowSaveExportMenu(false)}
-                          onMouseDown={(e) => { e.stopPropagation(); try { window.__cmg_reapplyZoom && window.__cmg_reapplyZoom(); } catch (_) {} }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {renderSaveExportFields()}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <button
-                    ref={logoutBtnRef}
-                    onClick={() => { setToken(''); clearStoredToken(); setCurrentView('search'); setHasExecutedSearch(false); }}
-                    style={{ backgroundColor: '#ffffff', color: '#374151', padding: '8px 16px', height: '48px', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box', opacity: 1, fontSize: '16px' }}
-                  >
-                    Logout
-                  </button>
-                </div>
+                        <button onClick={() => { goBack(); }} disabled={historyCounts.past === 0} title={historyCounts.past ? `Back (${historyCounts.past})` : 'Back'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.past ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
+                          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
+                            <span>Back</span>
+                            <span style={{ fontSize: 12 }}>←</span>
+                          </span>
+                        </button>
+                        <button onClick={() => { goForward(); }} disabled={historyCounts.future === 0} title={historyCounts.future ? `Forward (${historyCounts.future})` : 'Forward'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.future ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
+                          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
+                            <span>Forward</span>
+                            <span style={{ fontSize: 12 }}>→</span>
+                          </span>
+                        </button>
+                        <button onClick={() => toggleFilterPanel()} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#666', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px', opacity: 1, height: '48px', boxSizing: 'border-box' }}>
+                          🔍 Filters
+                          {selectedVoiceTypes.size > 0 && (
+                            <span style={{ backgroundColor: '#1976d2', color: 'white', borderRadius: '8px', padding: '2px 6px', fontSize: '12px', fontWeight: 'bold' }}>
+                              {selectedVoiceTypes.size}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                    {isSaveExportEligible && (
+                      <div
+                        style={{
+                          marginLeft: 'auto'
+                        }}
+                      >
+                        {renderSaveExportToggle()}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {!hasSearchResults && currentView !== 'network' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <input
@@ -11709,33 +12156,6 @@ const normalizeLinkForMerge = (link) => {
                       style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: (token && loadToken && !isLoadingView) ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}
                     >
                       {isLoadingView ? 'Opening…' : 'Open'}
-                    </button>
-                  </div>
-                )}
-                {currentView === 'network' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button onClick={() => { goBack(); }} disabled={historyCounts.past === 0} title={historyCounts.past ? `Back (${historyCounts.past})` : 'Back'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.past ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
-                      <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
-                        <span>Back</span>
-                        <span style={{ fontSize: 12 }}>←</span>
-                      </span>
-                    </button>
-                    <button onClick={() => { goForward(); }} disabled={historyCounts.future === 0} title={historyCounts.future ? `Forward (${historyCounts.future})` : 'Forward'} style={{ padding: '8px 12px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: historyCounts.future ? 'pointer' : 'not-allowed', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
-                      <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
-                        <span>Forward</span>
-                        <span style={{ fontSize: 12 }}>→</span>
-                      </span>
-                    </button>
-                    <button onClick={() => toggleFilterPanel()} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: selectedVoiceTypes.size > 0 ? '#1976d2' : '#666', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px', opacity: 1, height: '48px', boxSizing: 'border-box' }}>
-                      🔍 Filters
-                      {selectedVoiceTypes.size > 0 && (
-                        <span style={{ backgroundColor: '#1976d2', color: 'white', borderRadius: '8px', padding: '2px 6px', fontSize: '12px', fontWeight: 'bold' }}>
-                          {selectedVoiceTypes.size}
-                        </span>
-                      )}
-                    </button>
-                    <button onClick={() => { setCurrentView('network'); setShowPathPanel(v => !v); }} style={{ padding: '8px 16px', backgroundColor: '#ffffff', color: '#374151', border: '2px solid #3e96e2', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', opacity: 1, height: '48px', display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box' }}>
-                      Path
                     </button>
                   </div>
                 )}
@@ -11839,7 +12259,20 @@ const normalizeLinkForMerge = (link) => {
                       </span>
                     )}
                   </button>
-                  <button type="button" onClick={() => { setShowPathPanel(v => !v); setCurrentView('network'); setShowHeaderMenu(false); }} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}>Path</button>
+                  <button
+                    type="button"
+                      onClick={() => {
+                      if (showPathPanel) {
+                        closePathPanel();
+                      } else {
+                        openPathPanel();
+                      }
+                      setShowHeaderMenu(false);
+                    }}
+                    style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Path
+                  </button>
                 </div>
               )}
               <button
@@ -12057,20 +12490,45 @@ const normalizeLinkForMerge = (link) => {
             </div>
 
             {!isHeaderMobile && (
-              <div style={{ maxWidth: '1200px', margin: '20px auto 0', padding: '0 20px', display: 'flex', justifyContent: 'flex-end' }}>
-                <img
-                  src="/paypal.png"
-                  alt="Support via PayPal"
-                  style={{
-                    width: 160,
-                    height: 160,
-                    objectFit: 'contain',
-                    border: '2px solid #3e96e2',
-                    borderRadius: '12px',
-                    padding: '8px',
-                    backgroundColor: '#f9fafb'
-                  }}
-                />
+              <div style={{ maxWidth: '1200px', margin: '20px auto 0', padding: '0 20px', display: 'flex', justifyContent: 'flex-end', gap: '16px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                  <img
+                    src="/paypal.png"
+                    alt="Support via PayPal"
+                    style={{
+                      width: 160,
+                      height: 160,
+                      objectFit: 'contain',
+                      border: '2px solid #3e96e2',
+                      borderRadius: '12px',
+                      padding: '8px',
+                      backgroundColor: '#f9fafb'
+                    }}
+                  />
+                  <a
+                    href="https://www.paypal.biz/sethkeetonvoice"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      width: '160px',
+                      display: 'inline-flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      padding: '12px 16px',
+                      backgroundColor: '#ffffff',
+                      color: '#374151',
+                      border: '2px solid #3e96e2',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '16px',
+                      fontWeight: 600,
+                      textDecoration: 'none',
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    Link to Paypal
+                  </a>
+                </div>
               </div>
             )}
             {isHeaderMobile && (
@@ -12187,22 +12645,55 @@ const normalizeLinkForMerge = (link) => {
                   We depend on your support to maintain and grow the Aspen Grove. Proceeds from your donation pay for hosting costs and the ability to hire an assistant. Server costs are modest, but ongoing. To help with these and to keep the site ad free, a suggested $10/year donation is incredibly appreciated. Any amount is a great help. Thank you!
                 </p>
               </div>
-              <img
-                src="/paypal.png"
-                alt="Support via PayPal"
+              <div
                 style={{
                   gridColumn: '2',
                   gridRow: '1',
-                  width: '160px',
-                  height: '160px',
-                  objectFit: 'contain',
-                  border: '2px solid #3e96e2',
-                  borderRadius: '12px',
-                  padding: '8px',
-                  backgroundColor: '#f9fafb',
-                  justifySelf: 'end'
+                  justifySelf: 'end',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '12px'
                 }}
-              />
+              >
+                <img
+                  src="/paypal.png"
+                  alt="Support via PayPal"
+                  style={{
+                    width: '160px',
+                    height: '160px',
+                    objectFit: 'contain',
+                    border: '2px solid #3e96e2',
+                    borderRadius: '12px',
+                    padding: '8px',
+                    backgroundColor: '#f9fafb'
+                  }}
+                />
+                <a
+                  href="https://www.paypal.biz/sethkeetonvoice"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    width: '160px',
+                    display: 'inline-flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    padding: '12px 16px',
+                    backgroundColor: '#ffffff',
+                    color: '#374151',
+                    border: '2px solid #3e96e2',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '16px',
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                    textAlign: 'center',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  Link to Paypal
+                </a>
+              </div>
               <button
                 onClick={() => setShowSupportPanel(false)}
                 style={{
@@ -12278,7 +12769,7 @@ const normalizeLinkForMerge = (link) => {
                     I have used various methods for gathering data at scale including querying Wikidata, webscraping, APIs, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been created through the use of AI.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151' }}>
-                    For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
+                    For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, for presentation inquiries, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
                   </p>
                   <p style={{ marginTop: '12px', color: '#374151',  textAlign: "right"}}>
                    - Seth Keeton, founder <br/>
@@ -12286,6 +12777,79 @@ const normalizeLinkForMerge = (link) => {
                   </p>
                 </details>
               </section>
+
+              <details style={{ backgroundColor: '#f6faff', border: '2px solid #cbdaf7', borderRadius: '12px', padding: '16px 20px' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Color key</summary>
+                <ul
+                  style={{
+                    listStyle: 'none',
+                    margin: '12px 0 0 0',
+                    padding: 0,
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: '10px'
+                  }}
+                >
+                  {[
+                    { label: 'Soprano', color: '#ae996b' },
+                    { label: 'Mezzo-soprano', color: '#695531' },
+                    { label: 'Contralto', color: '#443f39' },
+                    { label: 'Countertenor', color: '#4e2d06' },
+                    { label: 'Tenor', color: '#e4a201' },
+                    { label: 'Baritone', color: '#6a7304' },
+                    { label: 'Bass-baritone', color: '#a09602' },
+                    { label: 'Bass', color: '#a09602' },
+                    { label: 'Castrato', color: '#99c0e3' },
+                    { label: 'Soprano castrato', color: '#99c0e3' },
+                    { label: 'Alto castrato', color: '#99c0e3' },
+                    { label: 'Haute-contre', color: '#99c0e3' },
+                    { label: 'Treble, unchanged voice', color: '#99c0e3' },
+                    { label: 'Composer', color: '#7c8b23' },
+                    { label: 'Conductor', color: '#7c8b23' },
+                    { label: 'Instrumentalist', color: '#7c8b23' },
+                    { label: 'Opera director', color: '#7c8b23' },
+                    { label: 'Teacher, other', color: '#7c8b23' },
+                    { label: 'Vocal coach', color: '#7c8b23' },
+                    { label: 'Speech Language Pathologist', color: '#7c8b23' },
+                    { label: 'Librettist', color: '#7c8b23' },
+                    { label: 'Critic', color: '#7c8b23' },
+                    { label: 'Actor', color: '#7c8b23' },
+                    { label: 'Inventor', color: '#7c8b23' },
+                    { label: 'Non-singing', color: '#7c8b23' },
+                    { label: 'Unknown', color: '#7c8b23' }
+                  ].map((entry) => (
+                    <li key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span
+                        style={{
+                          width: 16,
+                          height: 16,
+                          borderRadius: 4,
+                          border: '2px solid #3e96e2',
+                          backgroundColor: entry.color,
+                          flex: '0 0 auto'
+                        }}
+                      />
+                      <span style={{ color: '#1f2937' }}>{entry.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+
+              <details style={{ backgroundColor: '#f6faff', border: '2px solid #cbdaf7', borderRadius: '12px', padding: '16px 20px' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Disclaimer</summary>
+                <p style={{ marginTop: '12px', color: '#374151' }}>
+                  Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
+                </p>
+                <p style={{ marginTop: '12px', color: '#374151' }}>
+                  I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
+                </p>
+                <p style={{ marginTop: '12px', color: '#374151' }}>
+                  If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank" rel="noopener noreferrer">this form</a>, and I will incorporate it as quickly as I can.
+                </p>
+                <p style={{ marginTop: '12px', color: '#374151', fontWeight: 600 }}>
+                  By reviewing this site you acknowledge the extent of the current contents and the limitations expressed in this disclaimer.
+                </p>
+              </details>
 
               <section>
                 <h3 style={{ margin: '0 0 18px 0', fontSize: '22px', color: '#0f172a' }}>Videos</h3>
@@ -12314,7 +12878,7 @@ const normalizeLinkForMerge = (link) => {
               <section>
                 <h3 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a' }}>Acknowledgements</h3>
                 <p style={{ margin: 0, color: '#374151' }}>
-                  This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thank you to my friends at the Marriott Library, especially Rebekah Cummings of the Digital Matters Lab. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
+                  This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thanks, too, to my friends at the Marriott Library. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
                 </p>
               </section>
             </div>
@@ -12429,6 +12993,22 @@ const normalizeLinkForMerge = (link) => {
           </div>
         )}
 
+        {helperMessage && (
+          <div style={{
+            maxWidth: '600px',
+            margin: '12px auto 0 auto',
+            backgroundColor: '#ecfeff',
+            border: '2px solid #22d3ee',
+            color: '#0f172a',
+            padding: '12px 15px',
+            borderRadius: '8px',
+            fontWeight: 500,
+            textAlign: 'center'
+          }}>
+            {helperMessage}
+          </div>
+        )}
+
         {currentView === 'results' && searchResults.length > 0 && (
           <div style={{ marginBottom: '30px', padding: isHeaderMobile ? '0 var(--cmg-mobile-inline-padding)' : 0 }}>
             <h3 style={{ display: 'inline-block', backgroundColor: '#ffffff', padding: '6px 10px', borderRadius: '8px' }}>Search Results ({searchResults.length})</h3>
@@ -12497,7 +13077,7 @@ const normalizeLinkForMerge = (link) => {
           </div>
         )}
 
-        {(currentView === 'results' || currentView === 'network') && networkData.nodes.length > 0 && (
+        {(currentView === 'results' || currentView === 'network') && (networkData.nodes.length > 0 || showPathPanel) && (
           <div
             className={isMobileViewport ? 'mobile-safe-area-inline' : undefined}
             style={{ width: '100%', marginBottom: '30px' }}
@@ -12514,6 +13094,9 @@ const normalizeLinkForMerge = (link) => {
                     Drag nodes to reposition • Scroll to zoom • Drag to pan
                     <span style={{ display: 'block', marginTop: 4 }}>
                       Right-click (or two-finger press on a trackpad) on a node or relationship for more information
+                    </span>
+                    <span style={{ display: 'block', marginTop: 4 }}>
+                      Single-click to expand • Double-click to start a search with this node
                     </span>
                   </>
                 )}
@@ -13004,19 +13587,34 @@ const normalizeLinkForMerge = (link) => {
                         pushHistory('card-click-opera-premiered');
                         try {
                           setLoading(true);
+                          const typedIdRaw = role?.id || (role?.opera_id ? `opera:${role.opera_id}` : '');
+                          const payload = { operaName: role.opera_name };
+                          if (role?.opera_id) {
+                            payload.operaId = String(role.opera_id).trim();
+                            payload.opera_id = String(role.opera_id).trim();
+                          } else if (typedIdRaw) {
+                            const { type: payloadType, value: payloadValue } = parseTypedId(typedIdRaw);
+                            if (payloadType === 'opera' && payloadValue) {
+                              payload.operaId = payloadValue;
+                              payload.opera_id = payloadValue;
+                            }
+                          }
                           const response = await fetch(`${API_BASE}/opera/details`, {
                             method: 'POST',
                             headers: {
                               'Content-Type': 'application/json',
                               'Authorization': `Bearer ${token}`
                             },
-                            body: JSON.stringify({ operaName: role.opera_name })
+                            body: JSON.stringify(payload)
                           });
 
                           const data = await response.json();
                           if (response.ok) {
                             setItemDetails(data);
-                            setSelectedItem({ properties: { opera_name: role.opera_name } });
+                            setSelectedItem({
+                              id: typedIdRaw,
+                              properties: { opera_name: role.opera_name }
+                            });
                             setSearchType('operas');
                             setCurrentView('network');
                             generateNetworkFromDetails(data, role.opera_name, 'operas');
@@ -13170,21 +13768,37 @@ const normalizeLinkForMerge = (link) => {
                           onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                           onClick={async () => {
                             pushHistory('card-click-opera-composed');
-                            try {
-                              setLoading(true);
-                              const response = await fetch(`${API_BASE}/opera/details`, {
-                                method: 'POST',
-                                headers: {
-                                  'Content-Type': 'application/json',
-                                  'Authorization': `Bearer ${token}`
-                                },
-                                body: JSON.stringify({ operaName: safeLabel })
-                              });
+                        try {
+                          setLoading(true);
+                          const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
+                          const payload = { operaName: safeLabel };
+                          if (opera?.opera_id) {
+                            const operaIdString = String(opera.opera_id).trim();
+                            payload.operaId = operaIdString;
+                            payload.opera_id = operaIdString;
+                          } else if (typedIdRaw) {
+                            const { type: payloadType, value: payloadValue } = parseTypedId(typedIdRaw);
+                            if (payloadType === 'opera' && payloadValue) {
+                              payload.operaId = payloadValue;
+                              payload.opera_id = payloadValue;
+                            }
+                          }
+                          const response = await fetch(`${API_BASE}/opera/details`, {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify(payload)
+                          });
 
-                              const data = await response.json();
-                              if (response.ok) {
+                          const data = await response.json();
+                          if (response.ok) {
                                 setItemDetails(data);
-                                setSelectedItem({ properties: { title: safeLabel } });
+                                setSelectedItem({
+                                  id: typedIdRaw,
+                                  properties: { title: safeLabel }
+                                });
                                 setSearchType('operas');
                                 setCurrentView('network');
                                 generateNetworkFromDetails(data, safeLabel, 'operas');
@@ -13585,8 +14199,7 @@ const normalizeLinkForMerge = (link) => {
               type="button"
               className="mobile-toolbar__button"
               onClick={() => {
-                setCurrentView('network');
-                setShowPathPanel(v => !v);
+                togglePathPanel();
               }}
             >
               Path
@@ -13606,5 +14219,6 @@ const normalizeLinkForMerge = (link) => {
     </div>
   );
 };
+
 
 export default ClassicalMusicGenealogy;

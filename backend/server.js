@@ -253,8 +253,18 @@ app.options('*', cors(corsOptions));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // allow 100 requests per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, _next, options) => {
+    const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+    res.set('Retry-After', retryAfterSeconds.toString());
+    return res.status(options.statusCode).json({
+      error: 'Too many requests. Please wait before retrying.',
+      retryAfterSeconds
+    });
+  }
 });
 app.use(limiter);
 
@@ -318,6 +328,29 @@ const toPlainString = (value) => {
   } catch (_) {
     return null;
   }
+};
+
+const normalizeIdComponent = (value) => {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+};
+
+const resolvePersonId = (props = {}) =>
+  normalizeIdComponent(props.person_id ?? props.personId ?? props.id ?? props.personID);
+
+const resolveOperaId = (props = {}) =>
+  normalizeIdComponent(props.opera_id ?? props.operaId ?? props.id);
+
+const resolveBookId = (props = {}) =>
+  normalizeIdComponent(props.book_id ?? props.bookId ?? props.id);
+
+const buildTypedId = (type, rawId, fallback) => {
+  const normalizedType = String(type || '').trim().toLowerCase();
+  if (!normalizedType) return '';
+  const primary = normalizeIdComponent(rawId);
+  if (primary) return `${normalizedType}:${primary}`;
+  const fallbackValue = normalizeIdComponent(fallback);
+  return fallbackValue ? `${normalizedType}:${fallbackValue.toLowerCase()}` : '';
 };
 
 // In-memory cache for pathfinding results
@@ -791,10 +824,18 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
       { query: query || '', cleanQuery, limit: neo4j.int(limit) }
     );
     console.log('Neo4j query complete');
-    const singers = result.records.map(record => ({
-      name: record.get('name'),
-      properties: record.get('properties').properties
-    }));
+    const singers = result.records.map(record => {
+      const node = record.get('properties');
+      const props = node?.properties || {};
+      const personId = resolvePersonId(props);
+      const fallbackId = props.full_name || props.name || record.get('name') || '';
+      return {
+        id: buildTypedId('person', personId, fallbackId),
+        person_id: personId,
+        name: record.get('name'),
+        properties: props
+      };
+    });
     console.log('Sending singers response:', singers);
     res.json({ singers });
   } catch (error) {
@@ -833,9 +874,17 @@ app.post('/search/operas', authenticateToken, async (req, res) => {
       { query: query || '', cleanQuery, limit: neo4j.int(limit) }
     );
 
-    const operas = result.records.map(record => ({
-      properties: record.get('properties').properties
-    }));
+    const operas = result.records.map(record => {
+      const node = record.get('properties');
+      const props = node?.properties || {};
+      const operaId = resolveOperaId(props);
+      const fallbackId = props.opera_name || props.title || props.name || '';
+      return {
+        id: buildTypedId('opera', operaId, fallbackId),
+        opera_id: operaId,
+        properties: props
+      };
+    });
 
     res.json({ operas });
   } catch (error) {
@@ -870,9 +919,17 @@ app.post('/search/books', authenticateToken, async (req, res) => {
       { query: query || '', cleanQuery, limit: neo4j.int(limit) }
     );
 
-    const books = result.records.map(record => ({
-      properties: record.get('properties').properties
-    }));
+    const books = result.records.map(record => {
+      const node = record.get('properties');
+      const props = node?.properties || {};
+      const bookId = resolveBookId(props);
+      const fallbackId = props.title || props.name || '';
+      return {
+        id: buildTypedId('book', bookId, fallbackId),
+        book_id: bookId,
+        properties: props
+      };
+    });
 
     res.json({ books });
   } catch (error) {
@@ -903,7 +960,13 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Singer not found' });
     }
 
-    const center = singerResult.records[0].get('s').properties;
+    const centerRaw = singerResult.records[0].get('s').properties;
+    const centerPersonId = resolvePersonId(centerRaw);
+    const center = {
+      ...centerRaw,
+      person_id: centerPersonId,
+      id: buildTypedId('person', centerPersonId, centerRaw.full_name || centerRaw.name)
+    };
 
     // Get teachers with relationship source
     const teachersResult = await session.run(
@@ -914,7 +977,13 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
     const teachers = teachersResult.records.map(r => {
       const teacherNodeValue = r.get('teacher_node');
       const teacherRelValue = r.get('teacher_relationship');
-      const teacherNode = teacherNodeValue ? teacherNodeValue.properties || {} : {};
+      const teacherNodeRaw = teacherNodeValue ? teacherNodeValue.properties || {} : {};
+      const teacherPersonId = resolvePersonId(teacherNodeRaw);
+      const teacherNode = {
+        ...teacherNodeRaw,
+        person_id: teacherPersonId,
+        id: buildTypedId('person', teacherPersonId, teacherNodeRaw.full_name || teacherNodeRaw.name)
+      };
       const rawRelationshipProps = teacherRelValue ? teacherRelValue.properties || {} : {};
       const teacherRelSourceText = pickRelationshipSourceValue(
         rawRelationshipProps.teacher_rel_source_text,
@@ -968,7 +1037,13 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
     const students = studentsResult.records.map(r => {
       const studentNodeValue = r.get('student_node');
       const studentRelValue = r.get('student_relationship');
-      const studentNode = studentNodeValue ? studentNodeValue.properties || {} : {};
+      const studentNodeRaw = studentNodeValue ? studentNodeValue.properties || {} : {};
+      const studentPersonId = resolvePersonId(studentNodeRaw);
+      const studentNode = {
+        ...studentNodeRaw,
+        person_id: studentPersonId,
+        id: buildTypedId('person', studentPersonId, studentNodeRaw.full_name || studentNodeRaw.name)
+      };
       const rawRelationshipProps = studentRelValue ? studentRelValue.properties || {} : {};
       const teacherRelSourceText = pickRelationshipSourceValue(
         rawRelationshipProps.teacher_rel_source_text,
@@ -1109,7 +1184,13 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
     `;
     const familyResult = await session.run(familyQuery, { name: singerName });
     const family = familyResult.records.map(r => {
-      const f = r.get('f').properties;
+      const familyRaw = r.get('f').properties;
+      const familyPersonId = resolvePersonId(familyRaw);
+      const f = {
+        ...familyRaw,
+        person_id: familyPersonId,
+        id: buildTypedId('person', familyPersonId, familyRaw.full_name || familyRaw.name)
+      };
       const rel = r.get('relationship');
       const relSrcRaw = r.get('teacher_rel_source');
       const relSrc = normalizeRelationshipSourceValue(relSrcRaw);
@@ -1129,16 +1210,19 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
 
     // Get works (operas and books)
     const operasResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
+      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, o.opera_id as opera_id, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
       { name: singerName }
     );
     const operas = operasResult.records.map(r => {
+      const operaId = normalizeIdComponent(r.get('opera_id'));
       const sourceTextRaw = r.get('opera_source_text');
       const sourceUrlRaw = r.get('opera_source_url');
       const legacySourceRaw = r.get('legacy_source');
       const resolvedSourceText = pickRelationshipSourceValue(sourceTextRaw, legacySourceRaw);
       const resolvedSourceUrl = normalizeRelationshipSourceValue(sourceUrlRaw);
       return {
+        id: buildTypedId('opera', operaId, r.get('opera_name')),
+        opera_id: operaId || null,
         opera_name: r.get('opera_name'),
         role: r.get('role'),
         source: resolvedSourceText || null,
@@ -1149,16 +1233,19 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
 
     // Get specific roles premiered (for the new Roles premiered card)
     const premieredRolesResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
+      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, o.opera_id as opera_id, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
       { name: singerName }
     );
     const premieredRoles = premieredRolesResult.records.map(r => {
+      const operaId = normalizeIdComponent(r.get('opera_id'));
       const sourceTextRaw = r.get('opera_source_text');
       const sourceUrlRaw = r.get('opera_source_url');
       const legacySourceRaw = r.get('legacy_source');
       const resolvedSourceText = pickRelationshipSourceValue(sourceTextRaw, legacySourceRaw);
       const resolvedSourceUrl = normalizeRelationshipSourceValue(sourceUrlRaw);
       return {
+        id: buildTypedId('opera', operaId, r.get('opera_name')),
+        opera_id: operaId || null,
         opera_name: r.get('opera_name'),
         role: r.get('role'),
         source: resolvedSourceText || null,
@@ -1169,12 +1256,17 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
 
     const booksResult = await session.run(
       `MATCH (s:Person {full_name: $name})-[r:AUTHORED]->(b:Book)
-       RETURN b.title as title, r AS relationship`,
+       RETURN b.title as title, b.book_id AS book_id, r AS relationship`,
       { name: singerName }
     );
-    const books = booksResult.records.map(r => ({
-      title: r.get('title')
-    }));
+    const books = booksResult.records.map(r => {
+      const bookId = normalizeIdComponent(r.get('book_id'));
+      return {
+        id: buildTypedId('book', bookId, r.get('title')),
+        book_id: bookId || null,
+        title: r.get('title')
+      };
+    });
 
     const composedOperasResult = await session.run(
       `MATCH (s:Person {full_name: $name})-[r:COMPOSED|WROTE]->(o:Opera)
@@ -1259,16 +1351,17 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         operaProps.id ??
         null;
 
-      const numericOperaId = resolvedIdCandidate !== null && resolvedIdCandidate !== undefined
-        ? toPlainNumber(resolvedIdCandidate, null)
-        : null;
+      const stringOperaId = resolvedIdCandidate !== null && resolvedIdCandidate !== undefined
+        ? normalizeIdComponent(resolvedIdCandidate)
+        : '';
       const resolvedDisplayName =
         resolvedNameCandidate ||
-        (numericOperaId !== null
-          ? `Opera ${numericOperaId}`
+        (stringOperaId
+          ? `Opera ${stringOperaId}`
           : null);
 
       return {
+        id: buildTypedId('opera', stringOperaId, resolvedNameCandidate || resolvedTitle || resolvedDisplayName),
         title: resolvedTitle,
         opera_name: resolvedOperaName,
         name: resolvedNameCandidate || resolvedDisplayName,
@@ -1276,7 +1369,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         operaTitle: directOperaValues.operaTitle || toPlainString(operaProps.operaTitle),
         label: directOperaValues.label || toPlainString(operaProps.label),
         version: resolvedVersion,
-        opera_id: numericOperaId,
+        opera_id: stringOperaId || null,
         source: sourceText || null,
         opera_source_text: sourceText || null,
         opera_source_url: sourceUrl || null
@@ -1286,10 +1379,10 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
     const seenComposedTitles = new Set();
     for (const opera of composedOperasRaw) {
       const key =
+        (opera.opera_id ? `id:${opera.opera_id}` : '') ||
         toPlainString(opera.title) ||
         toPlainString(opera.opera_name) ||
-        toPlainString(opera.display_name) ||
-        (opera.opera_id !== null && opera.opera_id !== undefined ? String(opera.opera_id) : '');
+        toPlainString(opera.display_name);
       if (key && seenComposedTitles.has(key)) continue;
       if (key) {
         seenComposedTitles.add(key);
@@ -1489,33 +1582,74 @@ app.post('/node/relationship-counts', authenticateToken, async (req, res) => {
 app.post('/opera/details', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
-    const { operaName } = req.body;
-    
-    if (!operaName) {
-      return res.status(400).json({ error: 'Opera name required' });
+    const { operaName, operaId: operaIdInput, opera_id: operaIdAlt } = req.body || {};
+    const trimmedName = toPlainString(operaName);
+    const operaIdRaw = normalizeIdComponent(operaIdInput ?? operaIdAlt);
+    const hasName = Boolean(trimmedName);
+    const hasId = Boolean(operaIdRaw);
+    const numericId = hasId ? Number(operaIdRaw) : NaN;
+    const hasNumericId = hasId && Number.isFinite(numericId);
+
+    if (!hasName && !hasId) {
+      return res.status(400).json({ error: 'Opera identifier (ID or name) required' });
     }
 
-    // Get opera details
+    // Get opera details using ID when available, name as a fallback
     const operaResult = await session.run(
-      'MATCH (o:Opera {opera_name: $opera_name}) RETURN o',
-      { opera_name: operaName }
+      `
+      MATCH (o:Opera)
+      WHERE
+        ($hasId AND (
+          (o.opera_id IS NOT NULL AND (
+            ($hasNumericId AND o.opera_id = $operaIdNumeric) OR
+            toString(o.opera_id) = $operaIdString
+          ))
+        ))
+        OR
+        ($hasName AND toLower(o.opera_name) = $lowerOperaName)
+      RETURN o
+      ORDER BY
+        CASE
+          WHEN $hasId AND (
+            ($hasNumericId AND o.opera_id = $operaIdNumeric) OR
+            toString(o.opera_id) = $operaIdString
+          ) THEN 0
+          ELSE 1
+        END,
+        o.opera_name
+      LIMIT 1
+      `,
+      {
+        hasId,
+        hasNumericId,
+        hasName,
+        operaIdNumeric: hasNumericId ? neo4j.int(numericId) : null,
+        operaIdString: operaIdRaw || null,
+        lowerOperaName: trimmedName ? trimmedName.toLowerCase() : null
+      }
     );
 
     if (operaResult.records.length === 0) {
       return res.status(404).json({ error: 'Opera not found' });
     }
 
-    const opera = operaResult.records[0].get('o').properties;
+    const operaNode = operaResult.records[0].get('o');
+    const opera = operaNode.properties || {};
+    const operaInternalId = operaNode.identity;
+    const operaNodeIdParam = operaInternalId;
 
     // Try to resolve composer from relationships if not present as a property
     let composerName = opera.composer || null;
     try {
       const composerResult = await session.run(
-        `MATCH (c:Person)-[r]->(o:Opera {opera_name: $opera_name})
-         WHERE type(r) IN ['COMPOSED','WROTE']
-         RETURN c.full_name AS composer
-         LIMIT 1`,
-        { opera_name: operaName }
+        `
+        MATCH (c:Person)-[r]->(o:Opera)
+        WHERE id(o) = $operaNodeId
+          AND type(r) IN ['COMPOSED','WROTE']
+        RETURN c.full_name AS composer
+        LIMIT 1
+        `,
+        { operaNodeId: operaNodeIdParam }
       );
       if (composerResult.records.length > 0) {
         composerName = composerResult.records[0].get('composer') || composerName;
@@ -1524,11 +1658,14 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
 
     // Get premiered roles
     const rolesResult = await session.run(
-      `MATCH (s:Person)-[r:PREMIERED_ROLE_IN]->(o:Opera {opera_name: $opera_name})
-       RETURN s.full_name as singer, r.role as role, s.voice_type as voice_type,
-         s.voice_type_source as voice_type_source, s.spelling_source as spelling_source, s.dates_source as dates_source, s.birthplace_source as birthplace_source, s.image_source as image_source, s.underrepresented_source as underrepresented_source,
-         r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as relationship_source`,
-      { opera_name: operaName }
+      `
+      MATCH (s:Person)-[r:PREMIERED_ROLE_IN]->(o:Opera)
+      WHERE id(o) = $operaNodeId
+      RETURN s.full_name as singer, r.role as role, s.voice_type as voice_type,
+        s.voice_type_source as voice_type_source, s.spelling_source as spelling_source, s.dates_source as dates_source, s.birthplace_source as birthplace_source, s.image_source as image_source, s.underrepresented_source as underrepresented_source,
+        r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as relationship_source
+      `,
+      { operaNodeId: operaNodeIdParam }
     );
     const premieredRoles = rolesResult.records.map(r => {
       const sourceText = pickRelationshipSourceValue(r.get('opera_source_text'), r.get('relationship_source'));
@@ -1545,10 +1682,13 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
 
     // Get composers via WROTE relationship (source stored on relationship)
     const wroteResult = await session.run(
-      `MATCH (c:Person)-[w:WROTE]->(o:Opera {opera_name: $opera_name})
-       RETURN c.full_name as composer, w.opera_source_text as opera_source_text, w.opera_source_url as opera_source_url, w.source as relationship_source
-       ORDER BY composer`,
-      { opera_name: operaName }
+      `
+      MATCH (c:Person)-[w:WROTE]->(o:Opera)
+      WHERE id(o) = $operaNodeId
+      RETURN c.full_name as composer, w.opera_source_text as opera_source_text, w.opera_source_url as opera_source_url, w.source as relationship_source
+      ORDER BY composer
+      `,
+      { operaNodeId: operaNodeIdParam }
     );
     const wrote = wroteResult.records.map(r => {
       const sourceText = pickRelationshipSourceValue(r.get('opera_source_text'), r.get('relationship_source'));
@@ -1563,6 +1703,8 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
 
     res.json({
       opera: {
+        id: buildTypedId('opera', resolveOperaId(opera), opera.opera_name || trimmedName || operaIdRaw),
+        opera_id: resolveOperaId(opera) || null,
         opera_name: opera.opera_name,
         composer: composerName,
         premiere_year: opera.premiere_year
@@ -1763,15 +1905,40 @@ app.post('/path/find', authenticateToken, async (req, res) => {
       const labels = node.labels || [];
       const props = node.properties || {};
       if (labels.includes('Person')) {
-        return { id: props.full_name, name: props.full_name, type: 'person' };
+        const personId = normalizeIdComponent(props.person_id ?? props.personId ?? props.id);
+        const displayName = toPlainString(props.full_name) || toPlainString(props.name) || toPlainString(props.label);
+        return {
+          id: buildTypedId('person', personId, displayName),
+          name: displayName || (personId ? `Person ${personId}` : 'Unknown Person'),
+          type: 'person'
+        };
       }
       if (labels.includes('Opera')) {
-        return { id: props.opera_name, name: props.opera_name, type: 'opera', composer: props.composer };
+        const operaId = normalizeIdComponent(props.opera_id ?? props.id);
+        const displayName = toPlainString(props.opera_name) || toPlainString(props.title) || toPlainString(props.name) || toPlainString(props.label);
+        return {
+          id: buildTypedId('opera', operaId, displayName),
+          name: displayName || (operaId ? `Opera ${operaId}` : 'Unknown Opera'),
+          type: 'opera',
+          composer: props.composer || null
+        };
       }
       if (labels.includes('Book')) {
-        return { id: props.title, name: props.title, type: 'book' };
+        const bookId = normalizeIdComponent(props.book_id ?? props.id);
+        const displayName = toPlainString(props.title) || toPlainString(props.name) || toPlainString(props.label);
+        return {
+          id: buildTypedId('book', bookId, displayName),
+          name: displayName || (bookId ? `Book ${bookId}` : 'Unknown Book'),
+          type: 'book'
+        };
       }
-      return { id: props.id || props.name || JSON.stringify(props), name: props.name || props.id || 'Unknown', type: 'unknown' };
+      const fallbackId = normalizeIdComponent(props.id ?? props.name) || JSON.stringify(props);
+      const fallbackName = toPlainString(props.name) || toPlainString(props.label) || fallbackId || 'Unknown';
+      return {
+        id: buildTypedId('unknown', fallbackId, fallbackName),
+        name: fallbackName,
+        type: 'unknown'
+      };
     };
 
     oriented.forEach((seg, idx) => {
