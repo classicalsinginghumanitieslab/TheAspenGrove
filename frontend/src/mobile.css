@@ -166,7 +166,7 @@
     box-shadow: 0 -18px 48px rgba(15, 23, 42, 0.25);
     display: flex;
     flex-direction: column;
-    max-height: 80vh;
+    max-height: calc(var(--cmg-vh, 1vh) * 100);
     pointer-events: none;
     z-index: 1000;
     transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
@@ -194,9 +194,32 @@
   .mobile-sheet__content {
     flex: 1;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
     padding: 0 24px 96px;
     overflow-anchor: none;
-    max-height: calc(80vh - 170px);
+    max-height: calc((var(--cmg-vh, 1vh) * 100) - 170px);
+  }
+
+  /* On very short landscapes, reduce the fixed chrome budget so content remains scrollable */
+  @media (max-height: 420px) {
+    :root {
+      --cmg-mobile-button-height: 40px;
+    }
+    .mobile-sheet__content {
+      max-height: calc((var(--cmg-vh, 1vh) * 100) - 130px);
+    }
+    .mobile-sheet__header {
+      padding: 8px 12px 8px !important;
+    }
+    .mobile-sheet__handle {
+      margin: 0 auto 6px !important;
+    }
+    .mobile-sheet__footer {
+      padding: 8px 12px !important;
+      gap: 6px !important;
+    }
   }
 
   .mobile-sheet__footer {

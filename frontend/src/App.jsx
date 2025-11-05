@@ -4,6 +4,41 @@ import useViewport from './useViewport';
 import useDebounce from './useDebounce';
 import initTouchInteractions from './touchInteractions';
 
+// Global console helpers (defined at module load) to avoid undefined in console
+if (typeof window !== 'undefined') {
+  try {
+    window.__CMG_DEBUG_EVENTS = window.__CMG_DEBUG_EVENTS || [];
+    if (typeof window.__CMG_dumpLongEdges !== 'function') {
+      window.__CMG_dumpLongEdges = (threshold = (window.__CMG_LONG_EDGE_THRESHOLD || 260)) => {
+        const snap = window.__CMG_lastNetwork || window.__cmg_lastNetwork || {};
+        const nodes = Array.isArray(snap.nodes) ? snap.nodes : [];
+        const links = Array.isArray(snap.links) ? snap.links : [];
+        const idTo = new Map(nodes.map(n => [n.id, n]));
+        const rows = [];
+        links.forEach(l => {
+          const s = (typeof l.source === 'string' ? idTo.get(l.source) : idTo.get(l?.source?.id) || l.source);
+          const t = (typeof l.target === 'string' ? idTo.get(l.target) : idTo.get(l?.target?.id) || l.target);
+          if (!s || !t) return;
+          const len = Math.hypot((Number(t.x)||0)-(Number(s.x)||0), (Number(t.y)||0)-(Number(s.y)||0));
+          if (Number.isFinite(len) && len >= threshold) rows.push({ s: s.id, t: t.id, type: l.type, len: Math.round(len) });
+        });
+        rows.sort((a,b) => b.len - a.len);
+        try { console.table(rows.slice(0, 50)); } catch (_) { console.log(rows.slice(0, 50)); }
+        return rows;
+      };
+    }
+    if (typeof window.__CMG_findNodeIdByName !== 'function') {
+      window.__CMG_findNodeIdByName = (name) => {
+        const snap = window.__CMG_lastNetwork || window.__cmg_lastNetwork || {};
+        const nodes = Array.isArray(snap.nodes) ? snap.nodes : [];
+        const nm = String(name || '').trim().toLowerCase();
+        const n = nodes.find(x => String(x?.name||'').toLowerCase() === nm);
+        return n ? n.id : null;
+      };
+    }
+  } catch (_) {}
+}
+
 const SESSION_SNAPSHOT_KEY = 'cmgActiveSession_v1';
 const SESSION_SNAPSHOT_FILTERLESS_KEY = 'cmgActiveSession_filtersReset';
 const TOKEN_LOGIN_TS_KEY = 'cmgTokenLoginTs';
@@ -56,6 +91,61 @@ const normalizeSourceValue = (value) => {
   return '';
 };
 
+const extractTextValue = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value).trim();
+    return text;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const candidate = extractTextValue(entry);
+      if (candidate) return candidate;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    const priorityKeys = [
+      'text',
+      'label',
+      'name',
+      'display_name',
+      'displayName',
+      'title',
+      'value',
+      'place',
+      'location',
+      'city',
+      'country'
+    ];
+    for (const key of priorityKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const candidate = extractTextValue(value[key]);
+        if (candidate) return candidate;
+      }
+    }
+    const normalized = normalizeSourceValue(value);
+    return typeof normalized === 'string' ? normalized.trim() : '';
+  }
+  return '';
+};
+
+const collapsePlaceWhitespace = (value) =>
+  value.replace(/[\u00a0\u1680\u2000-\u200A\u202F\u205F\u3000]+/g, ' ').replace(/\s+/g, ' ');
+
+const canonicalizePlaceText = (value) => {
+  const text = extractTextValue(value);
+  if (!text) return '';
+  const normalized = text
+    .normalize('NFKC')
+    .replace(/[\u200b-\u200d\u2060]/g, '') // zero-width characters
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '') // directional controls
+    .replace(/[’]/g, '\'')
+    .replace(/[“”]/g, '"');
+  const collapsed = collapsePlaceWhitespace(normalized).trim();
+  return collapsed;
+};
+
 const deriveRelationshipSourceText = (...values) => {
   for (const value of values) {
     const candidate = normalizeSourceValue(value);
@@ -67,6 +157,10 @@ const deriveRelationshipSourceText = (...values) => {
 const URL_DETECT_REGEX = /https?:\/\/[^\s)]+/i;
 const TRAILING_PUNCTUATION_REGEX = /[),.;:]+$/g;
 const WWW_URL_REGEX = /^www\.[^\s)]+/i;
+// Basic bare-domain detector (example.com, sub.example.co.uk, with optional path)
+const DOMAIN_ONLY_REGEX = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^[\s)]]*)?$/i;
+// Detect bare domain occurrence inside text (avoid matching within words by requiring start or whitespace/paren)
+const DOMAIN_DETECT_REGEX = /(?:^|[\s(])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^[\s)]]*)?)/i;
 const isDebugRelSourcesEnabled = () =>
   typeof window !== 'undefined' && window.__CMG_DEBUG_REL_SOURCES === true;
 const isProbablyHttpUrl = (value) => {
@@ -84,6 +178,11 @@ const sanitizeUrlCandidate = (value) => {
   }
   if (WWW_URL_REGEX.test(str)) {
     return `https://${str.replace(TRAILING_PUNCTUATION_REGEX, '')}`;
+  }
+  // Bare domain like example.com or sub.example.org/abc → prefix https://
+  const trimmed = str.replace(TRAILING_PUNCTUATION_REGEX, '');
+  if (DOMAIN_ONLY_REGEX.test(trimmed)) {
+    return `https://${trimmed}`;
   }
   return '';
 };
@@ -176,6 +275,9 @@ const SOURCE_LINK_STYLE = {
   wordBreak: 'break-word',
   display: 'inline-block'
 };
+
+const DEFAULT_BIRTH_RANGE = [1534, 2005];
+const DEFAULT_DEATH_RANGE = [1575, 2025];
 
 const renderRelationshipSourceLink = (...values) => {
   const findExplicitPair = () => {
@@ -284,7 +386,7 @@ const renderRelationshipSourceLink = (...values) => {
   const url = urlCandidates.find(isProbablyHttpUrl) || '';
   const raw = explicitPair?.text ?? deriveRelationshipSourceText(...values);
   const text = typeof raw === 'string' ? raw.trim() : raw != null ? String(raw).trim() : '';
-  const textContainsUrl = URL_DETECT_REGEX.test(text || '');
+  const textContainsUrl = URL_DETECT_REGEX.test(text || '') || DOMAIN_DETECT_REGEX.test(text || '');
   if (isDebugRelSourcesEnabled()) {
     const debugEntry = {
       values,
@@ -327,7 +429,8 @@ const renderRelationshipSourceLink = (...values) => {
 
   if (!text) return null;
 
-  const urlRegex = /https?:\/\/[^\s)]+/gi;
+  // Match either explicit http(s) URLs or bare domains
+  const urlRegex = /(https?:\/\/[^\s)]+)|((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^[\s)]]*)?)/gi;
   const nodes = [];
   let lastIndex = 0;
   let match;
@@ -337,8 +440,10 @@ const renderRelationshipSourceLink = (...values) => {
     if (index > lastIndex) {
       nodes.push(text.slice(lastIndex, index));
     }
-    const matchedText = match[0];
-    const url = matchedText.replace(TRAILING_PUNCTUATION_REGEX, '');
+    const matchedText = match[1] || match[2];
+    const cleaned = (matchedText || '').replace(TRAILING_PUNCTUATION_REGEX, '');
+    const needsScheme = !/^https?:\/\//i.test(cleaned);
+    const url = needsScheme ? `https://${cleaned}` : cleaned;
     const trailing = matchedText.slice(url.length);
     const anchor = (
       <a
@@ -654,6 +759,123 @@ const computeCenteredTransform = (
     .translate(-centerX, -centerY);
 };
 
+// Debug logging utilities for layout issues
+const isLayoutDebug = () => (typeof window !== 'undefined' && window.__CMG_DEBUG_LAYOUT === true);
+const debugLog = (kind, data) => {
+  try {
+    if (typeof window !== 'undefined') {
+      window.__CMG_DEBUG_EVENTS = window.__CMG_DEBUG_EVENTS || [];
+      window.__CMG_DEBUG_EVENTS.push({ t: Date.now(), kind, data });
+    }
+    if (isLayoutDebug()) {
+      // eslint-disable-next-line no-console
+      console.debug(`[cmg-layout] ${kind}`, data);
+    }
+  } catch (_) {}
+};
+
+// Compute the bounding box and centroid of currently positioned nodes
+const computeGraphBBox = (nodes = []) => {
+  const positioned = (Array.isArray(nodes) ? nodes : []).filter(
+    (n) => Number.isFinite(n?.x) && Number.isFinite(n?.y)
+  );
+  if (positioned.length === 0) {
+    return {
+      minX: 0,
+      maxX: 0,
+      minY: 0,
+      maxY: 0,
+      cx: 0,
+      cy: 0,
+      width: 0,
+      height: 0,
+      radius: 0
+    };
+  }
+  const xs = positioned.map((n) => n.x);
+  const ys = positioned.map((n) => n.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Math.max(0, maxX - minX);
+  const height = Math.max(0, maxY - minY);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const radius = Math.max(width, height) / 2;
+  return { minX, maxX, minY, maxY, width, height, cx, cy, radius };
+};
+
+// Stable pseudo-random angle from a string key
+const stableAngleFromString = (key = '') => {
+  const s = String(key || '0');
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const frac = (h % 3600) / 10; // 0..360
+  return (frac * Math.PI) / 180;
+};
+
+// Choose a spawn center outside the current bbox along the vector from centroid -> anchor
+const computeSpawnOutsideBBox = (nodes = [], anchor = { x: 0, y: 0, key: '' }, margin = 280, bounds) => {
+  const { cx, cy, radius } = computeGraphBBox(nodes);
+  let dx = (Number(anchor?.x) || 0) - cx;
+  let dy = (Number(anchor?.y) || 0) - cy;
+  const len = Math.hypot(dx, dy);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || len < 1e-3) {
+    const ang = stableAngleFromString(anchor?.key || `${Date.now()}`);
+    dx = Math.cos(ang);
+    dy = Math.sin(ang);
+  } else {
+    dx /= len; dy /= len;
+  }
+  const dist = (Number.isFinite(radius) ? radius : 0) + Math.max(160, Number(margin) || 0);
+  let x = cx + dx * dist;
+  let y = cy + dy * dist;
+  // Optionally clamp into visible bounds to avoid being marked as out-of-bounds & re-positioned
+  if (bounds && Number.isFinite(bounds.width) && Number.isFinite(bounds.height)) {
+    const pad = Number.isFinite(bounds.pad) ? bounds.pad : 50;
+    const w = Math.max(200, bounds.width);
+    const h = Math.max(200, bounds.height);
+    x = Math.max(pad, Math.min(w - pad, x));
+    y = Math.max(pad, Math.min(h - pad, y));
+  }
+  return { x, y };
+};
+
+// Compute a reasonable ring radius for placing a cluster of `count` nodes
+// Attempts to keep edges visually compact while avoiding label/shape overlap
+const computeRingRadius = (count, minR = 110, maxR = 220, spacing = 88) => {
+  const n = Math.max(1, Number(count) || 0);
+  // Spacing-based radius so circumference roughly fits `n` nodes with diameter+gap ~ spacing
+  const spacingBased = (n * spacing) / (2 * Math.PI);
+  // Gentle linear growth to avoid too small for modest n
+  const seed = 90 + n * 8;
+  const proposed = Math.max(spacingBased, seed);
+  const capped = (Number.isFinite(maxR) && maxR > 0) ? Math.min(maxR, proposed) : proposed;
+  return Math.max(minR, capped);
+};
+
+const getExpansionRingConfig = (count) => {
+  const n = Math.max(1, Number(count) || 0);
+  const win = (typeof window !== 'undefined') ? window : {};
+  const overrideMin = Number.isFinite(win?.__CMG_EXPAND_RING_MIN) ? Number(win.__CMG_EXPAND_RING_MIN) : null;
+  const overrideSpacing = Number.isFinite(win?.__CMG_EXPAND_RING_SPACING) ? Number(win.__CMG_EXPAND_RING_SPACING) : null;
+  let overrideMax = null;
+  if (win && typeof win.__CMG_EXPAND_RING_MAX === 'function') {
+    try { overrideMax = win.__CMG_EXPAND_RING_MAX(n); } catch (_) { overrideMax = null; }
+  } else if (Number.isFinite(win?.__CMG_EXPAND_RING_MAX)) {
+    overrideMax = Number(win.__CMG_EXPAND_RING_MAX);
+  }
+
+  const min = Math.max(100, overrideMin ?? 180);
+  const spacing = Math.max(60, overrideSpacing ?? 120);
+  const defaultMax = 280 + n * 12;
+  const computedMax = Number.isFinite(overrideMax) ? overrideMax : defaultMax;
+  const max = Math.max(min + 40, computedMax);
+
+  return { min, max, spacing };
+};
+
 const toTitleCase = (str = '') =>
   str
     .split(' ')
@@ -706,8 +928,59 @@ const createLinkContextMenuState = () => ({
   x: 0,
   y: 0,
   role: '',
-  sourceValues: []
+  sourceValues: [],
+  sourceText: '',
+  sourceUrl: ''
 });
+
+const buildLinkContextSource = (link) => {
+  if (!link) {
+    return {
+      sourceValues: [],
+      sourceText: '',
+      sourceUrl: '',
+      baseValues: []
+    };
+  }
+
+  const baseValues = [
+    link.teacher_rel_source_text,
+    link.relationshipSourceDisplay,
+    link.relationship_source_display,
+    link.sourceInfo,
+    link.teacher_rel_source,
+    link.relationship_source,
+    link.relationshipSource,
+    link.source,
+    link.meta?.source,
+    link.opera_source_text,
+    link.opera_source_url,
+    link.teacher_rel_source_url,
+    link.sourceUrl,
+    link.meta?.sourceUrl
+  ];
+
+  const derivedSourceText = deriveRelationshipSourceText(...baseValues);
+  const derivedSourceUrl = deriveRelationshipSourceUrl(
+    link.teacher_rel_source_url,
+    link.sourceUrl,
+    ...baseValues
+  );
+
+  const sourceValues = [
+    { text: derivedSourceText, url: derivedSourceUrl },
+    { text: link.teacher_rel_source_text, url: link.teacher_rel_source_url },
+    { text: link.opera_source_text, url: link.opera_source_url },
+    ...baseValues
+  ];
+
+  return {
+    sourceValues,
+    sourceText: derivedSourceText,
+    sourceUrl: derivedSourceUrl,
+    baseValues
+  };
+};
 
 const normalizeDetailsRelationshipSources = (details = {}) => {
   const clone = { ...details };
@@ -850,8 +1123,24 @@ const viewportIsPhone = !!isPhone;
 const viewportIsTablet = !!isTablet;
 const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   const debouncedViewportHeight = useDebounce(viewportHeight, 150);
-  const backgroundMinHeight = isMobileViewport ? '100dvh' : '100vh';
-  const backgroundAttachmentMode = isMobileViewport ? 'scroll' : 'fixed';
+  // Stabilize mobile viewport height to avoid background jumps when browser chrome shows/hides
+  useEffect(() => {
+    try {
+      const setStableVh = () => {
+        const vh = Math.max(320, Math.floor((window.innerHeight || 0))) * 0.01; // floor for stability
+        document.documentElement.style.setProperty('--cmg-vh', `${vh}px`);
+      };
+      setStableVh();
+      window.addEventListener('resize', setStableVh, { passive: true });
+      window.addEventListener('orientationchange', setStableVh, { passive: true });
+      return () => {
+        window.removeEventListener('resize', setStableVh);
+        window.removeEventListener('orientationchange', setStableVh);
+      };
+    } catch (_) {}
+  }, []);
+  const backgroundMinHeight = isMobileViewport ? 'calc(var(--cmg-vh, 1vh) * 100)' : '100vh';
+  const backgroundAttachmentMode = isMobileViewport ? 'fixed' : 'fixed';
 
   const [token, setToken] = useState('');
   const [initialResetToken, setInitialResetToken] = useState('');
@@ -873,7 +1162,14 @@ const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   useEffect(() => {
     try {
       if (typeof window !== 'undefined') {
+        // Update both legacy and new snapshots for console helpers
         window.__cmg_lastNetwork = networkData;
+        try {
+          window.__CMG_lastNetwork = {
+            nodes: Array.isArray(networkData?.nodes) ? networkData.nodes.map(n => ({ ...n })) : [],
+            links: Array.isArray(networkData?.links) ? networkData.links.map(l => ({ ...l })) : []
+          };
+        } catch (_) {}
         window.dumpLatestNetwork = (options = {}) => {
           const graph = window.__cmg_lastNetwork;
           if (!graph || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.links)) {
@@ -979,10 +1275,18 @@ const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   };
   const [selectedVoiceTypes, setSelectedVoiceTypes] = useState(new Set()); // Selected voice type filters
   const [selectedBirthplaces, setSelectedBirthplaces] = useState(new Set()); // Selected birthplace filters
-  const [birthYearRange, setBirthYearRange] = useState([1534, 2005]); // Birth year range filter
-  const [deathYearRange, setDeathYearRange] = useState([1575, 2025]); // Death year range filter
+  const [birthYearRange, setBirthYearRange] = useState([...DEFAULT_BIRTH_RANGE]); // Birth year range filter
+  const [deathYearRange, setDeathYearRange] = useState([...DEFAULT_DEATH_RANGE]); // Death year range filter
   const [birthRangeIsUserSet, setBirthRangeIsUserSet] = useState(false);
   const [deathRangeIsUserSet, setDeathRangeIsUserSet] = useState(false);
+  const birthRangeIsUserSetRef = useRef(birthRangeIsUserSet);
+  const deathRangeIsUserSetRef = useRef(deathRangeIsUserSet);
+  useEffect(() => {
+    birthRangeIsUserSetRef.current = birthRangeIsUserSet;
+  }, [birthRangeIsUserSet]);
+  useEffect(() => {
+    deathRangeIsUserSetRef.current = deathRangeIsUserSet;
+  }, [deathRangeIsUserSet]);
   // Reverted: only force-directed layout
   const [filterSectionsOpen, setFilterSectionsOpen] = useState({ voice: false, birth: false, death: false, birthplaces: false });
   // Disable global click outside handlers while any path input is focused
@@ -1003,7 +1307,8 @@ const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   const pathListRef = useRef(null);
   const pathPreviousViewRef = useRef(null);
   const nodeClickTimeoutRef = useRef(null);
-  const helperMessageTimeoutRef = useRef(null);
+const helperMessageTimeoutRef = useRef(null);
+const pendingHelperMessageRef = useRef(null);
   const lastTappedNodeIdRef = useRef(null);
   const suppressNextClickRef = useRef(false);
   const [pathInfo, setPathInfo] = useState(null);
@@ -1162,6 +1467,54 @@ useEffect(() => {
   }, [showPathPanel, currentView]);
 
   useEffect(() => {
+    // Expose simple debug helpers in the browser console
+    try {
+      if (typeof window !== 'undefined') {
+        // Keep a lightweight snapshot of the latest network so console helpers
+        // can read state even outside React closures.
+        try {
+          window.__CMG_lastNetwork = {
+            nodes: Array.isArray(networkData?.nodes) ? networkData.nodes.map(n => ({ ...n })) : [],
+            links: Array.isArray(networkData?.links) ? networkData.links.map(l => ({ ...l })) : []
+          };
+        } catch (_) {}
+        window.__CMG_setLayoutDebug = (on) => (window.__CMG_DEBUG_LAYOUT = !!on);
+        window.__CMG_setLongEdgeThreshold = (px) => (window.__CMG_LONG_EDGE_THRESHOLD = Number(px) || 260);
+        // Define helpers if missing; operate on the latest snapshot
+        if (typeof window.__CMG_dumpLongEdges !== 'function') {
+          window.__CMG_dumpLongEdges = (threshold = (window.__CMG_LONG_EDGE_THRESHOLD || 260)) => {
+            const snap = window.__CMG_lastNetwork || {};
+            const nodes = Array.isArray(snap.nodes) ? snap.nodes : [];
+            const links = Array.isArray(snap.links) ? snap.links : [];
+            const idTo = new Map(nodes.map(n => [n.id, n]));
+            const rows = [];
+            links.forEach(l => {
+              const s = (typeof l.source === 'string' ? idTo.get(l.source) : idTo.get(l?.source?.id) || l.source);
+              const t = (typeof l.target === 'string' ? idTo.get(l.target) : idTo.get(l?.target?.id) || l.target);
+              if (!s || !t) return;
+              const len = Math.hypot((Number(t.x)||0)-(Number(s.x)||0), (Number(t.y)||0)-(Number(s.y)||0));
+              if (Number.isFinite(len) && len >= threshold) rows.push({ s: s.id, t: t.id, type: l.type, len: Math.round(len) });
+            });
+            rows.sort((a,b) => b.len - a.len);
+            try { console.table(rows.slice(0, 50)); } catch (_) { console.log(rows.slice(0, 50)); }
+            return rows;
+          };
+        }
+        if (typeof window.__CMG_findNodeIdByName !== 'function') {
+          window.__CMG_findNodeIdByName = (name) => {
+            const snap = window.__CMG_lastNetwork || {};
+            const nodes = Array.isArray(snap.nodes) ? snap.nodes : [];
+            const nm = String(name || '').trim().toLowerCase();
+            const n = nodes.find(x => String(x?.name||'').toLowerCase() === nm);
+            return n ? n.id : null;
+          };
+        }
+        window.__CMG_debugTrackNode = (id) => {
+          window.__CMG_DEBUG_TRACK_NODE = String(id || '').trim();
+          return window.__CMG_DEBUG_TRACK_NODE;
+        };
+      }
+    } catch (_) {}
     return () => {
       if (nodeClickTimeoutRef.current) {
         clearTimeout(nodeClickTimeoutRef.current);
@@ -1352,6 +1705,21 @@ const renderSaveExportToggle = ({
     }
   }, [isMobileViewport, showMobileToolbarMenu]);
 
+  // Prevent body scroll from stealing touch scroll when filter sheet is open on mobile
+  useEffect(() => {
+    try {
+      if (typeof document !== 'undefined' && isMobileViewport) {
+        const prev = document.body.style.overflow;
+        if (showFilterPanel) {
+          document.body.style.overflow = 'hidden';
+        } else {
+          document.body.style.overflow = prev || '';
+        }
+        return () => { document.body.style.overflow = prev || ''; };
+      }
+    } catch (_) {}
+  }, [isMobileViewport, showFilterPanel]);
+
   useEffect(() => {
     if (!isHeaderMobile && showHeaderMenu) {
       setShowHeaderMenu(false);
@@ -1423,8 +1791,8 @@ const renderSaveExportToggle = ({
     try { pathInfoSnap = pathInfo ? JSON.parse(JSON.stringify(pathInfo)) : null; } catch (_) { pathInfoSnap = null; }
     const selectedVoiceTypesSnap = Array.from(selectedVoiceTypes || []);
     const selectedBirthplacesSnap = Array.from(selectedBirthplaces || []);
-    const birthRangeSnap = Array.isArray(birthYearRange) ? [...birthYearRange] : [1534, 2005];
-  const deathRangeSnap = Array.isArray(deathYearRange) ? [...deathYearRange] : [1575, 2025];
+    const birthRangeSnap = Array.isArray(birthYearRange) ? [...birthYearRange] : [...DEFAULT_BIRTH_RANGE];
+    const deathRangeSnap = Array.isArray(deathYearRange) ? [...deathYearRange] : [...DEFAULT_DEATH_RANGE];
   return {
     snapshotVersion: 2,
     nodes: nodesSnap,
@@ -1536,8 +1904,8 @@ const renderSaveExportToggle = ({
     } else {
       try { setSelectedVoiceTypes(new Set()); } catch (_) {}
       try { setSelectedBirthplaces(new Set()); } catch (_) {}
-      try { setBirthYearRange([1534, 2005]); } catch (_) {}
-      try { setDeathYearRange([1575, 2025]); } catch (_) {}
+      try { setBirthYearRange([...DEFAULT_BIRTH_RANGE]); } catch (_) {}
+      try { setDeathYearRange([...DEFAULT_DEATH_RANGE]); } catch (_) {}
       try { setShowFilterPanel(false); } catch (_) {}
       setTimeout(() => {
         try { resetDateRanges(); } catch (_) {}
@@ -1763,8 +2131,8 @@ const renderSaveExportToggle = ({
         currentCenterNode: (view.currentCenterNode ?? snapshot.currentCenterNode ?? centerName) || null,
         selectedVoiceTypes: snapshot.selectedVoiceTypes || filters.selectedVoiceTypes || [],
         selectedBirthplaces: snapshot.selectedBirthplaces || filters.selectedBirthplaces || [],
-        birthYearRange: snapshot.birthYearRange || filters.birthYearRange || [1534, 2005],
-        deathYearRange: snapshot.deathYearRange || filters.deathYearRange || [1575, 2025],
+        birthYearRange: snapshot.birthYearRange || filters.birthYearRange || [...DEFAULT_BIRTH_RANGE],
+        deathYearRange: snapshot.deathYearRange || filters.deathYearRange || [...DEFAULT_DEATH_RANGE],
         showFilterPanel: snapshot.showFilterPanel ?? false,
         showPathPanel: snapshot.showPathPanel ?? false,
         pathInfo: snapshot.pathInfo || null,
@@ -2354,12 +2722,26 @@ const attemptLoadSavedView = async () => {
     setSelectedVoiceTypes(newSelection);
   };
 
-  const updateBirthYearRange = (newRange) => {
-    setBirthYearRange(newRange);
+  const updateBirthYearRange = (newRange, { userInitiated = false } = {}) => {
+    setBirthYearRange(prev => {
+      const next = Array.isArray(newRange) ? [...newRange] : prev;
+      return next;
+    });
+    if (userInitiated) {
+      birthRangeIsUserSetRef.current = true;
+      setBirthRangeIsUserSet(true);
+    }
   };
 
-  const updateDeathYearRange = (newRange) => {
-    setDeathYearRange(newRange);
+  const updateDeathYearRange = (newRange, { userInitiated = false } = {}) => {
+    setDeathYearRange(prev => {
+      const next = Array.isArray(newRange) ? [...newRange] : prev;
+      return next;
+    });
+    if (userInitiated) {
+      deathRangeIsUserSetRef.current = true;
+      setDeathRangeIsUserSet(true);
+    }
   };
 
   const parseYearValue = (value) => {
@@ -2391,24 +2773,90 @@ const attemptLoadSavedView = async () => {
         normalized = { ...node };
       }
     };
-    if (normalized.voiceType === undefined && normalized.voice_type) {
+    const props = (normalized.properties && typeof normalized.properties === 'object')
+      ? normalized.properties
+      : null;
+    const firstDefined = (...values) => {
+      for (const value of values) {
+        if (value !== null && value !== undefined) {
+          return value;
+        }
+      }
+      return null;
+    };
+
+    const currentVoice = extractTextValue(normalized.voiceType);
+    if (currentVoice && currentVoice !== normalized.voiceType) {
       ensureClone();
-      normalized.voiceType = normalized.voice_type;
+      normalized.voiceType = currentVoice;
+    } else if (!currentVoice) {
+      const voiceCandidate = firstDefined(
+        normalized.voice_type,
+        props && props.voiceType,
+        props && props.voice_type,
+        props && props.voice_type_label,
+        props && props.voice
+      );
+      const voiceText = extractTextValue(voiceCandidate);
+      if (voiceText) {
+        ensureClone();
+        normalized.voiceType = voiceText;
+      }
     }
-    if (normalized.birthplace === undefined && normalized.birth_place) {
+
+    const existingBirthplace = canonicalizePlaceText(normalized.birthplace);
+    const birthplaceCandidate = firstDefined(
+      normalized.birth_place,
+      normalized.citizen,
+      props && props.birthplace,
+      props && props.birth_place,
+      props && props.birthplace_display,
+      props && props.birthplace_label,
+      props && props.place_of_birth,
+      props && props.birthplace_text,
+      props && props.birth_location,
+      props && props.citizen
+    );
+    const birthplaceText = existingBirthplace || canonicalizePlaceText(birthplaceCandidate);
+    if (birthplaceText && birthplaceText !== normalized.birthplace) {
       ensureClone();
-      normalized.birthplace = normalized.birth_place;
+      normalized.birthplace = birthplaceText;
     }
-    const birthCandidate =
-      normalized.birthYear ??
-      normalized.birth_year ??
-      (normalized.birth && (normalized.birth.year ?? normalized.birth.low ?? normalized.birth.high)) ??
-      null;
-    const deathCandidate =
-      normalized.deathYear ??
-      normalized.death_year ??
-      (normalized.death && (normalized.death.year ?? normalized.death.low ?? normalized.death.high)) ??
-      null;
+    const citizenCandidate = firstDefined(normalized.citizen, props && props.citizen);
+    const citizenText = canonicalizePlaceText(citizenCandidate);
+    if (citizenText && citizenText !== normalized.citizen) {
+      ensureClone();
+      normalized.citizen = citizenText;
+    }
+
+    const birthCandidate = firstDefined(
+      normalized.birthYear,
+      normalized.birth_year,
+      normalized.birth,
+      props && props.birthYear,
+      props && props.birth_year,
+      props && props.birth,
+      props && props.birthDate,
+      props && props.birth_date,
+      props && props.date_of_birth,
+      props && props.birthyear,
+      props && props.birth_low,
+      props && props.birth_high
+    );
+    const deathCandidate = firstDefined(
+      normalized.deathYear,
+      normalized.death_year,
+      normalized.death,
+      props && props.deathYear,
+      props && props.death_year,
+      props && props.death,
+      props && props.deathDate,
+      props && props.death_date,
+      props && props.date_of_death,
+      props && props.deathyear,
+      props && props.death_low,
+      props && props.death_high
+    );
     const birthYear = parseYearValue(birthCandidate);
     const deathYear = parseYearValue(deathCandidate);
     if (Number.isFinite(birthYear) && normalized.birthYear !== birthYear) {
@@ -2432,6 +2880,10 @@ const attemptLoadSavedView = async () => {
 
     nodesList.forEach((node) => {
       if (node && node.type === 'person') {
+        const normalized = normalizePersonNode(node);
+        if (normalized && normalized !== node) {
+          Object.assign(node, normalized);
+        }
         const birthValue =
           node.birthYear ??
           node.birth_year ??
@@ -2455,15 +2907,20 @@ const attemptLoadSavedView = async () => {
       }
     });
 
-    if (birthChanged) {
-      updateBirthYearRange([birthMin, birthMax]);
-      if (resetUserRangeFlags && birthRangeIsUserSet) {
+    const allowBirthUpdate = resetUserRangeFlags || !birthRangeIsUserSetRef.current;
+    const allowDeathUpdate = resetUserRangeFlags || !deathRangeIsUserSetRef.current;
+
+    if (birthChanged && allowBirthUpdate) {
+      updateBirthYearRange([birthMin, birthMax], { userInitiated: false });
+      if (resetUserRangeFlags && (birthRangeIsUserSetRef.current || birthRangeIsUserSet)) {
+        birthRangeIsUserSetRef.current = false;
         setBirthRangeIsUserSet(false);
       }
     }
-    if (deathChanged) {
-      updateDeathYearRange([deathMin, deathMax]);
-      if (resetUserRangeFlags && deathRangeIsUserSet) {
+    if (deathChanged && allowDeathUpdate) {
+      updateDeathYearRange([deathMin, deathMax], { userInitiated: false });
+      if (resetUserRangeFlags && (deathRangeIsUserSetRef.current || deathRangeIsUserSet)) {
+        deathRangeIsUserSetRef.current = false;
         setDeathRangeIsUserSet(false);
       }
     }
@@ -2480,7 +2937,10 @@ const attemptLoadSavedView = async () => {
     updateSelectedVoiceTypes(newSelection);
   };
 
-  const normalizePlaceName = (s) => (s && typeof s === 'string') ? s.trim().toLowerCase() : '';
+  const normalizePlaceName = (value) => {
+    const canonical = canonicalizePlaceText(value);
+    return canonical ? canonical.toLowerCase() : '';
+  };
 
   const toggleBirthplaceFilter = (birthplace) => {
     const key = normalizePlaceName(birthplace);
@@ -2495,9 +2955,21 @@ const attemptLoadSavedView = async () => {
   };
 
   const computeRangesFromNodes = (nodesList = []) => {
-    const defaults = { birthRange: [1534, 2005], deathRange: [1575, 2025] };
+    const defaults = {
+      birthRange: [...DEFAULT_BIRTH_RANGE],
+      deathRange: [...DEFAULT_DEATH_RANGE]
+    };
     const personNodes = Array.isArray(nodesList)
-      ? nodesList.filter(node => node && node.type === 'person')
+      ? nodesList
+          .filter(node => node && node.type === 'person')
+          .map(node => {
+            const normalized = normalizePersonNode(node);
+            if (normalized && normalized !== node) {
+              Object.assign(node, normalized);
+              return normalized;
+            }
+            return node;
+          })
       : [];
 
     if (personNodes.length === 0) {
@@ -2529,9 +3001,11 @@ const attemptLoadSavedView = async () => {
     updateSelectedVoiceTypes(new Set());
     setSelectedBirthplaces(new Set());
     const { birthRange, deathRange } = computeRangesFromNodes(nodesList ?? networkData.nodes);
-    updateBirthYearRange(birthRange);
-    updateDeathYearRange(deathRange);
+    updateBirthYearRange(birthRange, { userInitiated: false });
+    updateDeathYearRange(deathRange, { userInitiated: false });
+    birthRangeIsUserSetRef.current = false;
     setBirthRangeIsUserSet(false);
+    deathRangeIsUserSetRef.current = false;
     setDeathRangeIsUserSet(false);
   };
 
@@ -2547,7 +3021,16 @@ const attemptLoadSavedView = async () => {
 
   // Helper function to get date ranges from current network data
   const getDateRanges = () => {
-    const personNodes = networkData.nodes.filter(node => node.type === 'person');
+    const personNodes = networkData.nodes
+      .filter(node => node.type === 'person')
+      .map(node => {
+        const normalized = normalizePersonNode(node);
+        if (normalized && normalized !== node) {
+          Object.assign(node, normalized);
+          return normalized;
+        }
+        return node;
+      });
     
     const birthYears = personNodes
       .map(node => node.birthYear)
@@ -2559,10 +3042,10 @@ const attemptLoadSavedView = async () => {
       .filter(year => year && !isNaN(year))
       .map(year => parseInt(year));
     
-    const minBirth = birthYears.length > 0 ? Math.min(...birthYears) : 1534;
-    const maxBirth = birthYears.length > 0 ? Math.max(...birthYears) : 2005;
-    const minDeath = deathYears.length > 0 ? Math.min(...deathYears) : 1575;
-    const maxDeath = deathYears.length > 0 ? Math.max(...deathYears) : 2025;
+    const minBirth = birthYears.length > 0 ? Math.min(...birthYears) : DEFAULT_BIRTH_RANGE[0];
+    const maxBirth = birthYears.length > 0 ? Math.max(...birthYears) : DEFAULT_BIRTH_RANGE[1];
+    const minDeath = deathYears.length > 0 ? Math.min(...deathYears) : DEFAULT_DEATH_RANGE[0];
+    const maxDeath = deathYears.length > 0 ? Math.max(...deathYears) : DEFAULT_DEATH_RANGE[1];
     
     return {
       birthRange: [minBirth, maxBirth],
@@ -2573,12 +3056,29 @@ const attemptLoadSavedView = async () => {
     const personNodes = networkData.nodes.filter(node => node.type === 'person');
     const counts = new Map(); // normalized -> { name, count }
     personNodes.forEach(node => {
+      const normalized = normalizePersonNode(node);
+      if (normalized && normalized !== node) {
+        Object.assign(node, normalized);
+      }
       if (!isNodeVisibleWithoutBirthplaceFilter(node)) return;
-      const raw = (node.birthplace || node.citizen || '').trim();
-      if (!raw) return;
-      const key = normalizePlaceName(raw);
+      const props = (node && typeof node.properties === 'object') ? node.properties : null;
+      const placeValue =
+        node.birthplace ??
+        node.citizen ??
+        (props && (
+          props.birthplace ??
+          props.citizen ??
+          props.birth_place ??
+          props.birthplace_display ??
+          props.place_of_birth ??
+          props.birthplace_text ??
+          props.birth_location
+        ));
+      const canonical = canonicalizePlaceText(placeValue);
+      if (!canonical) return;
+      const key = canonical.toLowerCase();
       if (!key) return;
-      if (!counts.has(key)) counts.set(key, { name: raw, count: 0 });
+      if (!counts.has(key)) counts.set(key, { name: canonical, count: 0 });
       counts.get(key).count += 1;
     });
     return Array.from(counts.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -2587,10 +3087,27 @@ const attemptLoadSavedView = async () => {
   // Helper: visibility excluding voice-type filter (used for voice-type counts)
   const isNodeVisibleWithoutVoiceFilter = (node) => {
     if (node.type === 'person') {
+      const normalized = normalizePersonNode(node);
+      if (normalized && normalized !== node) {
+        Object.assign(node, normalized);
+      }
       // Birthplace filter
       if (selectedBirthplaces.size > 0) {
-        const place = node.birthplace || node.citizen || null;
-        const match = place && selectedBirthplaces.has(normalizePlaceName(place));
+        const props = (node && typeof node.properties === 'object') ? node.properties : null;
+        const placeRaw =
+          node.birthplace ??
+          node.citizen ??
+          (props && (
+            props.birthplace ??
+            props.citizen ??
+            props.birth_place ??
+            props.birthplace_display ??
+            props.place_of_birth ??
+            props.birthplace_text ??
+            props.birth_location
+          ));
+        const place = canonicalizePlaceText(placeRaw);
+        const match = place && selectedBirthplaces.has(place.toLowerCase());
         if (!match) return false;
       }
 
@@ -2618,6 +3135,10 @@ const attemptLoadSavedView = async () => {
   // Helper: visibility excluding birthplace filter (used for birthplace counts)
   const isNodeVisibleWithoutBirthplaceFilter = (node) => {
     if (node.type === 'person') {
+      const normalized = normalizePersonNode(node);
+      if (normalized && normalized !== node) {
+        Object.assign(node, normalized);
+      }
       // Voice type filter
       if (selectedVoiceTypes.size > 0) {
         const voiceTypeMatch = !node.voiceType ? 
@@ -2662,6 +3183,10 @@ const attemptLoadSavedView = async () => {
     const voiceColorMap = {};
     VOICE_TYPES.forEach(v => { voiceColorMap[v.name] = v.color; });
     personNodes.forEach(node => {
+      const normalized = normalizePersonNode(node);
+      if (normalized && normalized !== node) {
+        Object.assign(node, normalized);
+      }
       if (!isNodeVisibleWithoutVoiceFilter(node)) return;
       const vtRaw = node.voiceType && String(node.voiceType).trim();
       const voiceName = vtRaw && vtRaw.length > 0 ? vtRaw : 'Unknown';
@@ -2685,15 +3210,21 @@ const attemptLoadSavedView = async () => {
 
   const resetDateRanges = () => {
     const { birthRange, deathRange } = getDateRanges();
-    updateBirthYearRange(birthRange);
-    updateDeathYearRange(deathRange);
+    updateBirthYearRange(birthRange, { userInitiated: false });
+    updateDeathYearRange(deathRange, { userInitiated: false });
+    birthRangeIsUserSetRef.current = false;
     setBirthRangeIsUserSet(false);
+    deathRangeIsUserSetRef.current = false;
     setDeathRangeIsUserSet(false);
   };
 
   const isNodeVisible = (node) => {
     // For person nodes, check all applicable filters
     if (node.type === 'person') {
+      const normalized = normalizePersonNode(node);
+      if (normalized && normalized !== node) {
+        Object.assign(node, normalized);
+      }
       // Voice type filter
       if (selectedVoiceTypes.size > 0) {
         const rawVoice = node.voiceType && String(node.voiceType).trim();
@@ -2733,6 +3264,10 @@ const attemptLoadSavedView = async () => {
       if (node.type === 'book' && !selectedVoiceTypes.has('Book')) {
         return false;
       }
+    }
+
+    if ((birthRangeIsUserSetRef.current || deathRangeIsUserSetRef.current || birthRangeIsUserSet || deathRangeIsUserSet || selectedBirthplaces.size > 0) && node.type !== 'person') {
+      return false;
     }
 
     // Show opera and book nodes by default (could add filters for these later)
@@ -3161,6 +3696,7 @@ const attemptLoadSavedView = async () => {
     }
 
     try {
+      try { window.__cmg_resetZoom && window.__cmg_resetZoom(); } catch (_) {}
       clearFiltersForNewSearch([]);
       setLoading(true);
       setError('');
@@ -3496,7 +4032,10 @@ const attemptLoadSavedView = async () => {
         label: fallbackLabel,
         relationshipSourceDisplay: fallbackLabel,
         sourceInfo: fallbackLabel,
-        relationship_source: fallbackLabel
+        relationship_source: fallbackLabel,
+        // Treat fallback attachments (created during expansions) as expansion-internal
+        // so the main simulation keeps the cluster compact around the anchor.
+        expansionInternal: true
       });
       linkKeys.add(key);
       if (!isSelfLink) {
@@ -3528,27 +4067,27 @@ const attemptLoadSavedView = async () => {
       } else if (type === 'operas') {
         const operaName = deriveOperaName(item.properties, `Unknown Opera ${index + 1}`);
         const typedIdRaw = item.id || (item.opera_id ? `opera:${item.opera_id}` : '');
-        const operaId = normalizeNodeId(typedIdRaw || operaName);
-        nodes.push({
-          id: operaId,
+        nodes.push(createOperaNodePayload({
+          id: typedIdRaw || operaName,
           name: operaName,
-          type: 'opera',
-          composer: item.properties.composer,
+          opera_id: item.opera_id || item.properties?.opera_id,
+          opera_name: operaName,
+          version: item.properties?.version,
           x: 0, // Will be positioned by anti-overlap system
           y: 0
-        });
+        }));
       } else if (type === 'books') {
         const bookTitle = item.properties.title || `Unknown Book ${index + 1}`;
         const typedIdRaw = item.id || (item.book_id ? `book:${item.book_id}` : '');
-        const bookId = normalizeNodeId(typedIdRaw || bookTitle);
-        nodes.push({
-          id: bookId,
+        nodes.push(createBookNodePayload({
+          id: typedIdRaw || bookTitle,
           name: bookTitle,
-          type: 'book',
-          author: item.properties.author,
+          book_id: item.book_id || item.properties?.book_id,
+          title: bookTitle,
+          link: item.properties?.link,
           x: 0, // Will be positioned by anti-overlap system
           y: 0
-        });
+        }));
       }
   });
 
@@ -3615,27 +4154,55 @@ const attemptLoadSavedView = async () => {
   }
   const centerLabel = rawCenterName || centerId;
 
-  // Add center node with correct type
-  const centerNode = {
-    id: centerId,
-    name: centerLabel,
-      type: type === 'singers' ? 'person' : (type === 'operas' ? 'opera' : 'book'),
+  let centerNode;
+  if (type === 'singers') {
+    centerNode = {
+      id: centerId,
+      name: centerLabel,
+      type: 'person',
       isCenter: true,
       x: 400,
       y: 300
     };
-    
-    if (type === 'singers' && details.center) {
+    if (details.center) {
       centerNode.voiceType = details.center.voice_type;
       centerNode.birthYear = (details.center.birth_year ?? (details.center.birth && (details.center.birth.low ?? details.center.birth))) || null;
       centerNode.deathYear = (details.center.death_year ?? (details.center.death && (details.center.death.low ?? details.center.death))) || null;
       centerNode.birthplace = details.center.birthplace || details.center.citizen || null;
-    } else if (type === 'operas' && details.opera) {
-      centerNode.composer = details.opera.composer;
-    } else if (type === 'books' && details.book) {
-      centerNode.author = details.book.author;
     }
-    
+  } else if (type === 'operas') {
+    centerNode = createOperaNodePayload({
+      id: centerTypedIdRaw || centerId,
+      name: centerLabel,
+      isCenter: true,
+      x: 400,
+      y: 300,
+      opera_id: details?.opera?.opera_id || centerData?.opera_id,
+      opera_name: details?.opera?.opera_name || centerLabel,
+      version: details?.opera?.version
+    });
+  } else if (type === 'books') {
+    centerNode = createBookNodePayload({
+      id: centerTypedIdRaw || centerId,
+      name: centerLabel,
+      isCenter: true,
+      x: 400,
+      y: 300,
+      book_id: details?.book?.book_id || centerData?.book_id,
+      title: details?.book?.title || centerLabel,
+      link: details?.book?.link || centerData?.link
+    });
+  } else {
+    centerNode = {
+      id: centerId,
+      name: centerLabel,
+      type: 'person',
+      isCenter: true,
+      x: 400,
+      y: 300
+    };
+  }
+
   nodes.push(centerNode);
   addedNodes.add(centerId);
 
@@ -3672,7 +4239,15 @@ const attemptLoadSavedView = async () => {
         if (!operaId || isPlaceholderName(operaId)) return;
         const displayName = name || operaId;
         if (!addedNodes.has(operaId)) {
-          nodes.push({ id: operaId, name: displayName, type: 'opera', x: 150 + idx * 80, y: 420 });
+          nodes.push(createOperaNodePayload({
+            id: typedIdRaw || displayName,
+            name: displayName,
+            opera_id: operaEntry?.opera_id,
+            opera_name: displayName,
+            version: operaEntry?.version,
+            x: 150 + idx * 80,
+            y: 420
+          }));
           addedNodes.add(operaId);
         }
         const relationshipSource = deriveRelationshipSourceText(operaEntry?.source, operaEntry?.opera_source_text, operaEntry?.relationship_source);
@@ -3717,13 +4292,15 @@ const attemptLoadSavedView = async () => {
         if (!operaId || isPlaceholderName(operaId)) return;
         const displayName = operaName || operaId;
         if (!addedNodes.has(operaId)) {
-          nodes.push({
-            id: operaId,
+          nodes.push(createOperaNodePayload({
+            id: typedIdRaw || displayName,
             name: displayName,
-            type: 'opera',
+            opera_id: opera?.opera_id,
+            opera_name: displayName,
+            version: opera?.version,
             x: 120 + (index * 100),
             y: 420
-          });
+          }));
           addedNodes.add(operaId);
         }
         const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.source);
@@ -3831,16 +4408,15 @@ const attemptLoadSavedView = async () => {
           const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
           const operaId = normalizeNodeId(typedIdRaw || operaName);
           if (!operaId || isPlaceholderName(operaId)) return;
-          nodes.push({
-            id: operaId,
+          nodes.push(createOperaNodePayload({
+            id: typedIdRaw || operaId,
             name: operaName || operaId,
-            type: 'opera',
-            role: opera.role,
-            composer: opera.composer,
-            source: opera.source,
+            opera_id: opera?.opera_id,
+            opera_name: operaName || operaId,
+            version: opera?.version,
             x: 100 + (index * 80),
             y: 500
-          });
+          }));
           
         const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
         links.push({
@@ -3865,13 +4441,15 @@ const attemptLoadSavedView = async () => {
           const bookLabel = String(book.title || `Unknown Book ${index + 1}`).trim();
           const bookId = normalizeNodeId(typedIdRaw || bookLabel);
           if (!bookId || isPlaceholderName(bookId)) return;
-          nodes.push({
-            id: bookId,
+          nodes.push(createBookNodePayload({
+            id: typedIdRaw || bookId,
             name: bookLabel || bookId,
-            type: 'book',
+            book_id: book?.book_id,
+            title: bookLabel || bookId,
+            link: book?.link,
             x: 500 + (index * 80),
             y: 500
-          });
+          }));
           
           const relationshipSource = null;
           links.push({
@@ -3894,14 +4472,15 @@ const attemptLoadSavedView = async () => {
           const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
           const operaId = normalizeNodeId(typedIdRaw || operaName);
           if (!operaId || isPlaceholderName(operaId)) return;
-          nodes.push({
-            id: operaId,
+          nodes.push(createOperaNodePayload({
+            id: typedIdRaw || operaId,
             name: operaName || operaId,
-            type: 'opera',
-            source: opera.source,
+            opera_id: opera?.opera_id,
+            opera_name: operaName || operaId,
+            version: opera?.version,
             x: 100 + (index * 80),
             y: 400
-          });
+          }));
           
           const relationshipSource = deriveRelationshipSourceText(opera.opera_source_text, opera.relationshipSourceDisplay, opera.source, opera.relationship_source);
           links.push({
@@ -4046,6 +4625,7 @@ const attemptLoadSavedView = async () => {
   const showFullInformation = async (node) => {
     try {
       setLoading(true);
+      showHelperMessage('', 0);
       let response, data;
       
       if (node.type === 'person') {
@@ -4125,6 +4705,333 @@ const normalizeNodeId = (value) => {
     .trim();
 };
 
+const buildNodeAliasKey = (value, type = '') => {
+  const normalized = normalizeNodeId(value);
+  if (!normalized) return '';
+  const prefix = type ? String(type).toLowerCase() : '';
+  return `${prefix}::${normalized.toLowerCase()}`;
+};
+
+const collectNodeAliasValues = (candidate) => {
+  const values = new Set();
+  if (!candidate || typeof candidate !== 'object') return values;
+  const push = (val) => {
+    const normalized = normalizeNodeId(val);
+    if (normalized) values.add(normalized);
+  };
+  const possibleFields = [
+    candidate.id,
+    candidate.name,
+    candidate.full_name,
+    candidate.fullName,
+    candidate.label,
+    candidate.display_name,
+    candidate.displayName,
+    candidate.title
+  ];
+  possibleFields.forEach(push);
+  if (candidate.properties && typeof candidate.properties === 'object') {
+    const props = candidate.properties;
+    [
+      props.id,
+      props.name,
+      props.full_name,
+      props.fullName,
+      props.label,
+      props.display_name,
+      props.displayName,
+      props.title
+    ].forEach(push);
+  }
+  if (Array.isArray(candidate.aliases)) {
+    candidate.aliases.forEach(push);
+  }
+  return values;
+};
+
+const registerNodeAliases = (aliasMap, node) => {
+  if (!aliasMap || !node) return;
+  const canonicalId = normalizeNodeId(node.id ?? node.name);
+  if (!canonicalId) return;
+  const typeKey = (node.type || '').toLowerCase();
+  const values = collectNodeAliasValues(node);
+  values.add(canonicalId);
+  values.forEach(value => {
+    const keyWithType = buildNodeAliasKey(value, typeKey);
+    if (keyWithType) aliasMap.set(keyWithType, canonicalId);
+    const keyWithoutType = buildNodeAliasKey(value, '');
+    if (keyWithoutType) aliasMap.set(keyWithoutType, canonicalId);
+  });
+};
+
+const resolveAliasIdFromMap = (aliasMap, candidate) => {
+  if (!aliasMap || !candidate) return '';
+  const typeKey = (candidate.type || '').toLowerCase();
+  const values = Array.from(collectNodeAliasValues(candidate));
+  if (candidate.id !== undefined) {
+    const normalizedId = normalizeNodeId(candidate.id);
+    if (normalizedId) values.unshift(normalizedId);
+  }
+  for (const value of values) {
+    const keyWithType = buildNodeAliasKey(value, typeKey);
+    if (keyWithType && aliasMap.has(keyWithType)) {
+      return aliasMap.get(keyWithType);
+    }
+  }
+  for (const value of values) {
+    const keyWithoutType = buildNodeAliasKey(value, '');
+    if (keyWithoutType && aliasMap.has(keyWithoutType)) {
+      return aliasMap.get(keyWithoutType);
+    }
+  }
+  return '';
+};
+
+const OPERA_FORBIDDEN_FIELDS = [
+  'voiceType',
+  'birthYear',
+  'deathYear',
+  'birthplace',
+  'spelling_source',
+  'voice_type_source',
+  'dates_source',
+  'birthplace_source',
+  'composer',
+  'author',
+  'role',
+  'teacher_rel_source',
+  'teacher_rel_source_text',
+  'teacher_rel_source_url',
+  'book_id',
+  'title',
+  'link',
+  'source',
+  'sourceInfo',
+  'source_url',
+  'opera_source_text',
+  'opera_source_url'
+];
+
+const BOOK_FORBIDDEN_FIELDS = [
+  'voiceType',
+  'birthYear',
+  'deathYear',
+  'birthplace',
+  'spelling_source',
+  'voice_type_source',
+  'dates_source',
+  'birthplace_source',
+  'composer',
+  'teacher_rel_source',
+  'teacher_rel_source_text',
+  'teacher_rel_source_url',
+  'opera_id',
+  'opera_name',
+  'version',
+  'book_type',
+  'source',
+  'sourceInfo',
+  'source_url',
+  'opera_source_text',
+  'opera_source_url'
+];
+
+const GRAPH_BASE_KEYS = new Set([
+  'id',
+  'name',
+  'type',
+  'x',
+  'y',
+  'vx',
+  'vy',
+  'fx',
+  'fy',
+  'index',
+  'isCenter',
+  'homeX',
+  'homeY',
+  'radius',
+  'color',
+  'opacity',
+  'stroke',
+  'strokeWidth',
+  'selected',
+  'highlighted',
+  'hovered',
+  'pinned',
+  'locked',
+  'dragging',
+  'dragged',
+  'layoutGroup',
+  'clusterId',
+  'pathIndex',
+  'pathOrder',
+  'pathCategory',
+  'pathType',
+  'pathGroup',
+  'pathGroupKey',
+  'pathGroupId',
+  'pathSegment',
+  'pathSource',
+  'pathTarget',
+  'pathSteps',
+  'pathSequence',
+  'pathLength',
+  'pathWeight',
+  'distance',
+  'degree',
+  'incomingDegree',
+  'outgoingDegree',
+  'counts',
+  'meta',
+  'searchMeta',
+  'appliedFilters',
+  'previewClass',
+  'historyKey',
+  'historyLabel',
+  'historySnapshot',
+  'historyTimestamp',
+  'legendKey',
+  'legendColor',
+  'labelX',
+  'labelY',
+  'labelAngle',
+  'labelOffset',
+  'labelLines',
+  'renderHint',
+  'z',
+  'layer',
+  'scale',
+  'size',
+  'icon',
+  'image',
+  'avatar',
+  'badge',
+  'category',
+  'group',
+  'subgroup',
+  'timeline',
+  'timelineOrder',
+  'timelineGroup',
+  'timelineLabel',
+  'timelineTimestamp',
+  'frozen',
+  'frozenDuringDrag',
+  '_frozenDuringDrag',
+  'homeTheta',
+  'homeRadius',
+  'homeZ',
+  'renderCache'
+]);
+
+const stripOperaBookFields = (node) => {
+  if (!node || typeof node !== 'object') return node;
+  if (node.type === 'opera') {
+    OPERA_FORBIDDEN_FIELDS.forEach(field => {
+      if (field in node) delete node[field];
+    });
+    if (node.version !== undefined && node.version !== null) {
+      const versionStr = String(node.version).trim();
+      if (versionStr) {
+        node.version = versionStr;
+      } else {
+        delete node.version;
+      }
+    }
+    if (!node.opera_name && node.name) {
+      node.opera_name = node.name;
+    }
+    if (node.bookId !== undefined) delete node.bookId;
+  } else if (node.type === 'book') {
+    BOOK_FORBIDDEN_FIELDS.forEach(field => {
+      if (field in node) delete node[field];
+    });
+    if (!node.title && node.name) {
+      node.title = node.name;
+    }
+    if (node.bookId !== undefined) {
+      node.book_id = normalizeNodeId(node.bookId);
+      delete node.bookId;
+    }
+    if (node.book_id) {
+      node.book_id = normalizeNodeId(node.book_id);
+    }
+    if (node.link && typeof node.link === 'string') {
+      node.link = node.link.trim();
+    }
+    if (node.author !== undefined) delete node.author;
+  }
+  return node;
+};
+
+const copyGraphBaseProps = (source, target) => {
+  if (!source || !target) return;
+  GRAPH_BASE_KEYS.forEach((key) => {
+    if (key === 'id' || key === 'name' || key === 'type') return;
+    if (source[key] !== undefined) {
+      target[key] = source[key];
+    }
+  });
+  Object.keys(source || {}).forEach((key) => {
+    if (GRAPH_BASE_KEYS.has(key)) return;
+    if (key.startsWith('_')) {
+      target[key] = source[key];
+    }
+  });
+};
+
+const createOperaNodePayload = (input = {}) => {
+  const node = {
+    type: 'opera'
+  };
+  copyGraphBaseProps(input, node);
+  if (input.id !== undefined) node.id = input.id;
+  if (input.name !== undefined) node.name = input.name;
+  if (input.isCenter !== undefined) node.isCenter = input.isCenter;
+  const typed = parseTypedId(input.id ?? input.opera_id ?? input.operaId ?? '');
+  const explicitOperaId = input.opera_id ?? input.operaId ?? (typed.type === 'opera' ? typed.value : '');
+  if (explicitOperaId) node.opera_id = normalizeNodeId(explicitOperaId);
+  const candidateName = input.opera_name ?? input.operaName ?? input.title ?? node.name;
+  if (candidateName) node.opera_name = String(candidateName).trim() || node.name;
+  if (!node.name && node.opera_name) {
+    node.name = node.opera_name;
+  }
+  const versionCandidate = input.version ?? input.opera_version ?? (input.opera && input.opera.version);
+  if (versionCandidate !== undefined && versionCandidate !== null) {
+    const versionStr = String(versionCandidate).trim();
+    if (versionStr) node.version = versionStr;
+  }
+  stripOperaBookFields(node);
+  return node;
+};
+
+const createBookNodePayload = (input = {}) => {
+  const node = {
+    type: 'book'
+  };
+  copyGraphBaseProps(input, node);
+  if (input.id !== undefined) node.id = input.id;
+  if (input.name !== undefined) node.name = input.name;
+  if (input.isCenter !== undefined) node.isCenter = input.isCenter;
+  const typed = parseTypedId(input.id ?? input.book_id ?? input.bookId ?? '');
+  const explicitBookId = input.book_id ?? input.bookId ?? (typed.type === 'book' ? typed.value : '');
+  if (explicitBookId) node.book_id = normalizeNodeId(explicitBookId);
+  const titleCandidate = input.title ?? input.book_title ?? input.name;
+  if (titleCandidate) node.title = String(titleCandidate).trim() || input.name;
+  if (!node.name && node.title) {
+    node.name = node.title;
+  }
+  if (input.link) {
+    node.link = String(input.link).trim();
+  } else if (input.url) {
+    node.link = String(input.url).trim();
+  } else if (input.href) {
+    node.link = String(input.href).trim();
+  }
+  stripOperaBookFields(node);
+  return node;
+};
+
 const parseTypedId = (value) => {
   const normalized = normalizeNodeId(value);
   if (!normalized) return { type: '', value: '' };
@@ -4199,6 +5106,10 @@ const isPlaceholderName = (value) => {
         }
         return;
       }
+      if (key === 'recentlyExpandedAt' || key === 'expansionBatchId') {
+        result[key] = value;
+        return;
+      }
       if (typeof value === 'boolean') {
         if (result[key] === undefined) {
           result[key] = value;
@@ -4233,6 +5144,11 @@ const isPlaceholderName = (value) => {
         result[key] = value;
       }
     });
+    if (result.type === 'person') {
+      const normalized = normalizePersonNode(result);
+      return normalized || result;
+    }
+    stripOperaBookFields(result);
     return result;
   };
 
@@ -4242,9 +5158,17 @@ const isPlaceholderName = (value) => {
     if (!normalizedId) return null;
     if (isPlaceholderName(normalizedId)) return null;
     const normalizedName = candidate.name ? String(candidate.name).trim() : normalizedId;
-    const nodeObj = { ...candidate, id: normalizedId, name: normalizedName };
+    let nodeObj = { ...candidate, id: normalizedId, name: normalizedName };
     if (!Number.isFinite(nodeObj.x)) nodeObj.x = undefined;
     if (!Number.isFinite(nodeObj.y)) nodeObj.y = undefined;
+    if (nodeObj.type === 'person') {
+      const normalized = normalizePersonNode(nodeObj);
+      if (normalized && normalized !== nodeObj) {
+        nodeObj = normalized;
+      }
+    } else {
+      stripOperaBookFields(nodeObj);
+    }
     return nodeObj;
   };
 
@@ -4253,35 +5177,46 @@ const sanitizeGraphData = (graph) => {
   const nodeAccumulator = new Map();
   (graph.nodes || []).forEach(node => {
     const normalizedId = normalizeNodeId(node?.id ?? node?.name);
-      if (!normalizedId || isPlaceholderName(normalizedId)) return;
-      const normalizedName = String(node?.name ?? '').trim() || normalizedId;
-      const base = nodeAccumulator.get(normalizedId) || { id: normalizedId, name: normalizedName };
-      nodeAccumulator.set(normalizedId, mergeNodeAttributes(base, { ...node, id: normalizedId, name: normalizedName }));
-    });
-    const sanitizedNodes = Array.from(nodeAccumulator.values());
-    const validIds = new Set(sanitizedNodes.map(n => n.id));
-    const sanitizedLinks = [];
-    (graph.links || []).forEach(link => {
-      const sourceId = normalizeNodeId(
-        typeof link?.source === 'string'
-          ? link.source
-          : link?.source?.id ?? link?.source?.name
-      );
-      const targetId = normalizeNodeId(
-        typeof link?.target === 'string'
-          ? link.target
-          : link?.target?.id ?? link?.target?.name
-      );
-      if (!sourceId || !targetId) return;
-      if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return;
-      if (!validIds.has(sourceId) || !validIds.has(targetId)) return;
-      sanitizedLinks.push({ ...link, source: sourceId, target: targetId });
-    });
-    return {
-      nodes: sanitizedNodes,
-      links: normalizeLinks(sanitizedLinks)
-    };
+    if (!normalizedId || isPlaceholderName(normalizedId)) return;
+    const normalizedName = String(node?.name ?? '').trim() || normalizedId;
+    const base = nodeAccumulator.get(normalizedId) || { id: normalizedId, name: normalizedName };
+    nodeAccumulator.set(normalizedId, mergeNodeAttributes(base, { ...node, id: normalizedId, name: normalizedName }));
+  });
+
+  const sanitizedNodes = Array.from(nodeAccumulator.values()).map(node => {
+    if (!node) return node;
+    if (node.type === 'person') {
+      const normalized = normalizePersonNode(node);
+      return normalized || node;
+    }
+    stripOperaBookFields(node);
+    return node;
+  });
+
+  const validIds = new Set(sanitizedNodes.map(n => n.id));
+  const sanitizedLinks = [];
+  (graph.links || []).forEach(link => {
+    const sourceId = normalizeNodeId(
+      typeof link?.source === 'string'
+        ? link.source
+        : link?.source?.id ?? link?.source?.name
+    );
+    const targetId = normalizeNodeId(
+      typeof link?.target === 'string'
+        ? link.target
+        : link?.target?.id ?? link?.target?.name
+    );
+    if (!sourceId || !targetId) return;
+    if (isPlaceholderName(sourceId) || isPlaceholderName(targetId)) return;
+    if (!validIds.has(sourceId) || !validIds.has(targetId)) return;
+    sanitizedLinks.push({ ...link, source: sourceId, target: targetId });
+  });
+
+  return {
+    nodes: sanitizedNodes,
+    links: normalizeLinks(sanitizedLinks)
   };
+};
   const sanitizeIncrementalGraph = (nodes, links, { anchorId, existingNodeIds } = {}) => {
     const normalizedAnchorId = normalizeNodeId(anchorId);
     const baseNodes = Array.isArray(nodes) ? [...nodes] : [];
@@ -4375,6 +5310,9 @@ const normalizeLinkForMerge = (link) => {
 };
 
   const mergeNetworkUpdates = (prev, nodesToAdd = [], linksToAdd = [], nodeUpdates) => {
+    const prevNodesArray = Array.isArray(prev?.nodes) ? prev.nodes : [];
+    const aliasLookup = new Map();
+    prevNodesArray.forEach(node => registerNodeAliases(aliasLookup, node));
     const updatesMap = new Map();
     const registerUpdate = (key, payload) => {
       const normalizedKey = normalizeNodeId(key);
@@ -4383,6 +5321,7 @@ const normalizeLinkForMerge = (link) => {
       if (!candidate) return;
       const current = updatesMap.get(normalizedKey) || { id: normalizedKey };
       updatesMap.set(normalizedKey, mergeNodeAttributes(current, candidate));
+      registerNodeAliases(aliasLookup, { ...candidate, id: normalizedKey });
     };
 
     if (nodeUpdates) {
@@ -4395,22 +5334,49 @@ const normalizeLinkForMerge = (link) => {
 
     const updatedNodes = (prev.nodes || []).map(node => {
       const key = normalizeNodeId(node.id ?? node.name);
-      if (!key) return node;
+      if (!key) {
+        registerNodeAliases(aliasLookup, node);
+        return node;
+      }
       const patch = updatesMap.get(key);
-      if (!patch) return node;
-      return mergeNodeAttributes(node, patch);
+      if (!patch) {
+        registerNodeAliases(aliasLookup, node);
+        return node;
+      }
+      const merged = mergeNodeAttributes(node, patch);
+      // If caller explicitly requested a reposition, force-update coordinates and clear fixed positions
+      if (patch && patch.__reposition) {
+        if (Number.isFinite(patch.x)) merged.x = patch.x;
+        if (Number.isFinite(patch.y)) merged.y = patch.y;
+        merged.fx = null; merged.fy = null; // unpin so simulation can settle around new spot
+        // Also clear userPlaced flag so forces apply normally after programmatic reposition
+        if (merged.userPlaced) merged.userPlaced = false;
+        merged.vx = 0; merged.vy = 0;
+        if (!Number.isFinite(merged.homeX)) merged.homeX = merged.x;
+        if (!Number.isFinite(merged.homeY)) merged.homeY = merged.y;
+      }
+      registerNodeAliases(aliasLookup, merged);
+      return merged;
     });
 
     const existingIds = new Set(updatedNodes.map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean));
     const pendingNewMap = new Map();
 
     (nodesToAdd || []).forEach(node => {
-      const candidate = finalizeNodeCandidate(node);
+      if (!node) return;
+      const resolvedId = resolveAliasIdFromMap(aliasLookup, node);
+      const candidateBase = resolvedId ? { ...node, id: resolvedId } : node;
+      const candidate = finalizeNodeCandidate(candidateBase);
       if (!candidate) return;
+      registerNodeAliases(aliasLookup, candidate);
       if (existingIds.has(candidate.id)) {
         const idx = updatedNodes.findIndex(n => normalizeNodeId(n.id ?? n.name) === candidate.id);
         if (idx !== -1) {
           updatedNodes[idx] = mergeNodeAttributes(updatedNodes[idx], candidate);
+        }
+        const existingPending = pendingNewMap.get(candidate.id);
+        if (existingPending) {
+          pendingNewMap.set(candidate.id, mergeNodeAttributes(existingPending, candidate));
         }
         return;
       }
@@ -4418,6 +5384,7 @@ const normalizeLinkForMerge = (link) => {
         pendingNewMap.set(candidate.id, mergeNodeAttributes(pendingNewMap.get(candidate.id), candidate));
       } else {
         pendingNewMap.set(candidate.id, candidate);
+        existingIds.add(candidate.id);
       }
     });
 
@@ -4509,7 +5476,9 @@ const normalizeLinkForMerge = (link) => {
       pushHistory('expand-all');
       setLoading(true);
       showHelperMessage('', 0);
+      pendingHelperMessageRef.current = null;
       const relationshipType = 'all';
+      const expansionBatchId = Date.now();
       let response, data;
       
       if (node.type === 'person') {
@@ -4548,16 +5517,43 @@ const normalizeLinkForMerge = (link) => {
       }
 
       if (response) {
+        let responseText = '';
+        try {
+          responseText = await response.text();
+        } catch (parseErr) {
+          console.warn('[expandAll] Failed to read response text', parseErr);
+        }
+        try {
+          data = responseText ? JSON.parse(responseText) : {};
+        } catch (parseErr) {
+          console.warn('[expandAll] Failed to parse response JSON', parseErr, { responseText });
+          data = {};
+        }
+
         if (!response.ok) {
           if (handleUnauthorized(response)) return;
+          if (response.status === 404) {
+            showHelperMessage('No additional related nodes.');
+            setError('');
+            return;
+          }
+          const errorMessage = (data && (data.error || data.message))
+            ? String(data.error || data.message)
+            : `Failed to expand (${response.status})`;
+          console.warn('[expandAll] Non-OK response', { status: response.status, statusText: response.statusText, errorMessage });
+          setError(errorMessage);
+          return;
         }
-        data = await response.json();
+
         if (response.ok) {
           // Merge new data with existing network
           const existingNodes = new Set(
             (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
           );
           const existingLinks = buildLinkKeySet(networkData.links);
+          const aliasLookup = new Map();
+          (networkData.nodes || []).forEach(nodeEntry => registerNodeAliases(aliasLookup, nodeEntry));
+          const nodeUpdates = new Map();
           
           let newNodes = [];
           let newLinks = [];
@@ -4566,14 +5562,30 @@ const normalizeLinkForMerge = (link) => {
           const anchorY = Number.isFinite(node?.y) ? node.y : 300;
 
           const registerNode = (payload) => {
-            const candidate = finalizeNodeCandidate({
+            if (!payload) return null;
+            const basePayload = {
               ...payload,
               x: Number.isFinite(payload?.x) ? payload.x : anchorX,
               y: Number.isFinite(payload?.y) ? payload.y : anchorY
-            });
+            };
+            const resolvedId = resolveAliasIdFromMap(aliasLookup, basePayload);
+            if (resolvedId) {
+              basePayload.id = resolvedId;
+            }
+            const payloadType = (basePayload.type || '').toLowerCase();
+            let preparedPayload = basePayload;
+            if (payloadType === 'opera') {
+              preparedPayload = createOperaNodePayload(basePayload);
+            } else if (payloadType === 'book') {
+              preparedPayload = createBookNodePayload(basePayload);
+            }
+            const candidate = finalizeNodeCandidate(preparedPayload);
             if (!candidate) return null;
+            registerNodeAliases(aliasLookup, candidate);
             const key = candidate.id;
             if (existingNodes.has(key)) {
+              const currentPatch = nodeUpdates.get(key) || { id: key };
+              nodeUpdates.set(key, mergeNodeAttributes(currentPatch, candidate));
               return key;
             }
             existingNodes.add(key);
@@ -4618,7 +5630,7 @@ const normalizeLinkForMerge = (link) => {
             linkPayload.relationship_source = relationshipSourceProp;
             linkPayload.sourceInfo = relationshipSource;
             newLinks.push(linkPayload);
-            console.log('[expandSpecific] addLink', { sourceId, targetId, type: linkPayload.type, label: linkPayload.label, linkKey });
+            console.log('[expandAll] addLink', { sourceId, targetId, type: linkPayload.type, label: linkPayload.label, linkKey });
           };
           
           // Handle different node types and their data structures
@@ -4717,14 +5729,13 @@ const normalizeLinkForMerge = (link) => {
                 data.works.operas.forEach(opera => {
                   const displayName = deriveOperaName(opera, 'Unknown Opera');
                   const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
-                  const operaId = registerNode({
+                  const operaId = registerNode(createOperaNodePayload({
                     id: typedIdRaw || displayName,
                     name: displayName,
-                    type: 'opera',
-                    role: opera.role,
-                    composer: opera.composer,
-                    source: opera.source
-                  });
+                    opera_id: opera?.opera_id,
+                    opera_name: displayName,
+                    version: opera?.version
+                  }));
                   if (!operaId) return;
                   addLink(anchorId, operaId, 'premiered', {
                     label: 'premiered role in',
@@ -4738,12 +5749,13 @@ const normalizeLinkForMerge = (link) => {
                 data.works.composedOperas.forEach(opera => {
                   const displayName = deriveOperaName(opera, 'Unknown Opera');
                   const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
-                  const operaId = registerNode({
+                  const operaId = registerNode(createOperaNodePayload({
                     id: typedIdRaw || displayName,
                     name: displayName,
-                    type: 'opera',
-                    source: opera.source
-                  });
+                    opera_id: opera?.opera_id,
+                    opera_name: displayName,
+                    version: opera?.version
+                  }));
                   if (!operaId) return;
                   addLink(anchorId, operaId, 'wrote', {
                     label: 'wrote',
@@ -4761,11 +5773,13 @@ const normalizeLinkForMerge = (link) => {
                 data.works.books.forEach(book => {
                   const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
                   const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
-                  const bookId = registerNode({
+                  const bookId = registerNode(createBookNodePayload({
                     id: typedIdRaw || bookLabel,
                     name: bookLabel,
-                    type: 'book'
-                  });
+                    book_id: book?.book_id,
+                    title: bookLabel,
+                    link: book?.link
+                  }));
                   if (!bookId) return;
                   addLink(anchorId, bookId, 'authored', {
                     label: 'authored',
@@ -4887,6 +5901,15 @@ const normalizeLinkForMerge = (link) => {
           });
           newNodes = sanitizedAdditions.nodes || [];
           newLinks = sanitizedAdditions.links || [];
+          newNodes.forEach(nodeEntry => registerNodeAliases(aliasLookup, nodeEntry));
+
+          if (newNodes.length > 0) {
+            newNodes.forEach(n => {
+              if (!n) return;
+              n.recentlyExpandedAt = expansionBatchId;
+              n.expansionBatchId = expansionBatchId;
+            });
+          }
 
           attachNewNodesToAnchor({
             anchorId,
@@ -4898,20 +5921,63 @@ const normalizeLinkForMerge = (link) => {
             addLink
           });
 
+          // Mark expansion-internal links so the main simulation keeps the entire batch compact
+          if (newNodes.length > 0 && Array.isArray(newLinks)) {
+            const addedIdSet = new Set(newNodes.map(n => n && n.id).filter(Boolean));
+            let flagged = 0;
+            newLinks.forEach(l => {
+              const s = resolveLinkEndpointId(l?.source);
+              const t = resolveLinkEndpointId(l?.target);
+              if (!s || !t) return;
+              // Anchor <-> newly added nodes
+              if ((s === anchorId && addedIdSet.has(t)) || (t === anchorId && addedIdSet.has(s))) {
+                if (!l.expansionInternal) { l.expansionInternal = true; flagged += 1; }
+                return;
+              }
+              // Links entirely within the newly-added batch
+              if (addedIdSet.has(s) && addedIdSet.has(t)) {
+                if (!l.expansionInternal) { l.expansionInternal = true; flagged += 1; }
+              }
+            });
+            debugLog('expand-flag-internal-links', { anchorId, newCount: newNodes.length, linkCount: newLinks.length, flagged });
+          }
+
           if (newNodes.length > 0) {
-            const radius = Math.max(180, Math.min(400, 100 + newNodes.length * 30));
+            const containerEl = document.querySelector('div[style*="height:"] > svg')?.parentElement || null;
+            const widthGuess = containerEl ? containerEl.clientWidth : 800;
+            const heightGuess = visualizationHeight || 600;
+            const spawn = computeSpawnOutsideBBox(
+              networkData?.nodes || [],
+              { x: anchorX, y: anchorY, key: anchorId },
+              280,
+              { width: widthGuess, height: heightGuess, pad: 60 }
+            );
+            const { min: ringMin, max: ringMax, spacing: ringSpacing } = getExpansionRingConfig(newNodes.length);
+            const ringRadius = computeRingRadius(newNodes.length, ringMin, ringMax, ringSpacing);
+            debugLog('expand-spawn', { anchorId, anchorX, anchorY, spawn, ringRadius, newCount: newNodes.length });
             newNodes.forEach((n, idx) => {
               if (!n) return;
               const angle = (idx / newNodes.length) * Math.PI * 2;
-              n.x = anchorX + radius * Math.cos(angle);
-              n.y = anchorY + radius * Math.sin(angle);
+              n.x = spawn.x + ringRadius * Math.cos(angle);
+              n.y = spawn.y + ringRadius * Math.sin(angle);
             });
+            // Also move the anchor to the spawn center so the new group forms around it
+            try {
+              nodeUpdates.set(anchorId, {
+                id: anchorId,
+                x: spawn.x,
+                y: spawn.y,
+                __reposition: true,
+                recentlyExpandedAt: expansionBatchId,
+                expansionBatchId: expansionBatchId
+              });
+            } catch (_) {}
             extendDateRangesForNodes(newNodes);
           }
 
           console.log('[expandAll] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'relationship:', relationshipType);
           setNetworkData(prev => {
-            const merged = mergeNetworkUpdates(prev, newNodes, newLinks);
+            const merged = mergeNetworkUpdates(prev, newNodes, newLinks, nodeUpdates);
             const fallback = resolveFallbackConfig(relationshipType, node.type);
             const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
             ensureNodeConnectivity(merged.nodes, ensuredLinks, {
@@ -4921,21 +5987,29 @@ const normalizeLinkForMerge = (link) => {
             });
             const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
             console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
+            if (isLayoutDebug()) {
+              try {
+                const anchor = (next.nodes || []).find(n => n && n.id === anchorId);
+                const flagged = (next.links || []).reduce((acc,l)=>acc+(l.expansionInternal?1:0),0);
+                debugLog('post-merge-anchor', { anchorId, x: anchor?.x, y: anchor?.y, flaggedLinks: flagged, totalLinks: next.links?.length });
+              } catch (_) {}
+            }
             return next;
           });
-          if (newNodes.length === 0) {
-            showHelperMessage('No additional related nodes.');
-          } else {
-            showHelperMessage('', 0);
-          }
+          const pendingHelperMessage = newNodes.length === 0
+            ? { text: 'No additional related nodes.', duration: 3200 }
+            : { text: '', duration: 0 };
+          pendingHelperMessageRef.current = pendingHelperMessage;
           // Refresh counts for the expanded node to keep context menu accurate
           try {
             const updatedCounts = await fetchActualCounts(node);
             setActualCounts(prev => ({ ...prev, [node.id]: updatedCounts }));
           } catch (e) {}
 
-          setIsExpansionSimulation(true);
-          setShouldRunSimulation(true);
+          if (newNodes.length > 0) {
+            setIsExpansionSimulation(true);
+            setShouldRunSimulation(true);
+          }
 
           // Keep hierarchy root unchanged to ensure additive expansion
         } else {
@@ -4953,6 +6027,9 @@ const normalizeLinkForMerge = (link) => {
     try {
       pushHistory(`expand-${relationshipType}`);
       setLoading(true);
+      const expansionBatchId = Date.now();
+      showHelperMessage('', 0);
+      pendingHelperMessageRef.current = null;
       let response, data;
       
       if (node.type === 'person') {
@@ -4991,16 +6068,43 @@ const normalizeLinkForMerge = (link) => {
       }
 
       if (response) {
+        let responseText = '';
+        try {
+          responseText = await response.text();
+        } catch (parseErr) {
+          console.warn('[expandSpecific] Failed to read response text', parseErr);
+        }
+        try {
+          data = responseText ? JSON.parse(responseText) : {};
+        } catch (parseErr) {
+          console.warn('[expandSpecific] Failed to parse response JSON', parseErr, { responseText });
+          data = {};
+        }
+
         if (!response.ok) {
           if (handleUnauthorized(response)) return;
+          if (response.status === 404) {
+            showHelperMessage('No additional related nodes.');
+            setError('');
+            return;
+          }
+          const errorMessage = (data && (data.error || data.message))
+            ? String(data.error || data.message)
+            : `Failed to expand (${response.status})`;
+          console.warn('[expandSpecific] Non-OK response', { status: response.status, statusText: response.statusText, errorMessage });
+          setError(errorMessage);
+          return;
         }
-        data = await response.json();
+
         if (response.ok) {
           // Merge new data with existing network
           const existingNodes = new Set(
             (networkData.nodes || []).map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean)
           );
           const existingLinks = buildLinkKeySet(networkData.links);
+          const aliasLookup = new Map();
+          (networkData.nodes || []).forEach(nodeEntry => registerNodeAliases(aliasLookup, nodeEntry));
+          const nodeUpdates = new Map();
           
           console.log(`🔍 Expanding "${relationshipType}" for "${node.name}"`);
           console.log(`📊 Current network: ${networkData.nodes.length} nodes, ${networkData.links.length} links`);
@@ -5013,14 +6117,30 @@ const normalizeLinkForMerge = (link) => {
           const anchorY = Number.isFinite(node?.y) ? node.y : 300;
 
           const registerNode = (payload) => {
-            const candidate = finalizeNodeCandidate({
+            if (!payload) return null;
+            const basePayload = {
               ...payload,
               x: Number.isFinite(payload?.x) ? payload.x : anchorX,
               y: Number.isFinite(payload?.y) ? payload.y : anchorY
-            });
+            };
+            const resolvedId = resolveAliasIdFromMap(aliasLookup, basePayload);
+            if (resolvedId) {
+              basePayload.id = resolvedId;
+            }
+            const payloadType = (basePayload.type || '').toLowerCase();
+            let preparedPayload = basePayload;
+            if (payloadType === 'opera') {
+              preparedPayload = createOperaNodePayload(basePayload);
+            } else if (payloadType === 'book') {
+              preparedPayload = createBookNodePayload(basePayload);
+            }
+            const candidate = finalizeNodeCandidate(preparedPayload);
             if (!candidate) return null;
+            registerNodeAliases(aliasLookup, candidate);
             const key = candidate.id;
             if (existingNodes.has(key)) {
+              const currentPatch = nodeUpdates.get(key) || { id: key };
+              nodeUpdates.set(key, mergeNodeAttributes(currentPatch, candidate));
               return key;
             }
             existingNodes.add(key);
@@ -5180,11 +6300,13 @@ const normalizeLinkForMerge = (link) => {
               data.works.books.forEach(book => {
                 const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
                 const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
-                const bookId = registerNode({
+                const bookId = registerNode(createBookNodePayload({
                   id: typedIdRaw || bookLabel,
                   name: bookLabel,
-                  type: 'book'
-                });
+                  book_id: book?.book_id,
+                  title: bookLabel,
+                  link: book?.link
+                }));
                 if (!bookId) return;
                 addLink(anchorId, bookId, 'authored', {
                   label: 'authored',
@@ -5197,14 +6319,13 @@ const normalizeLinkForMerge = (link) => {
               data.works.operas.forEach(opera => {
                 const displayName = deriveOperaName(opera, 'Unknown Opera');
                 const typedIdRaw = opera?.id || (opera?.opera_id ? `opera:${opera.opera_id}` : '');
-                const operaId = registerNode({
+                const operaId = registerNode(createOperaNodePayload({
                   id: typedIdRaw || displayName,
                   name: displayName,
-                  type: 'opera',
-                  role: opera.role,
-                  composer: opera.composer,
-                  source: opera.source
-                });
+                  opera_id: opera?.opera_id,
+                  opera_name: displayName,
+                  version: opera?.version
+                }));
                 if (!operaId) return;
                 addLink(anchorId, operaId, 'premiered', {
                   label: 'premiered role in',
@@ -5269,6 +6390,15 @@ const normalizeLinkForMerge = (link) => {
           });
           newNodes = sanitizedAdditions.nodes || [];
           newLinks = sanitizedAdditions.links || [];
+          newNodes.forEach(nodeEntry => registerNodeAliases(aliasLookup, nodeEntry));
+
+          if (newNodes.length > 0) {
+            newNodes.forEach(n => {
+              if (!n) return;
+              n.recentlyExpandedAt = expansionBatchId;
+              n.expansionBatchId = expansionBatchId;
+            });
+          }
 
           if (newNodes.length > 0 && anchorId) {
             const attachedToAnchor = new Set();
@@ -5314,6 +6444,25 @@ const normalizeLinkForMerge = (link) => {
               attachedToAnchor.add(nodeId);
             });
 
+            // Mark expansion-internal links so global simulation keeps the entire batch compact
+            if (Array.isArray(newLinks) && newNodes.length > 0) {
+              const addedIdSet = new Set(newNodes.map(n => n && n.id).filter(Boolean));
+              newLinks.forEach(l => {
+                const s = resolveLinkEndpointId(l?.source);
+                const t = resolveLinkEndpointId(l?.target);
+                if (!s || !t) return;
+                // Anchor <-> newly added nodes
+                if ((s === anchorId && addedIdSet.has(t)) || (t === anchorId && addedIdSet.has(s))) {
+                  l.expansionInternal = true;
+                  return;
+                }
+                // Links entirely within the newly-added batch
+                if (addedIdSet.has(s) && addedIdSet.has(t)) {
+                  l.expansionInternal = true;
+                }
+              });
+            }
+
             const simNodeMap = new Map();
             const simNodes = [];
             const register = (id, x, y, pin = false) => {
@@ -5327,12 +6476,22 @@ const normalizeLinkForMerge = (link) => {
               return simNode;
             };
 
-            register(anchorId, anchorX, anchorY, true);
-            const initialRadius = Math.max(60, Math.min(120, 40 + newNodes.length * 10));
+            const containerEl = document.querySelector('div[style*="height:"] > svg')?.parentElement || null;
+            const widthGuess = containerEl ? containerEl.clientWidth : 800;
+            const heightGuess = visualizationHeight || 600;
+            const spawn = computeSpawnOutsideBBox(
+              networkData?.nodes || [],
+              { x: anchorX, y: anchorY, key: anchorId },
+              280,
+              { width: widthGuess, height: heightGuess, pad: 60 }
+            );
+            register(anchorId, spawn.x, spawn.y, true);
+            const { min: simRingMin, max: simRingMax, spacing: simRingSpacing } = getExpansionRingConfig(newNodes.length);
+            const initialRadius = computeRingRadius(newNodes.length, simRingMin, simRingMax, simRingSpacing);
             newNodes.forEach((n, idx) => {
               const angle = (idx / newNodes.length) * Math.PI * 2;
-              const px = anchorX + Math.cos(angle) * initialRadius;
-              const py = anchorY + Math.sin(angle) * initialRadius;
+              const px = spawn.x + Math.cos(angle) * initialRadius;
+              const py = spawn.y + Math.sin(angle) * initialRadius;
               register(n.id, px, py, false);
             });
 
@@ -5349,10 +6508,10 @@ const normalizeLinkForMerge = (link) => {
 
             if (simLinks.length > 0) {
               const sim = d3.forceSimulation(simNodes)
-                .force('link', d3.forceLink(simLinks).distance(220).strength(1))
-                .force('charge', d3.forceManyBody().strength(-260))
-                .force('collision', d3.forceCollide().radius(75))
-                .force('center', d3.forceCenter(anchorX, anchorY))
+                .force('link', d3.forceLink(simLinks).distance(140).strength(0.9))
+                .force('charge', d3.forceManyBody().strength(-240))
+                .force('collision', d3.forceCollide().radius(80))
+                .force('center', d3.forceCenter(spawn.x, spawn.y))
                 .stop();
 
               for (let i = 0; i < 200; i += 1) sim.tick();
@@ -5365,17 +6524,27 @@ const normalizeLinkForMerge = (link) => {
                 n.x = simNode.x;
                 n.y = simNode.y;
               } else {
-                n.x = anchorX;
-                n.y = anchorY;
+                n.x = spawn.x;
+                n.y = spawn.y;
               }
             });
 
+            try {
+              nodeUpdates.set(anchorId, {
+                id: anchorId,
+                x: spawn.x,
+                y: spawn.y,
+                __reposition: true,
+                recentlyExpandedAt: expansionBatchId,
+                expansionBatchId: expansionBatchId
+              });
+            } catch (_) {}
             extendDateRangesForNodes(newNodes);
           }
 
-          console.log('[expandAll] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'anchor:', anchorId);
+          console.log('[expandSpecific] newNodes:', newNodes.length, 'newLinks:', newLinks.length, 'anchor:', anchorId, 'relationship:', relationshipType);
           setNetworkData(prev => {
-            const merged = mergeNetworkUpdates(prev, newNodes, newLinks);
+            const merged = mergeNetworkUpdates(prev, newNodes, newLinks, nodeUpdates);
             const fallback = resolveFallbackConfig(relationshipType, node.type);
             const ensuredLinks = Array.isArray(merged.links) ? [...merged.links] : [];
             ensureNodeConnectivity(merged.nodes, ensuredLinks, {
@@ -5384,18 +6553,39 @@ const normalizeLinkForMerge = (link) => {
               fallbackLabel: fallback.label || ''
             });
             const next = sanitizeGraphData({ nodes: merged.nodes, links: ensuredLinks });
-            console.log('[expandAll] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
+            console.log('[expandSpecific] mergedCounts -> nodes:', next.nodes?.length, 'links:', next.links?.length);
+            if (isLayoutDebug()) {
+              try {
+                const anchor = (next.nodes || []).find(n => n && n.id === anchorId);
+                const flagged = (next.links || []).reduce((acc,l)=>acc+(l.expansionInternal?1:0),0);
+                debugLog('post-merge-anchor', { anchorId, x: anchor?.x, y: anchor?.y, flaggedLinks: flagged, totalLinks: next.links?.length });
+              } catch (_) {}
+            }
             return next;
           });
 
-          setIsExpansionSimulation(true);
-          setShouldRunSimulation(true);
+      const pendingHelperMessage = newNodes.length === 0
+        ? { text: 'No additional related nodes.', duration: 3200 }
+        : { text: '', duration: 0 };
+      pendingHelperMessageRef.current = pendingHelperMessage;
+
+      if (newNodes.length > 0) {
+        setIsExpansionSimulation(true);
+        setShouldRunSimulation(true);
+      }
         } else {
           setError(data.error);
         }
       }
     } catch (err) {
-      setError('Failed to expand specific relationship');
+      console.error('[expandSpecific] Failed to expand', { nodeId: node?.id, relationshipType, err });
+      if (err && err.name === 'AbortError') {
+        return;
+      }
+      const message = typeof err?.message === 'string' && err.message.trim()
+        ? err.message.trim()
+        : 'Failed to expand specific relationship';
+      setError(message.includes('Too many requests') ? message : 'Failed to expand specific relationship');
     } finally {
       setLoading(false);
     }
@@ -5414,6 +6604,15 @@ const normalizeLinkForMerge = (link) => {
       }, duration);
     }
   };
+
+  function flushPendingHelperMessage() {
+    const pending = pendingHelperMessageRef.current;
+    pendingHelperMessageRef.current = null;
+    if (!pending) return;
+    const text = typeof pending.text === 'string' ? pending.text : '';
+    const duration = Number.isFinite(pending.duration) ? pending.duration : 0;
+    showHelperMessage(text, duration);
+  }
 
   const clearPendingNodeAction = () => {
     if (nodeClickTimeoutRef.current) {
@@ -5461,6 +6660,7 @@ const normalizeLinkForMerge = (link) => {
 
   const triggerNodeSearch = (node) => {
     if (!node) return;
+    try { window.__cmg_resetZoom && window.__cmg_resetZoom(); } catch (_) {}
     showHelperMessage('', 0);
     if (currentCenterNode !== node.id) {
       setCurrentCenterNode(node.id);
@@ -5480,8 +6680,10 @@ const normalizeLinkForMerge = (link) => {
     } else if (node.type === 'opera') {
       const mockSearchItem = {
         properties: {
-          title: node.name,
-          composer: node.composer
+          title: node.opera_name || node.name,
+          opera_name: node.opera_name || node.name,
+          opera_id: node.opera_id,
+          version: node.version
         }
       };
       setSearchType('operas');
@@ -5489,8 +6691,9 @@ const normalizeLinkForMerge = (link) => {
     } else if (node.type === 'book') {
       const mockSearchItem = {
         properties: {
-          title: node.name,
-          author: node.author
+          title: node.title || node.name,
+          book_id: node.book_id,
+          link: node.link
         }
       };
       setSearchType('books');
@@ -5529,6 +6732,7 @@ const normalizeLinkForMerge = (link) => {
 
   const getItemDetails = async (item, itemType = null) => {
     try {
+      try { window.__cmg_resetZoom && window.__cmg_resetZoom(); } catch (_) {}
       setLoading(true);
       setSelectedItem(item);
       
@@ -6044,16 +7248,50 @@ const normalizeLinkForMerge = (link) => {
       } catch (_) {}
 
       // Helper to apply a zoom transform silently (no zoom event)
-      const applyZoomTransformSilently = (t) => {
-        try {
-          d3.select(svgRef.current).property('__zoom', t);
-          applyGroupTransform(t, { immediate: true });
-          zoomTransformRef.current = t;
-          try { window.__cmg_zoomTransform = t; } catch (_) {}
-        } catch (_) {}
-      };
-      // Expose reapply helper globally so outer click handlers can prevent accidental recenter
-      try { window.__cmg_reapplyZoom = () => applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
+      const applyZoomTransformSilently = (() => {
+        let rafId = null;
+        let pending = null;
+        const nearlyEqual = (a, b) => Math.abs(a - b) < 1e-6;
+        const sameTransform = (a, b) => !!a && !!b && nearlyEqual(a.k, b.k) && nearlyEqual(a.x, b.x) && nearlyEqual(a.y, b.y);
+        return (t) => {
+          try {
+            const svgSel = d3.select(svgRef.current);
+            const current = svgSel.property('__zoom') || d3.zoomIdentity;
+            // Skip redundant writes
+            if (sameTransform(current, t)) {
+              zoomTransformRef.current = t;
+              uiZoomRef.current = t;
+              try { window.__cmg_zoomTransform = t; } catch (_) {}
+              return;
+            }
+            pending = t;
+            if (rafId != null) return;
+            rafId = requestAnimationFrame(() => {
+              try {
+                svgSel.property('__zoom', pending);
+                applyGroupTransform(pending, { immediate: true });
+                zoomTransformRef.current = pending;
+                uiZoomRef.current = pending;
+                try { window.__cmg_zoomTransform = pending; } catch (_) {}
+              } finally {
+                rafId = null;
+                pending = null;
+              }
+            });
+          } catch (_) {}
+        };
+      })();
+      // Expose helpers globally so other flows can manage zoom predictably
+      try {
+        window.__cmg_reapplyZoom = () => applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity);
+        window.__cmg_resetZoom = () => {
+          const id = d3.zoomIdentity;
+          uiZoomRef.current = id;
+          zoomTransformRef.current = id;
+          applyZoomTransformSilently(id);
+          hasAppliedInitialFitRef.current = false; // allow next render to recenter
+        };
+      } catch (_) {}
 
       const centerGraphWithinViewport = ({ padding = 80 } = {}) => {
         const transform = computeCenteredTransform(
@@ -6090,7 +7328,11 @@ const normalizeLinkForMerge = (link) => {
         .on("zoom", (event) => {
           // Hard block any zoom while menus are open or during menu open/close
           if (zoomLockedRef.current || contextMenu.show || linkContextMenu.show) {
-            applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
+            const target = uiZoomRef.current || d3.zoomIdentity;
+            const current = d3.select(svgRef.current).property('__zoom') || d3.zoomIdentity;
+            if (!(Math.abs(target.k - current.k) < 1e-6 && Math.abs(target.x - current.x) < 1e-6 && Math.abs(target.y - current.y) < 1e-6)) {
+              applyZoomTransformSilently(target);
+            }
             return;
           }
           // Only honor primary-button drag or wheel changes; ignore any other source
@@ -6114,7 +7356,11 @@ const normalizeLinkForMerge = (link) => {
           // Ignore if the originating pointer is right or middle button
           const isDisallowedButton = !isTouchEvent && ((buttons === 2) || (button === 2) || (buttons === 4) || (button === 1));
           if (e && isDisallowedButton) {
-            applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity);
+            const target = uiZoomRef.current || d3.zoomIdentity;
+            const current = d3.select(svgRef.current).property('__zoom') || d3.zoomIdentity;
+            if (!(Math.abs(target.k - current.k) < 1e-6 && Math.abs(target.x - current.x) < 1e-6 && Math.abs(target.y - current.y) < 1e-6)) {
+              applyZoomTransformSilently(target);
+            }
             return;
           }
           if (!isWheel && !isPrimaryDrag) {
@@ -6129,11 +7375,14 @@ const normalizeLinkForMerge = (link) => {
         });
 
       svg.call(zoom);
-      // Reassert current zoom once more after zoom is attached
+      // Reassert current zoom once after zoom is attached (skip if identical)
       try {
         const prev = uiZoomRef.current || d3.zoomIdentity;
-        d3.select(svgRef.current).property('__zoom', prev);
-        applyGroupTransform(prev, { immediate: true });
+        const current = d3.select(svgRef.current).property('__zoom') || d3.zoomIdentity;
+        if (!(Math.abs(prev.k - current.k) < 1e-6 && Math.abs(prev.x - current.x) < 1e-6 && Math.abs(prev.y - current.y) < 1e-6)) {
+          applyGroupTransform(prev, { immediate: true });
+          d3.select(svgRef.current).property('__zoom', prev);
+        }
       } catch (_) {}
       zoomRef.current = zoom;
 
@@ -6800,6 +8049,12 @@ const normalizeLinkForMerge = (link) => {
           target: nodeById.get(targetId)
         });
       });
+      if (isLayoutDebug()) {
+        try {
+          const expansionInternalCount = linkData.reduce((acc, l) => acc + (l.expansionInternal ? 1 : 0), 0);
+          debugLog('render-link-stats', { total: linkData.length, expansionInternal: expansionInternalCount });
+        } catch (_) {}
+      }
       if (droppedLinksCount > 0) {
         try {
           console.warn('[graph] Dropped links referencing missing or placeholder nodes before rendering', { droppedLinksCount });
@@ -6882,53 +8137,23 @@ const normalizeLinkForMerge = (link) => {
             const srcNode = getEndpointNode(d.source);
             const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
-            const baseSourceValues = [
-              d.teacher_rel_source_text,
-              d.relationshipSourceDisplay,
-              d.relationship_source_display,
-              d.sourceInfo,
-              d.teacher_rel_source,
-              d.relationship_source,
-              d.source,
-              d.meta?.source,
-              d.opera_source_text,
-              d.opera_source_url,
-              d.teacher_rel_source_url,
-              d.sourceUrl,
-              d.meta?.sourceUrl
-            ];
-            const derivedSourceText = deriveRelationshipSourceText(...baseSourceValues);
-            const derivedSourceUrl = deriveRelationshipSourceUrl(
-              d.teacher_rel_source_url,
-              d.sourceUrl,
-              ...baseSourceValues
-            );
-            const sourceValues = [
-              {
-                text: derivedSourceText,
-                url: derivedSourceUrl
-              },
-              {
-                text: d.teacher_rel_source_text,
-                url: d.teacher_rel_source_url
-              },
-              ...baseSourceValues
-            ];
+            const { sourceValues, sourceText, sourceUrl, baseValues } = buildLinkContextSource(d);
             if (isDebugRelSourcesEnabled() && typeof window !== 'undefined') {
               window.__CMG_LINK_CONTEXT_LOGS = window.__CMG_LINK_CONTEXT_LOGS || [];
               window.__CMG_LINK_CONTEXT_LOGS.push({
                 type: d?.type,
                 link: d,
-                derivedSourceText,
-                derivedSourceUrl,
-                sourceValues
+                derivedSourceText: sourceText,
+                derivedSourceUrl: sourceUrl,
+                sourceValues,
+                baseValues
               });
               try {
                 // eslint-disable-next-line no-console
                 console.debug('[cmg] link context menu', {
                   type: d?.type,
-                  derivedSourceText,
-                  derivedSourceUrl,
+                  derivedSourceText: sourceText,
+                  derivedSourceUrl: sourceUrl,
                   teacher_rel_source_text: d?.teacher_rel_source_text,
                   teacher_rel_source_url: d?.teacher_rel_source_url,
                   sourceUrl: d?.sourceUrl
@@ -6940,7 +8165,9 @@ const normalizeLinkForMerge = (link) => {
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              sourceValues
+              sourceValues,
+              sourceText,
+              sourceUrl
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -7017,27 +8244,15 @@ const normalizeLinkForMerge = (link) => {
             const srcNode = getEndpointNode(d.source);
             const tgtNode = getEndpointNode(d.target);
             const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
-            const sourceValues = [
-              d.relationshipSourceDisplay,
-              d.relationship_source_display,
-              d.sourceInfo,
-              d.teacher_rel_source_text,
-              d.teacher_rel_source,
-              d.relationship_source,
-              d.source,
-              d.meta?.source,
-              d.opera_source_text,
-              d.opera_source_url,
-              d.teacher_rel_source_url,
-              d.sourceUrl,
-              d.meta?.sourceUrl
-            ];
+            const { sourceValues, sourceText, sourceUrl } = buildLinkContextSource(d);
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && d.type === 'premiered' ? (d.role || d.target?.role || '') : '',
-              sourceValues
+              sourceValues,
+              sourceText,
+              sourceUrl
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -7110,12 +8325,15 @@ const normalizeLinkForMerge = (link) => {
           const tgtNode = getEndpointNode(d.target);
           const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
           setTimeout(() => {
+            const { sourceValues, sourceText, sourceUrl } = buildLinkContextSource(matching);
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && matching?.type === 'premiered' ? (matching.role || '') : '',
-              source: matching?.sourceInfo || ''
+              sourceValues,
+              sourceText,
+              sourceUrl
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -7205,12 +8423,15 @@ const normalizeLinkForMerge = (link) => {
           const tgtNode = getEndpointNode(d.target);
           const isPersonToOpera = srcNode?.type === 'person' && tgtNode?.type === 'opera';
           setTimeout(() => {
+            const { sourceValues, sourceText, sourceUrl } = buildLinkContextSource(matching);
             setLinkContextMenu({
               show: true,
               x: Math.max(0, mouseX),
               y: Math.max(0, mouseY),
               role: isPersonToOpera && matching?.type === 'premiered' ? (matching.role || '') : '',
-              source: matching?.sourceInfo || ''
+              sourceValues,
+              sourceText,
+              sourceUrl
             });
             try { applyZoomTransformSilently(uiZoomRef.current || d3.zoomIdentity); } catch (_) {}
           }, 0);
@@ -7465,6 +8686,7 @@ const normalizeLinkForMerge = (link) => {
         };
 
         // Position links
+        const longEdgeThreshold = (typeof window !== 'undefined' && Number.isFinite(window.__CMG_LONG_EDGE_THRESHOLD)) ? window.__CMG_LONG_EDGE_THRESHOLD : 260;
         link
           .attr("stroke", _d => "#FFFFFF")
           .attr("stroke-width", d => d.isPath ? 2.5 : 1.5)
@@ -7500,7 +8722,13 @@ const normalizeLinkForMerge = (link) => {
           const my = (startY + endY) / 2 + ny * offset;
           if (!Number.isFinite(mx) || !Number.isFinite(my)) return '';
 
-          return `M${startX},${startY} Q ${mx},${my} ${endX},${endY}`;
+          const path = `M${startX},${startY} Q ${mx},${my} ${endX},${endY}`;
+          if (isLayoutDebug()) {
+            const len = Math.hypot(dx, dy);
+            d.__renderDistance = len;
+            if (len > longEdgeThreshold) debugLog('link-long-render', { s: source.node.id, t: target.node.id, type: d.type, len });
+          }
+          return path;
         })
         .attr("opacity", d => isLinkVisible(d) ? 1 : 0.12); // Apply filter-based opacity
 
@@ -7567,8 +8795,24 @@ const normalizeLinkForMerge = (link) => {
           const endY = target.y - (dy / distance) * (nodeRadius + adjusted);
           const startX = source.x + (dx / distance) * (nodeRadius + adjustedStart);
           const startY = source.y + (dy / distance) * (nodeRadius + adjustedStart);
-          return `M${startX},${startY}L${endX},${endY}`;
+          const path = `M${startX},${startY}L${endX},${endY}`;
+          if (isLayoutDebug()) {
+            d.__renderDistance = distance;
+          }
+          return path;
         });
+
+        // When layout debug is enabled, visually flag long edges
+        if (isLayoutDebug()) {
+          link.attr('stroke', d => {
+            const src = resolveCoords(d.source); const tgt = resolveCoords(d.target);
+            if (!src || !tgt) return '#FFFFFF';
+            const len = Math.hypot(tgt.x - src.x, tgt.y - src.y);
+            if (len > longEdgeThreshold) return '#ef4444'; // red for long edges
+            if (d.expansionInternal) return '#93c5fd'; // light blue for internal
+            return '#FFFFFF';
+          });
+        }
         
         // Create arrows directly for each link
         processedLinks.forEach(linkData => {
@@ -7827,19 +9071,41 @@ const normalizeLinkForMerge = (link) => {
         return;
       }
 
+      let settleTimeout = null;
+      let coolTimeout = null;
+
       if (shouldRunSimulation) {
         // Apply anti-overlap positioning if nodes don't have valid positions
-        const needsPositioning = nodesForSimulation.some(node => 
-          !node.x || !node.y || node.x < 50 || node.x > width - 50 || node.y < 50 || node.y > height - 50
-        );
-        
-        if (needsPositioning) {
-          // Reset positions for anti-overlap system
+        const needsInitialPlacement = nodesForSimulation.some(node => {
+          if (!node) return true;
+          const x = Number(node.x);
+          const y = Number(node.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+          // Initial search results come in at (0, 0); treat that as unpositioned.
+          if (Math.abs(x) < 1 && Math.abs(y) < 1) return true;
+          return false;
+        });
+
+        const isExpansion = isExpansionSimulation;
+
+        if (!isExpansion && needsInitialPlacement) {
+          // Reset positions for anti-overlap system only for networks that truly need an initial layout.
           nodesForSimulation.forEach(node => {
             node.x = 0;
             node.y = 0;
           });
           positionNodesWithoutOverlap(nodesForSimulation, width, height);
+        } else if (needsInitialPlacement) {
+          // Expansions should preserve their spawn geometry; only fix nodes lacking coordinates.
+          nodesForSimulation.forEach(node => {
+            if (!node) return;
+            const x = Number(node.x);
+            const y = Number(node.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+              node.x = 0;
+              node.y = 0;
+            }
+          });
         }
         
         // Reset simulation properties
@@ -7892,60 +9158,134 @@ const normalizeLinkForMerge = (link) => {
 
 
           // Use different parameters for expansion vs initial simulations
-          const isExpansion = isExpansionSimulation;
           const simulationAlphaDecay = isExpansion ? 0.015 : 0.035; // Even slower decay to allow more settling
           const simulationAlphaMin = isExpansion ? 0.003 : 0.008;   // Lower minimum for more iterations
           const simulationVelocityDecay = isExpansion ? 0.35 : 0.55; // Lower velocity decay for smoother settle
 
+          const now = Date.now();
+          const expansionRelaxWindowMs = isExpansion ? 8000 : 5000;
+          const relaxedChargeStrength = Math.round(chargeStrength * 0.35);
           const simulation = d3.forceSimulation(nodesForSimulation)
             .force("link", d3.forceLink(linkData)
               .id(d => d.id)
               .distance(l => {
+                const sameBatch = !!(l && l.source && l.target &&
+                  (l.source.expansionBatchId != null) &&
+                  (l.source.expansionBatchId === l.target.expansionBatchId));
+                if (l && (l.expansionInternal || sameBatch)) {
+                  // Keep expansion clusters compact while giving them breathing room
+                  const override = (typeof window !== 'undefined' && Number.isFinite(window.__CMG_INTERNAL_LINK_DISTANCE))
+                    ? Math.max(40, Number(window.__CMG_INTERNAL_LINK_DISTANCE))
+                    : null;
+                  const defaultDistance = Math.max(230, linkDistance * 0.9);
+                  const d = override != null ? override : defaultDistance;
+                  l.__distanceUsed = d; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, expansionInternal: true, sameBatch, d });
+                  return d;
+                }
                 const sPlaced = !!(l.source && l.source.userPlaced);
                 const tPlaced = !!(l.target && l.target.userPlaced);
                 if (sPlaced || tPlaced) {
                   const stretched = linkDistance * 1.35;
-                  return Math.min(stretched, linkDistance + 140);
+                  const d = Math.min(stretched, linkDistance + 140);
+                  l.__distanceUsed = d; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, pinned: true, d });
+                  return d;
                 }
+                l.__distanceUsed = linkDistance; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, d: linkDistance });
                 return linkDistance;
               })
               .strength(l => {
                 const sPlaced = !!(l.source && l.source.userPlaced);
                 const tPlaced = !!(l.target && l.target.userPlaced);
                 const base = linkStrength;
+                // Stronger springs for expansion-internal edges (including same-batch links)
+                const sameBatch = !!(l && l.source && l.target &&
+                  (l.source.expansionBatchId != null) &&
+                  (l.source.expansionBatchId === l.target.expansionBatchId));
+                if (l && (l.expansionInternal || sameBatch)) {
+                  const override = (typeof window !== 'undefined' && Number.isFinite(window.__CMG_INTERNAL_LINK_STRENGTH))
+                    ? Math.max(0.01, Math.min(1, Number(window.__CMG_INTERNAL_LINK_STRENGTH)))
+                    : null;
+                  const defaultStrength = 0.55;
+                  const stiff = override != null ? override : defaultStrength;
+                  return Math.min(1, stiff);
+                }
                 if (sPlaced || tPlaced) {
                   return Math.max(0.02, base * 0.35);
                 }
                 return base;
               }))
-            .force("charge", d3.forceManyBody().strength(n => (n && n.userPlaced ? 0 : chargeStrength)))
+            .force("charge", d3.forceManyBody().strength(n => {
+              if (!n) return chargeStrength;
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return relaxedChargeStrength;
+              }
+              return chargeStrength;
+            }))
             .force("center", hasPinnedNodes ? null : d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(collisionRadius))
-            .force("x", d3.forceX(width / 2).strength(n => (n && n.userPlaced) ? 0 : 0.1))
-            .force("y", d3.forceY(height / 2).strength(n => (n && n.userPlaced) ? 0 : 0.1))
+            .force("collision", d3.forceCollide().radius(n => {
+              if (!n) return collisionRadius;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return Math.max(30, Math.round(collisionRadius * 0.6));
+              }
+              return collisionRadius;
+            }))
+            .force("x", d3.forceX(width / 2).strength(n => {
+              if (!n) return 0.1;
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return 0.02; // keep expansion cluster from being dragged to viewport center
+              }
+              return 0.1;
+            }))
+            .force("y", d3.forceY(height / 2).strength(n => {
+              if (!n) return 0.1;
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return 0.02;
+              }
+              return 0.1;
+            }))
             .alpha(1)
             .alphaDecay(simulationAlphaDecay)
             .alphaMin(simulationAlphaMin)
             .velocityDecay(simulationVelocityDecay);
 
+          // Smooth warm-up / cool-down for better animation feel
+          simulation.alphaTarget(isExpansion ? 0.28 : 0.18); // quick initial lift
+          try {
+            settleTimeout = setTimeout(() => {
+              try { simulation.alphaTarget(isExpansion ? 0.16 : 0.1); } catch (_) {}
+            }, 420);
+            coolTimeout = setTimeout(() => {
+              try { simulation.alphaTarget(0); } catch (_) {}
+            }, isExpansion ? 1600 : 1100);
+          } catch (_) {}
+
           simulationRef.current = simulation;
           isSimulationActiveRef.current = true;
+          try { zoomLockedRef.current = true; } catch (_) {}
 
           // Let simulation run for optimal balance of speed and quality
           const simulationDuration = isExpansion ? 5500 : 2200; // Longer durations for clearer settling
           const simulationTimeout = setTimeout(() => {
             if (simulation) {
+              if (settleTimeout) clearTimeout(settleTimeout);
+              if (coolTimeout) clearTimeout(coolTimeout);
+              try { simulation.alphaTarget(0); } catch (_) {}
               simulation.stop();
               isSimulationActiveRef.current = false;
               setShouldRunSimulation(false);
+              try { zoomLockedRef.current = false; } catch (_) {}
               if (isExpansion) {
                 setIsExpansionSimulation(false); // Reset expansion flag
               }
-              // Reassert current zoom to prevent any implicit resets after layout settles
+              // Reassert current zoom once to prevent any implicit resets after layout settles
               try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
-              setTimeout(() => {
-                try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
-              }, 0);
               try {
                 nodesForSimulation.forEach(node => {
                   if (!node) return;
@@ -7957,26 +9297,35 @@ const normalizeLinkForMerge = (link) => {
                   if (!Number.isFinite(node.homeY)) node.homeY = node.y;
                 });
               } catch (_) {}
+              flushPendingHelperMessage();
             }
           }, simulationDuration);
 
           // Set up event handlers
           simulation.on("tick", () => {
+            try {
+              if (isLayoutDebug() && window.__CMG_DEBUG_TRACK_NODE) {
+                const id = String(window.__CMG_DEBUG_TRACK_NODE);
+                const found = nodesForSimulation.find(n => n && n.id === id);
+                if (found) debugLog('tick-node', { id, x: Math.round(found.x), y: Math.round(found.y) });
+              }
+            } catch (_) {}
             renderNetwork();
           });
           
           simulation.on("end", () => {
             clearTimeout(simulationTimeout);
+            if (settleTimeout) clearTimeout(settleTimeout);
+            if (coolTimeout) clearTimeout(coolTimeout);
+            try { simulation.alphaTarget(0); } catch (_) {}
             isSimulationActiveRef.current = false;
             setShouldRunSimulation(false); // Clear flag when simulation ends
+            try { zoomLockedRef.current = false; } catch (_) {}
             if (isExpansion) {
               setIsExpansionSimulation(false); // Reset expansion flag
             }
-            // Ensure whatever zoom user had is preserved post-simulation
+            // Ensure whatever zoom user had is preserved post-simulation (single reapply)
             try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
-            setTimeout(() => {
-              try { applyZoomTransformSilently(zoomTransformRef.current || d3.zoomIdentity); } catch (_) {}
-            }, 0);
             try {
               nodesForSimulation.forEach(node => {
                 if (!node) return;
@@ -7988,12 +9337,16 @@ const normalizeLinkForMerge = (link) => {
                 if (!Number.isFinite(node.homeY)) node.homeY = node.y;
               });
             } catch (_) {}
+            flushPendingHelperMessage();
           });
           
           simulation.restart();
           
         } catch (error) {
           console.error("❌ Error creating simulation:", error);
+          if (settleTimeout) clearTimeout(settleTimeout);
+          if (coolTimeout) clearTimeout(coolTimeout);
+          try { zoomLockedRef.current = false; } catch (_) {}
           try {
             if (error && typeof error.message === 'string' && error.message.includes('node not found')) {
               const missingMatch = error.message.match(/node not found:\s*(.+)$/i);
@@ -8069,6 +9422,7 @@ const normalizeLinkForMerge = (link) => {
           }
           isSimulationActiveRef.current = false;
           setShouldRunSimulation(false);
+          flushPendingHelperMessage();
         }
       } else {
         // If we are here, the outer decision chose not to run the full sim (positions exist)
@@ -8080,32 +9434,92 @@ const normalizeLinkForMerge = (link) => {
           baseChargeStrengthRef.current = defaultChargeStrength;
           const defaultCollisionRadius = 60;
           const hasPinnedNodes = nodesForSimulation.some(n => n && n.userPlaced);
+          const now = Date.now();
+          const expansionRelaxWindowMs = 5000;
+          const relaxedChargeStrength = Math.round(defaultChargeStrength * 0.35);
           const simulation = d3.forceSimulation(nodesForSimulation)
             .force("link", d3.forceLink(linkData)
               .id(d => d.id)
               .distance(l => {
+                const sameBatch = !!(l && l.source && l.target &&
+                  (l.source.expansionBatchId != null) &&
+                  (l.source.expansionBatchId === l.target.expansionBatchId));
+                if (l && (l.expansionInternal || sameBatch)) {
+                  const override = (typeof window !== 'undefined' && Number.isFinite(window.__CMG_INTERNAL_LINK_DISTANCE))
+                    ? Math.max(40, Number(window.__CMG_INTERNAL_LINK_DISTANCE))
+                    : null;
+                  const defaultDistance = Math.max(230, defaultLinkDistance * 0.9);
+                  const d = override != null ? override : defaultDistance;
+                  l.__distanceUsed = d; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, expansionInternal: true, sameBatch, d });
+                  return d;
+                }
                 const sPlaced = !!(l.source && l.source.userPlaced);
                 const tPlaced = !!(l.target && l.target.userPlaced);
                 if (sPlaced || tPlaced) {
                   const stretched = defaultLinkDistance * 1.35;
-                  return Math.min(stretched, defaultLinkDistance + 140);
+                  const d = Math.min(stretched, defaultLinkDistance + 140);
+                  l.__distanceUsed = d; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, pinned: true, d });
+                  return d;
                 }
+                l.__distanceUsed = defaultLinkDistance; if (isLayoutDebug()) debugLog('sim-link-distance', { type: l.type, d: defaultLinkDistance });
                 return defaultLinkDistance;
               })
               .strength(l => {
                 const sPlaced = !!(l.source && l.source.userPlaced);
                 const tPlaced = !!(l.target && l.target.userPlaced);
                 const base = defaultLinkStrength;
+                const sameBatch = !!(l && l.source && l.target &&
+                  (l.source.expansionBatchId != null) &&
+                  (l.source.expansionBatchId === l.target.expansionBatchId));
+                if (l && (l.expansionInternal || sameBatch)) {
+                  const override = (typeof window !== 'undefined' && Number.isFinite(window.__CMG_INTERNAL_LINK_STRENGTH))
+                    ? Math.max(0.01, Math.min(1, Number(window.__CMG_INTERNAL_LINK_STRENGTH)))
+                    : null;
+                  const defaultStrength = 0.55;
+                  const stiff = override != null ? override : defaultStrength;
+                  return Math.min(1, stiff);
+                }
                 if (sPlaced || tPlaced) {
                   return Math.max(0.02, base * 0.35);
                 }
                 return base;
               }))
-            .force("charge", d3.forceManyBody().strength(n => (n && n.userPlaced ? 0 : Math.round(defaultChargeStrength))))
+            .force("charge", d3.forceManyBody().strength(n => {
+              if (!n) return Math.round(defaultChargeStrength);
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return relaxedChargeStrength;
+              }
+              return Math.round(defaultChargeStrength);
+            }))
             .force("center", hasPinnedNodes ? null : d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(defaultCollisionRadius))
-            .force("x", d3.forceX(width / 2).strength(n => (n && n.userPlaced) ? 0 : 0.1))
-            .force("y", d3.forceY(height / 2).strength(n => (n && n.userPlaced) ? 0 : 0.1))
+            .force("collision", d3.forceCollide().radius(n => {
+              if (!n) return defaultCollisionRadius;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return Math.max(30, Math.round(defaultCollisionRadius * 0.6));
+              }
+              return defaultCollisionRadius;
+            }))
+            .force("x", d3.forceX(width / 2).strength(n => {
+              if (!n) return 0.1;
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return 0.02;
+              }
+              return 0.1;
+            }))
+            .force("y", d3.forceY(height / 2).strength(n => {
+              if (!n) return 0.1;
+              if (n.userPlaced) return 0;
+              const expandedAt = Number(n.recentlyExpandedAt || n.expansionBatchId);
+              if (Number.isFinite(expandedAt) && now - expandedAt <= expansionRelaxWindowMs) {
+                return 0.02;
+              }
+              return 0.1;
+            }))
             .alpha(0)
             .alphaDecay(0.035)
             .alphaMin(0.001)
@@ -8127,6 +9541,7 @@ const normalizeLinkForMerge = (link) => {
         } catch (_) {}
         isSimulationActiveRef.current = false;
         renderNetwork();
+        flushPendingHelperMessage();
       }
 
       
@@ -8336,11 +9751,15 @@ const normalizeLinkForMerge = (link) => {
       filtersVersion,
       currentCenterNode,
       viewportIsPhone,
-      viewportIsTablet
-    ]); // Re-run on data, height, or filter changes
+      viewportIsTablet,
+      shouldRunSimulation,
+      isExpansionSimulation
+    ]); // Re-run on data, height, filter, or simulation flags
     // Guard against outside clicks forcing any transform reset by reapplying zoom
     useEffect(() => {
       const onDocClickCapture = (e) => {
+        // If sheets/overlays are open, do not touch zoom on outside clicks
+        if (showFilterPanel || showPathPanel) return;
         const container = containerRef.current;
         if (!container) return;
         if (!container.contains(e.target)) {
@@ -8360,35 +9779,19 @@ const normalizeLinkForMerge = (link) => {
         }
       };
       document.addEventListener('mousedown', onDocClickCapture, true);
-      // Also handle shortly after in case other handlers mutate transform again
-      const onDocClickBubble = (e) => {
-        const container = containerRef.current;
-        if (!container) return;
-        if (!container.contains(e.target)) {
-          try { zoomLockedRef.current = true; } catch (_) {}
-          setTimeout(() => {
-            try {
-              const t = zoomTransformRef.current || d3.zoomIdentity;
-              const svgSel = d3.select(svgRef.current);
-              svgSel.property('__zoom', t);
-              const g = svgSel.select('g');
-              g.attr('transform', t);
-              setTimeout(() => { try { zoomLockedRef.current = false; } catch (_) {} }, 0);
-            } catch (_) {}
-          }, 0);
-        }
-      };
-      document.addEventListener('mouseup', onDocClickBubble, false);
       return () => {
         document.removeEventListener('mousedown', onDocClickCapture, true);
-        document.removeEventListener('mouseup', onDocClickBubble, false);
       };
-    }, []);
+    }, [showFilterPanel, showPathPanel]);
 
     return (
       <div
         className={viewportIsPhone ? 'mobile-network-shell' : undefined}
-        style={{ position: 'relative' }}
+        style={{
+          position: 'relative',
+          boxSizing: 'border-box',
+          width: '100%'
+        }}
       >
         <div
           ref={containerRef}
@@ -8420,8 +9823,12 @@ const normalizeLinkForMerge = (link) => {
                   padding: '12px 16px 12px 12px',
                   boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
                   zIndex: 1000,
-                  minWidth: '320px',
-                  maxWidth: '440px',
+                  width: 'fit-content',
+                  minWidth: '220px',
+                  maxWidth: '520px',
+                  paddingRight: '28px', // leave room for the dismissing ×
+                  wordBreak: 'break-word',
+                  whiteSpace: 'normal',
                   fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
                   fontSize: '16px'
                 }}
@@ -8458,11 +9865,21 @@ const normalizeLinkForMerge = (link) => {
                 )}
                 {(() => {
                   const content = renderRelationshipSourceLink(...(linkContextMenu.sourceValues || []));
-                  if (!content) return null;
+                  const fallback = typeof linkContextMenu.sourceText === 'string'
+                    ? linkContextMenu.sourceText.trim()
+                    : '';
+                  if (!content && !fallback) {
+                    return (
+                      <div style={{ color: '#374151' }}>
+                        <strong>Relationship source:</strong>{' '}
+                        <span style={{ color: '#6b7280' }}>Not provided</span>
+                      </div>
+                    );
+                  }
                   return (
                     <div style={{ color: '#374151' }}>
                       <strong>Relationship source:</strong>{' '}
-                      {content}
+                      {content || fallback}
                     </div>
                   );
                 })()}
@@ -8659,32 +10076,35 @@ const normalizeLinkForMerge = (link) => {
                     const c = Math.cos(ang), s = Math.sin(ang); return { x: vx * c - vy * s, y: vx * s + vy * c };
                   };
 
-                  // Simple merge placement near neighbors (revert behavior)
-                  const container = svgRef.current?.parentElement;
-                  const width = container ? container.clientWidth : 800;
-                  let height = visualizationHeight || 600;
-                  const pad = 30;
-                  const placeNearB = (neighbor) => {
-                    const angle = Math.random() * Math.PI * 2;
-                    const radius = 90;
-                    return { x: (neighbor.x || 300) + Math.cos(angle) * radius, y: (neighbor.y || 300) + Math.sin(angle) * radius };
-                  };
+                  // Compute a spawn center outside the current base constellation and place all new path nodes around it
+                  const existingPathAnchors = sanitizedPathNodes.filter(n => existingNodeMap.has(n.id));
+                  const anchorRef = existingPathAnchors.length > 0 ? existingNodeMap.get(existingPathAnchors[0].id) : { x: cx, y: cy };
+                  const mergeKey = `${typeof from === 'string' ? from : ''}|${typeof to === 'string' ? to : ''}`;
+                  const containerEl2 = document.querySelector('div[style*="height:"] > svg')?.parentElement || null;
+                  const widthGuess2 = containerEl2 ? containerEl2.clientWidth : 800;
+                  const heightGuess2 = visualizationHeight || 600;
+                  const spawn = computeSpawnOutsideBBox(
+                    baseConstellation,
+                    { x: anchorRef?.x ?? cx, y: anchorRef?.y ?? cy, key: mergeKey },
+                    280,
+                    { width: widthGuess2, height: heightGuess2, pad: 60 }
+                  );
+                  const newOnlyIds = sanitizedPathNodes.filter(n => !existingNodeMap.has(n.id)).map(n => n.id);
+                  const { min: pathRingMin, max: pathRingMax, spacing: pathRingSpacing } = getExpansionRingConfig(newOnlyIds.length);
+                  const ringR = computeRingRadius(newOnlyIds.length, pathRingMin, pathRingMax, pathRingSpacing);
+                  const posMap = new Map();
+                  newOnlyIds.forEach((id, idx) => {
+                    const ang = (idx / Math.max(1, newOnlyIds.length)) * Math.PI * 2;
+                    posMap.set(id, { x: spawn.x + Math.cos(ang) * ringR, y: spawn.y + Math.sin(ang) * ringR });
+                  });
+
                   sanitizedPathNodes.forEach(rawNode => {
                     const canonicalNode = normalizePersonNode(rawNode);
                     if (!canonicalNode?.id) return;
                     if (!existingNodeMap.has(canonicalNode.id)) {
-                      const neighbors = Array.from(pathNeighbors.get(canonicalNode.id) || []);
-                      const existingNeighbor = neighbors.find(id => existingNodeMap.has(id));
-                      let x = 300, y = 300;
-                      if (existingNeighbor) {
-                        const nb = existingNodeMap.get(existingNeighbor);
-                        const p = placeNearA(nb);
-                        x = p.x; y = p.y;
-                      }
-                      if (x < pad) x = pad;
-                      if (x > width - pad) x = width - pad;
-                      if (y < pad) y = pad;
-                      if (y > height - pad) height = Math.ceil(y + 60);
+                      const pos = posMap.get(canonicalNode.id) || { x: spawn.x, y: spawn.y };
+                      const x = pos.x;
+                      const y = pos.y;
                       const newNode = normalizePersonNode({ ...canonicalNode, x, y, isPath: true, wasAddedByPath: true });
                       mergedNodes.push(newNode);
                       existingNodeMap.set(newNode.id, newNode);
@@ -9551,7 +10971,10 @@ const normalizeLinkForMerge = (link) => {
     
     const menuItems = React.useMemo(() => {
       if (!contextMenu.show || !node) return [];
-      const hasAnyExpandable = Object.values(counts).some(v => (typeof v === 'number' ? v : 0) > 0);
+      const hasApiData = !!nodeActualCount;
+      const hasAnyExpandable = hasApiData
+        ? Object.values(counts).some(v => (typeof v === 'number' ? v : 0) > 0)
+        : true; // allow expand even before counts load
       return [
       {
         label: 'Full information',
@@ -9667,7 +11090,24 @@ const normalizeLinkForMerge = (link) => {
               }
             }] : [])
           ] : []),
-          ...(node?.type === 'book' ? [] : [])
+          ...(node?.type === 'book' ? [
+            ...(counts.authored > 0 ? [{
+              label: `Authored (${counts.authored} nodes)`,
+              action: () => {
+                // For books, authors are inbound; use authoredBy to make intent clear
+                expandSpecificRelationship(node, 'authoredBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : []),
+            ...(counts.editedBy > 0 ? [{
+              label: `Edited (${counts.editedBy} nodes)`,
+              action: () => {
+                // Editors inbound to a book
+                expandSpecificRelationship(node, 'editedBy');
+                setContextMenu({ show: false, x: 0, y: 0, node: null });
+              }
+            }] : [])
+          ] : [])
         ]
       },
       {
@@ -9904,10 +11344,10 @@ const normalizeLinkForMerge = (link) => {
     const hasAnyFilters = hasVoiceFilters || hasBirthFilter || hasDeathFilter || hasBirthplaceFilters;
 
     // Local input state to prevent re-renders during typing
-    const [birthMinInput, setBirthMinInput] = useState(String(birthYearRange[0]));
-    const [birthMaxInput, setBirthMaxInput] = useState(String(birthYearRange[1]));
-    const [deathMinInput, setDeathMinInput] = useState(String(deathYearRange[0]));
-    const [deathMaxInput, setDeathMaxInput] = useState(String(deathYearRange[1]));
+    const [birthMinInput, setBirthMinInput] = useState('');
+    const [birthMaxInput, setBirthMaxInput] = useState('');
+    const [deathMinInput, setDeathMinInput] = useState('');
+    const [deathMaxInput, setDeathMaxInput] = useState('');
     const contentRef = useRef(null);
     const isVoiceOpen = filterSectionsOpen.voice;
     const isBirthOpen = filterSectionsOpen.birth;
@@ -9916,11 +11356,21 @@ const normalizeLinkForMerge = (link) => {
 
     useLayoutEffect(() => {
       // Sync inputs when ranges or panel visibility changes
-      setBirthMinInput(String(birthYearRange[0]));
-      setBirthMaxInput(String(birthYearRange[1]));
-      setDeathMinInput(String(deathYearRange[0]));
-      setDeathMaxInput(String(deathYearRange[1]));
-    }, [birthYearRange, deathYearRange, showFilterPanel]);
+      if (birthRangeIsUserSet) {
+        setBirthMinInput(String(birthYearRange[0]));
+        setBirthMaxInput(String(birthYearRange[1]));
+      } else {
+        setBirthMinInput('');
+        setBirthMaxInput('');
+      }
+      if (deathRangeIsUserSet) {
+        setDeathMinInput(String(deathYearRange[0]));
+        setDeathMaxInput(String(deathYearRange[1]));
+      } else {
+        setDeathMinInput('');
+        setDeathMaxInput('');
+      }
+    }, [birthYearRange, deathYearRange, birthRangeIsUserSet, deathRangeIsUserSet, showFilterPanel]);
 
     const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 
@@ -9928,17 +11378,44 @@ const normalizeLinkForMerge = (link) => {
       const scrollEl = contentRef.current;
       const prevTop = scrollEl ? scrollEl.scrollTop : null;
       const winY = typeof window !== 'undefined' ? window.scrollY : null;
-      const minBound = getDateRanges().birthRange[0];
-      const maxBound = getDateRanges().birthRange[1];
+      const ranges = getDateRanges();
+      const dataBirthRange = Array.isArray(ranges.birthRange) ? ranges.birthRange : DEFAULT_BIRTH_RANGE;
+      const minBound = Math.min(DEFAULT_BIRTH_RANGE[0], dataBirthRange[0] ?? DEFAULT_BIRTH_RANGE[0]);
+      const maxBound = Math.max(DEFAULT_BIRTH_RANGE[1], dataBirthRange[1] ?? DEFAULT_BIRTH_RANGE[1]);
+      const hasMin = typeof birthMinInput === 'string' && birthMinInput.trim() !== '';
+      const hasMax = typeof birthMaxInput === 'string' && birthMaxInput.trim() !== '';
+
+      if (!hasMin && !hasMax) {
+        birthRangeIsUserSetRef.current = false;
+        setBirthRangeIsUserSet(false);
+        updateBirthYearRange([...DEFAULT_BIRTH_RANGE], { userInitiated: false });
+        setBirthMinInput('');
+        setBirthMaxInput('');
+        if (prevTop !== null && scrollEl) {
+          requestAnimationFrame(() => {
+            scrollEl.scrollTop = prevTop;
+            if (winY !== null) window.scrollTo(0, winY);
+            requestAnimationFrame(() => {
+              scrollEl.scrollTop = prevTop;
+              if (winY !== null) window.scrollTo(0, winY);
+            });
+          });
+        }
+        return;
+      }
+
       const parsedMin = parseInt(birthMinInput, 10);
       const parsedMax = parseInt(birthMaxInput, 10);
-      let nextMin = isNaN(parsedMin) ? birthYearRange[0] : clamp(parsedMin, minBound, maxBound);
-      let nextMax = isNaN(parsedMax) ? birthYearRange[1] : clamp(parsedMax, minBound, maxBound);
+      let nextMin = hasMin
+        ? (Number.isNaN(parsedMin) ? birthYearRange[0] : clamp(parsedMin, minBound, maxBound))
+        : birthYearRange[0];
+      let nextMax = hasMax
+        ? (Number.isNaN(parsedMax) ? birthYearRange[1] : clamp(parsedMax, minBound, maxBound))
+        : birthYearRange[1];
       if (nextMax < nextMin) nextMax = nextMin;
-      updateBirthYearRange([nextMin, nextMax]);
-      setBirthRangeIsUserSet(true);
-      setBirthMinInput(String(nextMin));
-      setBirthMaxInput(String(nextMax));
+      updateBirthYearRange([nextMin, nextMax], { userInitiated: true });
+      setBirthMinInput(hasMin ? String(nextMin) : '');
+      setBirthMaxInput(hasMax ? String(nextMax) : '');
       if (prevTop !== null && scrollEl) {
         requestAnimationFrame(() => {
           scrollEl.scrollTop = prevTop;
@@ -9955,17 +11432,44 @@ const normalizeLinkForMerge = (link) => {
       const scrollEl = contentRef.current;
       const prevTop = scrollEl ? scrollEl.scrollTop : null;
       const winY = typeof window !== 'undefined' ? window.scrollY : null;
-      const minBound = getDateRanges().deathRange[0];
-      const maxBound = getDateRanges().deathRange[1];
+      const ranges = getDateRanges();
+      const dataDeathRange = Array.isArray(ranges.deathRange) ? ranges.deathRange : DEFAULT_DEATH_RANGE;
+      const minBound = Math.min(DEFAULT_DEATH_RANGE[0], dataDeathRange[0] ?? DEFAULT_DEATH_RANGE[0]);
+      const maxBound = Math.max(DEFAULT_DEATH_RANGE[1], dataDeathRange[1] ?? DEFAULT_DEATH_RANGE[1]);
+      const hasMin = typeof deathMinInput === 'string' && deathMinInput.trim() !== '';
+      const hasMax = typeof deathMaxInput === 'string' && deathMaxInput.trim() !== '';
+
+      if (!hasMin && !hasMax) {
+        deathRangeIsUserSetRef.current = false;
+        setDeathRangeIsUserSet(false);
+        updateDeathYearRange([...DEFAULT_DEATH_RANGE], { userInitiated: false });
+        setDeathMinInput('');
+        setDeathMaxInput('');
+        if (prevTop !== null && scrollEl) {
+          requestAnimationFrame(() => {
+            scrollEl.scrollTop = prevTop;
+            if (winY !== null) window.scrollTo(0, winY);
+            requestAnimationFrame(() => {
+              scrollEl.scrollTop = prevTop;
+              if (winY !== null) window.scrollTo(0, winY);
+            });
+          });
+        }
+        return;
+      }
+
       const parsedMin = parseInt(deathMinInput, 10);
       const parsedMax = parseInt(deathMaxInput, 10);
-      let nextMin = isNaN(parsedMin) ? deathYearRange[0] : clamp(parsedMin, minBound, maxBound);
-      let nextMax = isNaN(parsedMax) ? deathYearRange[1] : clamp(parsedMax, minBound, maxBound);
+      let nextMin = hasMin
+        ? (Number.isNaN(parsedMin) ? deathYearRange[0] : clamp(parsedMin, minBound, maxBound))
+        : deathYearRange[0];
+      let nextMax = hasMax
+        ? (Number.isNaN(parsedMax) ? deathYearRange[1] : clamp(parsedMax, minBound, maxBound))
+        : deathYearRange[1];
       if (nextMax < nextMin) nextMax = nextMin;
-      updateDeathYearRange([nextMin, nextMax]);
-      setDeathRangeIsUserSet(true);
-      setDeathMinInput(String(nextMin));
-      setDeathMaxInput(String(nextMax));
+      updateDeathYearRange([nextMin, nextMax], { userInitiated: true });
+      setDeathMinInput(hasMin ? String(nextMin) : '');
+      setDeathMaxInput(hasMax ? String(nextMax) : '');
       if (prevTop !== null && scrollEl) {
         requestAnimationFrame(() => {
           scrollEl.scrollTop = prevTop;
@@ -10023,7 +11527,7 @@ const normalizeLinkForMerge = (link) => {
           >
             {isMobileViewport && <div className="mobile-sheet__handle" />}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#1f2937' }}>
+              <h3 style={{ margin: 0, fontSize: isMobileViewport ? '16px' : '18px', fontWeight: '600', color: '#1f2937' }}>
                 Filters
               </h3>
               <button
@@ -10031,12 +11535,12 @@ const normalizeLinkForMerge = (link) => {
                 style={{
                   background: 'none',
                   border: 'none',
-                  fontSize: isMobileViewport ? '28px' : '24px',
+                  fontSize: isMobileViewport ? '24px' : '24px',
                   cursor: 'pointer',
                   color: '#6b7280',
-                  padding: isMobileViewport ? '4px' : '0',
-                  width: isMobileViewport ? '40px' : '32px',
-                  height: isMobileViewport ? '40px' : '32px',
+                  padding: isMobileViewport ? '2px' : '0',
+                  width: isMobileViewport ? '32px' : '32px',
+                  height: isMobileViewport ? '32px' : '32px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center'
@@ -10062,9 +11566,9 @@ const normalizeLinkForMerge = (link) => {
                     background: 'none',
                     border: '1px solid #dc2626',
                     color: '#dc2626',
-                    padding: isMobileViewport ? '12px 16px' : '6px 12px',
+                    padding: isMobileViewport ? '8px 12px' : '6px 12px',
                     borderRadius: '8px',
-                    fontSize: '16px',
+                    fontSize: isMobileViewport ? '14px' : '16px',
                     cursor: 'pointer'
                   }}
                 >
@@ -10077,9 +11581,9 @@ const normalizeLinkForMerge = (link) => {
                   backgroundColor: '#2563eb',
                   color: 'white',
                   border: '2px solid #3e96e2',
-                  padding: isMobileViewport ? '12px 16px' : '6px 12px',
+                  padding: isMobileViewport ? '8px 12px' : '6px 12px',
                   borderRadius: '8px',
-                  fontSize: '16px',
+                  fontSize: isMobileViewport ? '14px' : '16px',
                   cursor: 'pointer'
                 }}
               >
@@ -10090,12 +11594,12 @@ const normalizeLinkForMerge = (link) => {
             {/* Filter Count Display */}
             {totalNodes > 0 && (
               <div style={{
-                marginTop: hasAnyFilters ? '8px' : '12px',
-                padding: isMobileViewport ? '12px 14px' : '8px 12px',
+                marginTop: hasAnyFilters ? (isMobileViewport ? '6px' : '8px') : (isMobileViewport ? '8px' : '12px'),
+                padding: isMobileViewport ? '8px 10px' : '8px 12px',
                 backgroundColor: hasAnyFilters ? '#f0f9ff' : '#f9fafb',
                 border: hasAnyFilters ? '1px solid #0ea5e9' : '1px solid #e5e7eb',
-                borderRadius: '8px',
-                fontSize: '16px',
+                borderRadius: '6px',
+                fontSize: isMobileViewport ? '14px' : '16px',
                 color: hasAnyFilters ? '#0c4a6e' : '#374151'
               }}>
                 {hasAnyFilters ? (
@@ -10126,7 +11630,7 @@ const normalizeLinkForMerge = (link) => {
             ref={contentRef}
           >
             {/* Voice Type Section */}
-            <div style={{ marginBottom: '24px' }}>
+            <div style={{ marginBottom: isMobileViewport ? '16px' : '24px' }}>
               <button
                 type="button"
                 onClick={(e) => {
@@ -10262,6 +11766,7 @@ const normalizeLinkForMerge = (link) => {
                   <input
                     type="text"
                     inputMode="numeric"
+                    placeholder="yyyy"
                     value={birthMinInput}
                     onChange={(e) => setBirthMinInput(e.target.value)}
                     onBlur={applyBirthRange}
@@ -10313,6 +11818,7 @@ const normalizeLinkForMerge = (link) => {
                   <input
                     type="text"
                     inputMode="numeric"
+                    placeholder="yyyy"
                     value={birthMaxInput}
                     onChange={(e) => setBirthMaxInput(e.target.value)}
                     onBlur={applyBirthRange}
@@ -10389,6 +11895,7 @@ const normalizeLinkForMerge = (link) => {
                   <input
                     type="text"
                     inputMode="numeric"
+                    placeholder="yyyy"
                     value={deathMinInput}
                     onChange={(e) => setDeathMinInput(e.target.value)}
                     onBlur={applyDeathRange}
@@ -10440,6 +11947,7 @@ const normalizeLinkForMerge = (link) => {
                   <input
                     type="text"
                     inputMode="numeric"
+                    placeholder="yyyy"
                     value={deathMaxInput}
                     onChange={(e) => setDeathMaxInput(e.target.value)}
                     onBlur={applyDeathRange}
@@ -11134,8 +12642,11 @@ const normalizeLinkForMerge = (link) => {
     const outerStyle = isMobileViewport ? {
       minHeight: backgroundMinHeight,
       width: '100%',
-      background: 'center top / cover no-repeat url(/aspens.jpg)',
-      backgroundAttachment: 'scroll',
+      backgroundImage: 'url(/aspens.jpg)',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center center',
+      backgroundRepeat: 'no-repeat',
+      backgroundAttachment: 'fixed',
       paddingLeft: 'var(--cmg-mobile-inline-padding)',
       paddingRight: 'var(--cmg-mobile-inline-padding-end)',
       paddingTop: 'var(--cmg-mobile-block-padding)',
@@ -11690,8 +13201,11 @@ const normalizeLinkForMerge = (link) => {
   const appBackgroundStyle = isMobileViewport ? {
     minHeight: backgroundMinHeight,
     width: '100%',
-    background: 'center top / cover no-repeat url(/aspens.jpg)',
-    backgroundAttachment: 'scroll',
+    backgroundImage: 'url(/aspens.jpg)',
+    backgroundSize: 'cover',
+    backgroundPosition: 'center center',
+    backgroundRepeat: 'no-repeat',
+    backgroundAttachment: 'fixed',
     paddingLeft: 'var(--cmg-mobile-inline-padding)',
     paddingRight: 'var(--cmg-mobile-inline-padding-end)',
     paddingTop: 'var(--cmg-mobile-block-padding)',
@@ -12382,7 +13896,9 @@ const normalizeLinkForMerge = (link) => {
                     cursor: loading || !searchQuery.trim() ? 'not-allowed' : 'pointer',
                     fontSize: '16px',
                     fontWeight: 500,
-                    width: isHeaderMobile ? '100%' : 'auto'
+                    // On mobile (stacked), keep the button narrower than the input and center it
+                    width: isHeaderMobile ? 'auto' : 'auto',
+                    alignSelf: isHeaderMobile ? 'center' : undefined
                   }}
                 >
                   Search
@@ -13079,8 +14595,7 @@ const normalizeLinkForMerge = (link) => {
 
         {(currentView === 'results' || currentView === 'network') && (networkData.nodes.length > 0 || showPathPanel) && (
           <div
-            className={isMobileViewport ? 'mobile-safe-area-inline' : undefined}
-            style={{ width: '100%', marginBottom: '30px' }}
+            style={{ width: '100%', marginBottom: '30px', paddingLeft: 0, paddingRight: 0 }}
           >
             <NetworkVisualization viewport={viewport} />
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
@@ -13093,10 +14608,10 @@ const normalizeLinkForMerge = (link) => {
                   <>
                     Drag nodes to reposition • Scroll to zoom • Drag to pan
                     <span style={{ display: 'block', marginTop: 4 }}>
-                      Right-click (or two-finger press on a trackpad) on a node or relationship for more information
+                      Single-click to expand a node • Double-click to clear and start a new search with this node
                     </span>
                     <span style={{ display: 'block', marginTop: 4 }}>
-                      Single-click to expand • Double-click to start a search with this node
+                      Right-click on a node or relationship for more information
                     </span>
                   </>
                 )}
@@ -14151,7 +15666,7 @@ const normalizeLinkForMerge = (link) => {
           </div>
         )}
       </main>
-      {currentView === 'network' && isMobileViewport && (
+      {currentView === 'network' && isMobileViewport && !(showFilterPanel || showPathPanel) && (
         <>
           <div className="mobile-toolbar" role="toolbar">
             <button
