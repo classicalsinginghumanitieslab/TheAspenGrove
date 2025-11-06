@@ -47,7 +47,7 @@ export default function HelpCenter({ onBack }) {
               When my family and I moved to the mountain west, I was amazed to learn that aspen trees in a grove are all one organism. They are rhizomatic - that is, they all grow from the same system of roots. We can trace the beginning of trained, classical singing to the Florentine Camerata, and in this manner of thinking, all classical singers share the same system of roots, too. This site is my attempt to show our vast interconnectedness.
             </p>
             <p style={{ marginTop: '12px', color: '#374151' }}>
-              From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who their teachers were. Like <a href="https://www.songhelix.com" target="_blank" rel="noreferrer">SongHelix</a> (released in 2019), I wanted to make another useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. Note that when Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequently another language's version will have different information from the English version.
+              From 2022 to 2025, I worked to create a ‘family tree’ of successful opera singers and those who taught them. I was motivated to do this work because I frequently marveled at highly skilled classical singers and wondered who their teachers were. Like <a href="https://www.songhelix.com" target="_blank">SongHelix</a> (released in 2019), I wanted to make another useful tool that allowed for deep and broad insights. I hoped to create a tool that would allow singers, fans of classical singing, and scholars a simple way to discover teacher-singer lineage. I have pulled data from a variety of online and print sources. Each of those can be investigated on examination of any piece of data on the site. Note that when Wikipedia is cited, it can refer to any language version of the student or teacher's Wikipedia site. Frequently another language's version will have different information from the English version.
             </p>
             <p style={{ marginTop: '12px', color: '#374151' }}>
               I have used various methods for gathering data at scale including querying Wikidata, webscraping, APIs, and using python scripts. While Artificial Intelligence has helped me gather information (and to code the entire website(!)), no information has been created through the use of AI.
@@ -56,23 +56,82 @@ export default function HelpCenter({ onBack }) {
               For any questions regarding the tool's creation, the data collection methods, to license the background systems for a similar site of your own, for presentation inquiries, or to send any comments, please contact me <a href="mailto:classicalsinginghumanitieslab@gmail.com">here</a>.
             </p>
             <p style={{ marginTop: '12px', color: '#374151',  textAlign: 'right'}}>
-              - Seth Keeton, founder <br/>
-              Classical Singing Humanities Lab
+             - Seth Keeton, founder <br/>
+             Classical Singing Humanities Lab
             </p>
           </details>
         </section>
 
         <details style={{ backgroundColor: '#f6faff', border: '2px solid #cbdaf7', borderRadius: '12px', padding: '16px 20px' }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>How to use</summary>
-          <p style={{ marginTop: '12px', color: '#374151' }}>
-            Explore the search, open details, and view relationships in the graph. Use filters to narrow results.
-          </p>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Color key</summary>
+          <ul
+            style={{
+              listStyle: 'none',
+              margin: '12px 0 0 0',
+              padding: 0,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+              gap: '10px'
+            }}
+          >
+            {[
+              { label: 'Soprano', color: '#ae996b' },
+              { label: 'Mezzo-soprano', color: '#695531' },
+              { label: 'Contralto', color: '#443f39' },
+              { label: 'Countertenor', color: '#4e2d06' },
+              { label: 'Tenor', color: '#e4a201' },
+              { label: 'Baritone', color: '#6a7304' },
+              { label: 'Bass-baritone', color: '#a09602' },
+              { label: 'Bass', color: '#a09602' },
+              { label: 'Castrato', color: '#99c0e3' },
+              { label: 'Soprano castrato', color: '#99c0e3' },
+              { label: 'Alto castrato', color: '#99c0e3' },
+              { label: 'Haute-contre', color: '#99c0e3' },
+              { label: 'Treble, unchanged voice', color: '#99c0e3' },
+              { label: 'Composer', color: '#7c8b23' },
+              { label: 'Conductor', color: '#7c8b23' },
+              { label: 'Instrumentalist', color: '#7c8b23' },
+              { label: 'Opera director', color: '#7c8b23' },
+              { label: 'Teacher, other', color: '#7c8b23' },
+              { label: 'Vocal coach', color: '#7c8b23' },
+              { label: 'Speech Language Pathologist', color: '#7c8b23' },
+              { label: 'Librettist', color: '#7c8b23' },
+              { label: 'Critic', color: '#7c8b23' },
+              { label: 'Actor', color: '#7c8b23' },
+              { label: 'Inventor', color: '#7c8b23' },
+              { label: 'Non-singing', color: '#7c8b23' },
+              { label: 'Unknown', color: '#7c8b23' }
+            ].map((entry) => (
+              <li key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: 4,
+                    border: '2px solid #3e96e2',
+                    backgroundColor: entry.color,
+                    flex: '0 0 auto'
+                  }}
+                />
+                <span style={{ color: '#1f2937' }}>{entry.label}</span>
+              </li>
+            ))}
+          </ul>
         </details>
 
         <details style={{ backgroundColor: '#f6faff', border: '2px solid #cbdaf7', borderRadius: '12px', padding: '16px 20px' }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Accuracy & limits</summary>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#1d4ed8', fontSize: '18px' }}>Disclaimer</summary>
           <p style={{ marginTop: '12px', color: '#374151' }}>
-            Sources are cited alongside data. Not all relationships are fully verified; see citations for details.
+            Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
+          </p>
+          <p style={{ marginTop: '12px', color: '#374151' }}>
+            I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
+          </p>
+          <p style={{ marginTop: '12px', color: '#374151' }}>
+            If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank" rel="noopener noreferrer">this form</a>, and I will incorporate it as quickly as I can.
+          </p>
+          <p style={{ marginTop: '12px', color: '#374151', fontWeight: 600 }}>
+            By reviewing this site you acknowledge the extent of the current contents and the limitations expressed in this disclaimer.
           </p>
         </details>
 
@@ -106,11 +165,10 @@ export default function HelpCenter({ onBack }) {
         <section>
           <h3 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a' }}>Acknowledgements</h3>
           <p style={{ margin: 0, color: '#374151' }}>
-            This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues, and to the many researchers whose work I have collected and distilled here.
+            This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thanks, too, to my friends at the Marriott Library. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
           </p>
         </section>
       </div>
     </div>
   );
 }
-
