@@ -2722,7 +2722,6 @@ const attemptLoadSavedView = async () => {
     setIsExporting(false);
     showHelperMessage('Export complete. Check your downloads.', 2400);
   };
-  };
 
   const goBack = () => {
     const past = historyRef.current.past;
