@@ -37,6 +37,7 @@ const RESET_URL_BASE = (process.env.RESET_URL_BASE || '').trim();
 const CLIENT_BASE_URL = (process.env.CLIENT_BASE_URL || '').trim();
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = parseInt(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES || '60', 10);
 const PASSWORD_RESET_TOKEN_BYTES = Math.max(parseInt(process.env.PASSWORD_RESET_TOKEN_BYTES || '32', 10), 16);
+const MAX_SNAPSHOT_BYTES = parseInt(process.env.MAX_SNAPSHOT_BYTES || '1500000', 10); // ~1.5 MB
 const ACTIVE_TOS_VERSION = parseInt(process.env.ACTIVE_TOS_VERSION || '1', 10);
 
 const EFFECTIVE_RESET_URL_BASE = (RESET_URL_BASE || CLIENT_BASE_URL || '').replace(/\/$/, '');
@@ -208,6 +209,17 @@ const createPasswordResetRecord = async (pool, userEmail) => {
 // Security middleware
 app.set('trust proxy', 1);
 app.use(helmet());
+// Simple request timing logger (path, status, duration)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    try {
+      console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} in ${ms}ms`);
+    } catch (_) {}
+  });
+  next();
+});
 const rawClientOrigins = process.env.CLIENT_ORIGINS;
 console.log('[CORS] raw CLIENT_ORIGINS:', rawClientOrigins);
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/$/, '');
@@ -252,12 +264,20 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // Rate limiting
-const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 100, // allow 100 requests per IP per window
+let rateLimitHits = 0;
+setInterval(() => {
+  if (rateLimitHits > 0) {
+    console.log(`[ratelimit] hits in last 60s: ${rateLimitHits}`);
+    rateLimitHits = 0;
+  }
+}, 60 * 1000);
+const buildLimiter = (maxPerMinute) => rateLimit({
+  windowMs: 60 * 1000,
+  max: maxPerMinute,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res, _next, options) => {
+    rateLimitHits += 1;
     const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
     res.set('Retry-After', retryAfterSeconds.toString());
     return res.status(options.statusCode).json({
@@ -266,7 +286,15 @@ const limiter = rateLimit({
     });
   }
 });
-app.use(limiter);
+// Gentle global limiter as a safety net
+app.use(buildLimiter(300));
+
+// Route-specific limiters
+const authLimiter = buildLimiter(60);
+const networkLimiter = buildLimiter(30); // heavier endpoints
+const detailsLimiter = buildLimiter(60);
+const viewsReadLimiter = buildLimiter(60);
+const viewsWriteLimiter = buildLimiter(20);
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -382,6 +410,32 @@ const setCachedPath = (from, to, hops, data, notFound = false) => {
   pathCache.set(key, { at: Date.now(), data, notFound });
 };
 
+// Lightweight caches for details endpoints (reduce repeated DB/graph lookups)
+const makeCacheHelpers = () => {
+  const get = (map, key, ttl) => {
+    const entry = map.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.at > ttl) { map.delete(key); return null; }
+    return entry.data;
+  };
+  const set = (map, key, value, max) => {
+    map.set(key, { data: value, at: Date.now() });
+    if (map.size > max) {
+      const firstKey = map.keys().next().value;
+      if (firstKey !== undefined) map.delete(firstKey);
+    }
+  };
+  return { get, set };
+};
+const { get: cacheGet, set: cacheSet } = makeCacheHelpers();
+const PERSON_CACHE = new Map(); // key: name|depth
+const OPERA_CACHE = new Map(); // key: id|name
+const BOOK_CACHE = new Map(); // key: title
+const PERSON_TTL_MS = 5 * 60 * 1000;
+const OPERA_TTL_MS = 5 * 60 * 1000;
+const BOOK_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 200;
+
 const normalizeRelationshipSourceValue = (value) => {
   if (value == null) return null;
   if (Array.isArray(value)) {
@@ -463,12 +517,14 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/ping', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // Authentication endpoints
 app.post('/auth/register', async (req, res) => {
+  // Per-route rate limiter for auth
+  await new Promise(resolve => authLimiter(req, res, resolve));
   const rawEmail = (req.body?.email || '').trim();
   const email = rawEmail.toLowerCase();
   const password = req.body?.password || '';
@@ -508,6 +564,7 @@ app.post('/auth/register', async (req, res) => {
 });
 
 app.post('/auth/login', async (req, res) => {
+  await new Promise(resolve => authLimiter(req, res, resolve));
   const rawEmail = (req.body?.email || '').trim();
   const email = rawEmail.toLowerCase();
   const password = req.body?.password || '';
@@ -553,6 +610,7 @@ app.post('/auth/login', async (req, res) => {
 });
 
 app.post('/auth/accept-tos', async (req, res) => {
+  await new Promise(resolve => authLimiter(req, res, resolve));
   try {
     const token = (req.body?.pendingToken || req.body?.token || '').trim();
     if (!token) {
@@ -589,6 +647,7 @@ app.post('/auth/accept-tos', async (req, res) => {
 });
 
 app.post('/auth/forgot-password', async (req, res) => {
+  await new Promise(resolve => authLimiter(req, res, resolve));
   try {
     const { email } = req.body || {};
     const normalizedEmail = (email || '').trim().toLowerCase();
@@ -627,6 +686,7 @@ app.post('/auth/forgot-password', async (req, res) => {
 });
 
 app.post('/auth/reset-password', async (req, res) => {
+  await new Promise(resolve => authLimiter(req, res, resolve));
   try {
     const { token, password } = req.body || {};
     if (!token || typeof token !== 'string') {
@@ -942,6 +1002,7 @@ app.post('/search/books', authenticateToken, async (req, res) => {
 
 // Network endpoints
 app.post('/singer/network', authenticateToken, async (req, res) => {
+  await new Promise(resolve => networkLimiter(req, res, resolve));
   const session = driver.session();
   try {
     const { singerName, depth = 2 } = req.body;
@@ -1390,7 +1451,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       composedOperas.push(opera);
     }
 
-    res.json({
+    const payload = {
       center,
       teachers,
       students,
@@ -1401,7 +1462,9 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         books,
         composedOperas
       }
-    });
+    };
+    try { cacheSet(PERSON_CACHE, `${(singerName || '').toLowerCase()}|${Number(depth) || 0}`, payload, CACHE_MAX_ENTRIES); } catch (_) {}
+    res.json(payload);
   } catch (error) {
     console.error('Singer network error:', error);
     res.status(500).json({ error: 'Failed to fetch singer network' });
@@ -1580,6 +1643,7 @@ app.post('/node/relationship-counts', authenticateToken, async (req, res) => {
 });
 
 app.post('/opera/details', authenticateToken, async (req, res) => {
+  await new Promise(resolve => detailsLimiter(req, res, resolve));
   const session = driver.session();
   try {
     const { operaName, operaId: operaIdInput, opera_id: operaIdAlt } = req.body || {};
@@ -1595,6 +1659,11 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
     }
 
     // Get opera details using ID when available, name as a fallback
+    const cacheKey = `opera:${(operaIdRaw || '').toLowerCase()}|${(trimmedName || '').toLowerCase()}`;
+    const cached = cacheGet(OPERA_CACHE, cacheKey, OPERA_TTL_MS);
+    if (cached) {
+      return res.json(cached);
+    }
     const operaResult = await session.run(
       `
       MATCH (o:Opera)
@@ -1701,7 +1770,7 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
       };
     });
 
-    res.json({
+    const payload = {
       opera: {
         id: buildTypedId('opera', resolveOperaId(opera), opera.opera_name || trimmedName || operaIdRaw),
         opera_id: resolveOperaId(opera) || null,
@@ -1711,7 +1780,9 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
       },
       premieredRoles,
       wrote
-    });
+    };
+    try { cacheSet(OPERA_CACHE, cacheKey, payload, CACHE_MAX_ENTRIES); } catch (_) {}
+    res.json(payload);
   } catch (error) {
     console.error('Opera details error:', error);
     res.status(500).json({ error: 'Failed to fetch opera details' });
@@ -1721,6 +1792,7 @@ app.post('/opera/details', authenticateToken, async (req, res) => {
 });
 
 app.post('/book/details', authenticateToken, async (req, res) => {
+  await new Promise(resolve => detailsLimiter(req, res, resolve));
   const session = driver.session();
   try {
     const { bookTitle } = req.body;
@@ -1728,7 +1800,11 @@ app.post('/book/details', authenticateToken, async (req, res) => {
     if (!bookTitle) {
       return res.status(400).json({ error: 'Book title required' });
     }
-
+    const cacheKey = `book:${(bookTitle || '').toLowerCase()}`;
+    const cached = cacheGet(BOOK_CACHE, cacheKey, BOOK_TTL_MS);
+    if (cached) {
+      return res.json(cached);
+    }
     // Get book details
     const bookResult = await session.run(
       'MATCH (b:Book {title: $title}) RETURN b',
@@ -1765,7 +1841,7 @@ app.post('/book/details', authenticateToken, async (req, res) => {
       voice_type: r.get('voice_type')
     }));
 
-    res.json({
+    const payload = {
       book: {
         title: book.title,
         normalized_title: book.normalized_title,
@@ -1775,7 +1851,9 @@ app.post('/book/details', authenticateToken, async (req, res) => {
       },
       authors,
       editors
-    });
+    };
+    try { cacheSet(BOOK_CACHE, cacheKey, payload, CACHE_MAX_ENTRIES); } catch (_) {}
+    res.json(payload);
   } catch (error) {
     console.error('Book details error:', error);
     res.status(500).json({ error: 'Failed to fetch book details' });
@@ -1786,6 +1864,7 @@ app.post('/book/details', authenticateToken, async (req, res) => {
 
 // Path finding between two people (demo)
 app.post('/path/find', authenticateToken, async (req, res) => {
+  await new Promise(resolve => networkLimiter(req, res, resolve));
   const session = driver.session();
   const startedAt = Date.now();
   try {
@@ -2028,6 +2107,28 @@ app.get('/test', (req, res) => {
   res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
 });
 
+// Health and readiness endpoints
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: Math.round(process.uptime()), timestamp: new Date().toISOString() });
+});
+app.get('/ready', async (req, res) => {
+  try {
+    // Check MySQL
+    const pool = await getMysqlPool();
+    await pool.query('SELECT 1');
+    // Check Neo4j
+    try { await driver.verifyConnectivity(); } catch (_) {
+      // Fallback lightweight query
+      const session = driver.session();
+      try { await session.run('RETURN 1'); } finally { await session.close(); }
+    }
+    res.json({ ready: true });
+  } catch (err) {
+    console.error('[ready] not ready:', err?.message);
+    res.status(503).json({ ready: false, error: 'Dependency check failed' });
+  }
+});
+
 // View snapshot storage (file-based per-user)
 const SAMPLE_VIEW_DIRS = [
   path.resolve(__dirname, 'data', 'views', 'test%40example.com'),
@@ -2047,11 +2148,22 @@ const readSnapshotFromDir = async (dir, token) => {
 
 // Save a snapshot and return a token
 app.post('/views', authenticateToken, async (req, res) => {
+  await new Promise(resolve => viewsWriteLimiter(req, res, resolve));
   try {
     const { snapshot, label = '' } = req.body || {};
     if (!snapshot || typeof snapshot !== 'object') {
       return res.status(400).json({ error: 'snapshot required' });
     }
+    // Guard against oversized snapshots to keep DB fast and requests light
+    try {
+      const json = JSON.stringify(snapshot);
+      const bytes = Buffer.byteLength(json, 'utf8');
+      if (bytes > MAX_SNAPSHOT_BYTES) {
+        return res.status(413).json({
+          error: `Snapshot too large (${bytes.toLocaleString()} bytes). Please reduce nodes/links or filters and try again.`
+        });
+      }
+    } catch (_) {}
 
     const token = crypto.randomUUID();
     const createdAt = new Date();
@@ -2070,6 +2182,7 @@ app.post('/views', authenticateToken, async (req, res) => {
 
 // List snapshots for current user
 app.get('/views', authenticateToken, async (req, res) => {
+  await new Promise(resolve => viewsReadLimiter(req, res, resolve));
   try {
     const pool = await getMysqlPool();
     const [rows] = await pool.query(
@@ -2090,6 +2203,7 @@ app.get('/views', authenticateToken, async (req, res) => {
 
 // Load a snapshot by token (user-scoped)
 app.get('/views/:token', authenticateToken, async (req, res) => {
+  await new Promise(resolve => viewsReadLimiter(req, res, resolve));
   try {
     const { token } = req.params || {};
     if (!token) return res.status(400).json({ error: 'token required' });

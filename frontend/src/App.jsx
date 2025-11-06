@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, Suspense } from 'react';
 import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
@@ -1402,6 +1402,7 @@ const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
 const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
 
 const isSaveExportEligible = hasExecutedSearch && Array.isArray(networkData?.nodes) && networkData.nodes.length > 0;
+const [isExporting, setIsExporting] = useState(false);
 
 useEffect(() => {
   if (!isSaveExportEligible && showSaveExportMenu) {
@@ -1529,9 +1530,9 @@ useEffect(() => {
     };
   }, []);
 
-const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } = {}) => {
+  const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } = {}) => {
   const disabledSave = !isSaveExportEligible || !token || isSavingView;
-  const disabledExport = !isSaveExportEligible;
+  const disabledExport = !isSaveExportEligible || isExporting;
   const actionButtonBase = {
       padding: '8px 12px',
       backgroundColor: '#ffffff',
@@ -1574,7 +1575,7 @@ const renderSaveExportFields = ({ containerStyle = {}, isMobileLayout = false } 
             opacity: disabledExport ? 0.6 : 1
           }}
         >
-          Export text file
+          {isExporting ? 'Exporting…' : 'Export text file'}
         </button>
       </div>
     );
@@ -2040,10 +2041,46 @@ const renderSaveExportToggle = ({
   const saveCurrentView = async () => {
     try {
       setIsSavingView(true);
+      // Build a lean snapshot that strips simulation fields and large transient data
+      const round = (v) => (Number.isFinite(v) ? Math.round(v) : undefined);
+      const slimNode = (n) => {
+        const base = {
+          id: n.id,
+          name: n.name,
+          type: n.type,
+          voiceType: n.voiceType,
+          birthYear: n.birthYear,
+          deathYear: n.deathYear,
+          birthplace: n.birthplace || n.citizen || undefined,
+          spelling_source: n.spelling_source,
+          voice_type_source: n.voice_type_source || n.voiceType_source || n.voiceTypeSource,
+          dates_source: n.dates_source || n.datesSource,
+          birthplace_source: n.birthplace_source || n.birthplaceSource
+        };
+        // Preserve coarse positions so layout looks familiar when reloaded
+        const withPos = {
+          ...base,
+          x: round(n.x),
+          y: round(n.y)
+        };
+        return Object.fromEntries(Object.entries(withPos).filter(([, v]) => v !== undefined && v !== null));
+      };
+      const slimLink = (l) => ({
+        source: (typeof l.source === 'string' ? l.source : (l.source && l.source.id) || l.source),
+        target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target),
+        label: l.label,
+        role: l.role,
+        type: l.type
+      });
+      const slimGraph = {
+        nodes: (networkData.nodes || []).map(slimNode),
+        links: (networkData.links || []).map(slimLink)
+      };
+      const zoom = (window.__cmg_zoomTransform || uiZoomRef.current || d3.zoomIdentity);
       const snapshot = {
-        version: 1,
-        graph: { nodes: networkData.nodes, links: networkData.links },
-        ui: { zoom: (window.__cmg_zoomTransform || uiZoomRef.current || d3.zoomIdentity), visualizationHeight },
+        version: 2,
+        graph: slimGraph,
+        ui: { zoom: { k: zoom.k, x: round(zoom.x), y: round(zoom.y) }, visualizationHeight },
         view: {
           currentView,
           searchType,
@@ -2057,7 +2094,8 @@ const renderSaveExportToggle = ({
             deathYearRange
           }
         },
-        details: { itemDetails, selectedItem },
+        // Keep minimal details to avoid re-fetch on reload; omit giant lists if present
+        details: { itemDetails: itemDetails ? { ...itemDetails, family: itemDetails.family } : null, selectedItem },
         meta: { savedAt: new Date().toISOString(), label: saveLabel || '' }
       };
       const resp = await fetch(`${API_BASE}/views`, {
@@ -2258,6 +2296,7 @@ const attemptLoadSavedView = async () => {
     return lines.join('\n');
   };
   const exportAsCSV = async () => {
+    setIsExporting(true);
     const valToText = (v) => {
       if (v == null) return '';
       if (Array.isArray(v)) return v.filter(Boolean).join('; ');
@@ -2268,10 +2307,11 @@ const attemptLoadSavedView = async () => {
       return String(v);
     };
 
-    // Collect names to fetch for export-only enrichment (no UI changes)
+    // Collect names/ids to fetch for export-only enrichment (no UI changes)
     const personNamesToFetch = new Set();
     const operaNamesToFetch = new Set();
     const bookTitlesToFetch = new Set();
+    const operaTypedIdsToFetch = new Set(); // e.g. 'opera:654' or 'opera:great scott'
 
     (networkData.nodes || []).forEach(n => {
       if (n.type === 'person' && n.name) {
@@ -2301,15 +2341,21 @@ const attemptLoadSavedView = async () => {
       }
       if (sNode?.type === 'person' && sNode.name) personNamesToFetch.add(sNode.name);
       if (tNode?.type === 'person' && tNode.name) personNamesToFetch.add(tNode.name);
+
+      // Capture any typed opera ids present directly on links (when opera node isn't in graph)
+      if (typeof sId === 'string' && sId.startsWith('opera:')) operaTypedIdsToFetch.add(sId);
+      if (typeof tId === 'string' && tId.startsWith('opera:')) operaTypedIdsToFetch.add(tId);
     });
 
     // Fetch details in parallel (scoped to export)
     const personDetails = new Map();
-    const operaDetails = new Map();
+    const operaDetails = new Map(); // keyed by opera name (original case)
     const bookDetails = new Map();
+    const operaNameByTypedId = new Map(); // keyed by typed id e.g. 'opera:654' => 'Rigoletto'
     try {
-      await Promise.all([
-        ...Array.from(personNamesToFetch).map(async (full_name) => {
+      const tasks = [];
+      for (const full_name of Array.from(personNamesToFetch)) {
+        tasks.push(async () => {
           try {
             const resp = await fetch(`${API_BASE}/singer/network`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -2318,8 +2364,10 @@ const attemptLoadSavedView = async () => {
             const data = await resp.json();
             if (resp.ok && data && data.center) personDetails.set(full_name, data);
           } catch (_) {}
-        }),
-        ...Array.from(operaNamesToFetch).map(async (operaName) => {
+        });
+      }
+      for (const operaName of Array.from(operaNamesToFetch)) {
+        tasks.push(async () => {
           try {
             const resp = await fetch(`${API_BASE}/opera/details`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -2328,8 +2376,10 @@ const attemptLoadSavedView = async () => {
             const data = await resp.json();
             if (resp.ok && data) operaDetails.set(operaName, data);
           } catch (_) {}
-        }),
-        ...Array.from(bookTitlesToFetch).map(async (title) => {
+        });
+      }
+      for (const title of Array.from(bookTitlesToFetch)) {
+        tasks.push(async () => {
           try {
             const resp = await fetch(`${API_BASE}/book/details`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -2338,8 +2388,27 @@ const attemptLoadSavedView = async () => {
             const data = await resp.json();
             if (resp.ok && data) bookDetails.set(title, data);
           } catch (_) {}
-        })
-      ]);
+        });
+      }
+      for (const typedId of Array.from(operaTypedIdsToFetch)) {
+        tasks.push(async () => {
+          try {
+            const raw = String(typedId.slice(6) || '').trim();
+            if (!raw) return;
+            const resp = await fetch(`${API_BASE}/opera/details`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ operaId: raw, opera_id: raw, operaName: raw })
+            });
+            const data = await resp.json();
+            const name = data?.opera?.opera_name;
+            if (resp.ok && name) {
+              operaNameByTypedId.set(typedId, name);
+              if (!operaDetails.has(name)) operaDetails.set(name, data);
+            }
+          } catch (_) {}
+        });
+      }
+      await runWithLimit(tasks, 4);
     } catch (_) {}
     const getNodeSources = (n) => {
       const empty = { spellingSource: '', voiceTypeSource: '', datesSource: '', birthplaceSource: '' };
@@ -2413,7 +2482,7 @@ const attemptLoadSavedView = async () => {
 
     const nameById = (id) => {
       const n = (networkData.nodes || []).find(x => x.id === id);
-      return (n && (n.name || n.id)) || id;
+      return (n && (n.name || n.opera_name || n.title || n.id)) || id;
     };
     const getCenterName = () => {
       if (itemDetails?.center?.full_name) return itemDetails.center.full_name;
@@ -2594,14 +2663,50 @@ const attemptLoadSavedView = async () => {
       return valToText(l.relationship_source || l.teacher_rel_source || '');
     };
 
+    // Helper to derive a human-friendly display for a node endpoint (object or typed id string)
+    const toTitleCase = (s) => String(s || '')
+      .split(' ')
+      .map(w => w ? (w.charAt(0).toUpperCase() + w.slice(1)) : '')
+      .join(' ');
+    const displayForEndpoint = (endpoint) => {
+      if (endpoint && typeof endpoint === 'object') {
+        return endpoint.name || endpoint.opera_name || endpoint.title || endpoint.full_name || valToText(endpoint);
+      }
+      const id = String(endpoint || '').trim();
+      if (!id) return '';
+      const colon = id.indexOf(':');
+      if (colon > 0) {
+        const type = id.slice(0, colon).toLowerCase();
+        const raw = id.slice(colon + 1);
+        if (type === 'opera') {
+          return operaNameByTypedId.get(id) || toTitleCase(raw);
+        }
+        if (type === 'book') {
+          // Best-effort: try to recover title from existing nodes or title-case the raw part
+          const byNode = nameById(id);
+          if (byNode && byNode !== id) return byNode;
+          return toTitleCase(raw);
+        }
+        if (type === 'person') {
+          const byNode = nameById(id);
+          if (byNode && byNode !== id) return byNode;
+          return toTitleCase(raw);
+        }
+      }
+      // Non-typed id or already a name
+      return nameById(id);
+    };
+
     // Relationships CSV: remove 'type', include only relationship source (resolved from itemDetails/fetched or link)
     const linkHeaders = ['source','label','target','role','relationshipSource'];
     const linkRows = (networkData.links || []).map(l => {
       const relSrc = getRelationshipSource2(l);
+      const sourceDisplay = displayForEndpoint(l.source);
+      const targetDisplay = displayForEndpoint(l.target);
       return {
-        source: typeof l.source === 'string' ? l.source : (l.source?.id || ''),
+        source: sourceDisplay,
         label: l.label || '',
-        target: typeof l.target === 'string' ? l.target : (l.target?.id || ''),
+        target: targetDisplay,
         role: l.role || '',
         relationshipSource: relSrc
       };
@@ -2613,6 +2718,9 @@ const attemptLoadSavedView = async () => {
     const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
     downloadBlob(new Blob([nodesCSV], { type: 'text/csv;charset=utf-8' }), `nodes-${ts}.csv`);
     downloadBlob(new Blob([linksCSV], { type: 'text/csv;charset=utf-8' }), `links-${ts}.csv`);
+    setIsExporting(false);
+    showHelperMessage('Export complete. Check your downloads.', 2400);
+  };
   };
 
   const goBack = () => {
@@ -14234,6 +14342,12 @@ const normalizeLinkForMerge = (link) => {
         )}
 
         {currentView === 'help' && (
+          <Suspense fallback={<div style={{ color: '#fff', textAlign: 'center', marginTop: 40 }}>Loading help…</div>}>
+            <HelpCenter onBack={() => setCurrentView('search')} />
+          </Suspense>
+        )}
+
+        {(currentView === 'help_bak_never_shown') && (
           <div style={{
             marginTop: '80px',
             display: 'flex',
@@ -14370,22 +14484,28 @@ const normalizeLinkForMerge = (link) => {
               <section>
                 <h3 style={{ margin: '0 0 18px 0', fontSize: '22px', color: '#0f172a' }}>Videos</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-                  {[1, 2, 3, 4].map((slot) => (
-                    <div
-                      key={slot}
-                      style={{
-                        height: 140,
-                        backgroundColor: '#e0edff',
-                        border: '2px dashed #3e96e2',
+                  {[
+                    { title: 'Overview', src: '/1_Basic_tour.mp4' },
+                    { title: 'Right Click Features', src: '/2_Right_click.mp4' },
+                    { title: 'Path and Filter', src: '/3_Path_and_filters.mp4' },
+                    { title: 'Save and Export', src: '/4_Save_and_export.mp4' }
+                  ].map((vid, idx) => (
+                    <div key={idx} style={{ display: 'flex', flexDirection: 'column' }}>
+                      <h4 style={{ margin: '0 0 8px 0', textAlign: 'center', fontSize: '18px', color: '#0f172a' }}>{vid.title}</h4>
+                      <div style={{
+                        backgroundColor: '#000',
+                        border: '2px solid #3e96e2',
                         borderRadius: '12px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#1d4ed8',
-                        fontWeight: 600
-                      }}
-                    >
-                      Video {slot}
+                        overflow: 'hidden'
+                      }}>
+                        <video
+                          controls
+                          style={{ width: '100%', display: 'block', aspectRatio: '16 / 9' }}
+                        >
+                          <source src={vid.src} type="video/mp4" />
+                          Your browser does not support the video tag.
+                        </video>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -15737,3 +15857,4 @@ const normalizeLinkForMerge = (link) => {
 
 
 export default ClassicalMusicGenealogy;
+const HelpCenter = React.lazy(() => import('./HelpCenter'));
