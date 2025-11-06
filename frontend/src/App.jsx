@@ -3,6 +3,7 @@ import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
 import initTouchInteractions from './touchInteractions';
+const HelpCenter = React.lazy(() => import('./HelpCenter'));
 
 // Global console helpers (defined at module load) to avoid undefined in console
 if (typeof window !== 'undefined') {
