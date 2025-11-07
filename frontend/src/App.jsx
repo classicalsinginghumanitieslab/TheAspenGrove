@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect, Suspense, useCallback } from 'react';
 import * as d3 from 'd3';
 import useViewport from './useViewport';
 import useDebounce from './useDebounce';
@@ -5466,6 +5466,11 @@ const normalizeLinkForMerge = (link) => {
       registerNodeAliases(aliasLookup, merged);
       return merged;
     });
+    const updatedNodeIndex = new Map();
+    updatedNodes.forEach((node, idx) => {
+      const key = normalizeNodeId(node?.id ?? node?.name);
+      if (key) updatedNodeIndex.set(key, idx);
+    });
 
     const existingIds = new Set(updatedNodes.map(n => normalizeNodeId(n.id ?? n.name)).filter(Boolean));
     const pendingNewMap = new Map();
@@ -5478,8 +5483,8 @@ const normalizeLinkForMerge = (link) => {
       if (!candidate) return;
       registerNodeAliases(aliasLookup, candidate);
       if (existingIds.has(candidate.id)) {
-        const idx = updatedNodes.findIndex(n => normalizeNodeId(n.id ?? n.name) === candidate.id);
-        if (idx !== -1) {
+        const idx = updatedNodeIndex.get(candidate.id);
+        if (typeof idx === 'number' && idx >= 0) {
           updatedNodes[idx] = mergeNodeAttributes(updatedNodes[idx], candidate);
         }
         const existingPending = pendingNewMap.get(candidate.id);
@@ -5518,20 +5523,15 @@ const normalizeLinkForMerge = (link) => {
       return true;
     });
     const validIds = new Set(combinedNodes.map(n => n.id));
-    const filteredLinks = (mergedLinks || []).filter(link => {
-      const sourceId = normalizeNodeId(
-        typeof link.source === 'string'
-          ? link.source
-          : link.source?.id ?? link.source?.name
-      );
-      const targetId = normalizeNodeId(
-        typeof link.target === 'string'
-          ? link.target
-          : link.target?.id ?? link.target?.name
-      );
-      if (!sourceId || !targetId) return false;
-      if (!validIds.has(sourceId) || !validIds.has(targetId)) return false;
-      return true;
+    const filteredLinks = [];
+    (mergedLinks || []).forEach(link => {
+      const sourceId = normalizeNodeId(resolveLinkEndpointId(link?.source));
+      const targetId = normalizeNodeId(resolveLinkEndpointId(link?.target));
+      if (!sourceId || !targetId) return;
+      if (!validIds.has(sourceId) || !validIds.has(targetId)) return;
+      if (link.source !== sourceId) link.source = sourceId;
+      if (link.target !== targetId) link.target = targetId;
+      filteredLinks.push(link);
     });
 
     return sanitizeGraphData({
@@ -7096,7 +7096,19 @@ const normalizeLinkForMerge = (link) => {
     const viewportIsPhone = !!viewportInfo.isPhone;
     const viewportIsTablet = !!viewportInfo.isTablet;
     const containerRef = useRef(null);
-    const isSimulationActiveRef = useRef(true);
+    const isSimulationActiveRef = useRef(false);
+    const activeSimulationCountRef = useRef(0);
+    const [isSimulationLocked, setIsSimulationLocked] = useState(false);
+    const updateSimulationActive = useCallback((active) => {
+      if (active) {
+        activeSimulationCountRef.current += 1;
+      } else {
+        activeSimulationCountRef.current = Math.max(0, activeSimulationCountRef.current - 1);
+      }
+      const isLocked = activeSimulationCountRef.current > 0;
+      isSimulationActiveRef.current = isLocked;
+      setIsSimulationLocked(isLocked);
+    }, []);
     const zoomRef = useRef(null);
     const zoomTransformRef = useRef(d3.zoomIdentity);
     const zoomLockedRef = useRef(false);
@@ -7417,6 +7429,7 @@ const normalizeLinkForMerge = (link) => {
       // Create zoom behavior
       const zoom = d3.zoom()
         .filter((event) => {
+          if (isSimulationActiveRef.current) return false;
           // Allow wheel zoom always; block double-click zoom entirely
           if (event.type === 'wheel') return true;
           if (event.type === 'dblclick') return false;
@@ -7434,6 +7447,11 @@ const normalizeLinkForMerge = (link) => {
         .translateExtent([[-1e6, -1e6], [1e6, 1e6]])
         .scaleExtent([0.1, 4])
         .on("zoom", (event) => {
+          if (isSimulationActiveRef.current) {
+            const target = uiZoomRef.current || d3.zoomIdentity;
+            applyZoomTransformSilently(target);
+            return;
+          }
           // Hard block any zoom while menus are open or during menu open/close
           if (zoomLockedRef.current || contextMenu.show || linkContextMenu.show) {
             const target = uiZoomRef.current || d3.zoomIdentity;
@@ -9375,7 +9393,7 @@ const normalizeLinkForMerge = (link) => {
           } catch (_) {}
 
           simulationRef.current = simulation;
-          isSimulationActiveRef.current = true;
+          updateSimulationActive(true);
           try { zoomLockedRef.current = true; } catch (_) {}
 
           // Let simulation run for optimal balance of speed and quality
@@ -9386,7 +9404,7 @@ const normalizeLinkForMerge = (link) => {
               if (coolTimeout) clearTimeout(coolTimeout);
               try { simulation.alphaTarget(0); } catch (_) {}
               simulation.stop();
-              isSimulationActiveRef.current = false;
+              updateSimulationActive(false);
               setShouldRunSimulation(false);
               try { zoomLockedRef.current = false; } catch (_) {}
               if (isExpansion) {
@@ -9426,7 +9444,7 @@ const normalizeLinkForMerge = (link) => {
             if (settleTimeout) clearTimeout(settleTimeout);
             if (coolTimeout) clearTimeout(coolTimeout);
             try { simulation.alphaTarget(0); } catch (_) {}
-            isSimulationActiveRef.current = false;
+            updateSimulationActive(false);
             setShouldRunSimulation(false); // Clear flag when simulation ends
             try { zoomLockedRef.current = false; } catch (_) {}
             if (isExpansion) {
@@ -9528,7 +9546,7 @@ const normalizeLinkForMerge = (link) => {
           } catch (diagErr) {
             console.warn('[cmg-debug] Failed to collect simulation diagnostics', diagErr);
           }
-          isSimulationActiveRef.current = false;
+          updateSimulationActive(false);
           setShouldRunSimulation(false);
           flushPendingHelperMessage();
         }
@@ -9647,7 +9665,7 @@ const normalizeLinkForMerge = (link) => {
             });
           } catch (_) {}
         } catch (_) {}
-        isSimulationActiveRef.current = false;
+        updateSimulationActive(false);
         renderNetwork();
         flushPendingHelperMessage();
       }
@@ -9915,6 +9933,32 @@ const normalizeLinkForMerge = (link) => {
             marginBottom: viewportIsPhone ? '24px' : 0
           }}
         >
+          {isSimulationLocked && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                pointerEvents: 'auto',
+                backgroundColor: viewportIsPhone ? 'rgba(15,23,42,0.18)' : 'transparent',
+                color: '#f8fafc',
+                fontWeight: 600,
+                textAlign: 'center',
+                fontSize: viewportIsPhone ? 16 : 14,
+                cursor: viewportIsPhone ? 'default' : 'progress'
+              }}
+            >
+              {viewportIsPhone && (
+                <span style={{ padding: '8px 16px', borderRadius: 999, backgroundColor: 'rgba(15,23,42,0.45)' }}>
+                  Layout stabilizing…
+                </span>
+              )}
+            </div>
+          )}
           <svg ref={svgRef}></svg>
 
           <ContextMenu />
@@ -12403,6 +12447,7 @@ const normalizeLinkForMerge = (link) => {
     const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [showTerms, setShowTerms] = useState(false);
     const [termsChecked, setTermsChecked] = useState(false);
     const [isForgotPassword, setIsForgotPassword] = useState(false);
@@ -12917,13 +12962,35 @@ const normalizeLinkForMerge = (link) => {
 
               <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
                 <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  style={inputStyle}
-                  placeholder="••••••••"
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    style={{ ...inputStyle, paddingRight: '44px' }}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    style={{
+                      position: 'absolute',
+                      right: isMobileViewport ? 8 : 6,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      border: 'none',
+                      background: 'none',
+                      color: '#2563eb',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      padding: '4px 6px'
+                    }}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
               </div>
 
               {error && (
