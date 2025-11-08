@@ -125,7 +125,7 @@ export default function HelpCenter({ onBack }) {
             Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
           </p>
           <p style={{ marginTop: '12px', color: '#374151' }}>
-            I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
+            I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (15,000 singers, 6,100 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
           </p>
           <p style={{ marginTop: '12px', color: '#374151' }}>
             If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank" rel="noopener noreferrer">this form</a>, and I will incorporate it as quickly as I can.
@@ -139,10 +139,10 @@ export default function HelpCenter({ onBack }) {
           <h3 style={{ margin: '0 0 18px 0', fontSize: '22px', color: '#0f172a' }}>Videos</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
             {[
-              { title: 'Overview', src: '/1_Basic_tour.mp4' },
-              { title: 'Right Click Features', src: '/2_Right_click.mp4' },
-              { title: 'Path and Filter', src: '/3_Path_and_filters.mp4' },
-              { title: 'Save and Export', src: '/4_Save_and_export.mp4' }
+              { title: 'Overview', src: 'https://www.youtube.com/embed/7YsPYQHkVD8' },
+              { title: 'Right Click Features', src: 'https://www.youtube.com/embed/7s90T9xYRdI' },
+              { title: 'Path and Filter', src: 'https://www.youtube.com/embed/yCaz35oLSbg' },
+              { title: 'Save and Export', src: 'https://www.youtube.com/embed/TN6TJmkXrsY' }
             ].map((vid, idx) => (
               <div key={idx} style={{ display: 'flex', flexDirection: 'column' }}>
                 <h4 style={{ margin: '0 0 8px 0', textAlign: 'center', fontSize: '18px', color: '#0f172a' }}>{vid.title}</h4>
@@ -150,12 +150,16 @@ export default function HelpCenter({ onBack }) {
                   backgroundColor: '#000',
                   border: '2px solid #3e96e2',
                   borderRadius: '12px',
-                  overflow: 'hidden'
+                  overflow: 'hidden',
+                  aspectRatio: '16 / 9'
                 }}>
-                  <video controls playsInline preload="metadata" style={{ width: '100%', display: 'block', aspectRatio: '16 / 9' }}>
-                    <source src={vid.src} type="video/mp4" />
-                    Your browser does not support the video tag.
-                  </video>
+                  <iframe
+                    title={vid.title}
+                    src={`${vid.src}?rel=0`}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                    style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+                  />
                 </div>
               </div>
             ))}

@@ -407,8 +407,20 @@ const renderRelationshipSourceLink = (...values) => {
     } catch (_) {}
   }
 
-  if (url && !textContainsUrl) {
-    const display = text || url;
+  if (url) {
+    let display = text || url;
+    if (textContainsUrl && text) {
+      const strippedVariants = [url, url.replace(/^https?:\/\//i, '')];
+      let cleaned = text;
+      strippedVariants.forEach((variant) => {
+        if (!variant) return;
+        const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        cleaned = cleaned.replace(new RegExp(escaped, 'gi'), '').trim();
+      });
+      if (cleaned) {
+        display = cleaned;
+      }
+    }
     return (
       <a
         href={url}
@@ -1354,7 +1366,8 @@ const pendingHelperMessageRef = useRef(null);
     }
   };
 
-  const svgRef = useRef(null);
+const svgRef = useRef(null);
+const centerOnNodeRef = useRef(null);
   const simulationRef = useRef(null);
   const submenuTimeoutRef = useRef(null);
   // Group-drag tracking for path overlay clusters
@@ -1379,6 +1392,10 @@ const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
   const resultsHaloTimeoutRef = useRef(null);
   const [rateLimitedUntil, setRateLimitedUntil] = useState(0);
   const rateLimitedUntilRef = useRef(0);
+  const rateLimitClearTimeoutRef = useRef(null);
+  const rateLimitIntervalRef = useRef(null);
+  const rateLimitMessageTokenRef = useRef(0);
+  const rateLimitCooldownTimeoutRef = useRef(null);
   const [showSavedViewDialog, setShowSavedViewDialog] = useState(false);
   const [savedViewToken, setSavedViewToken] = useState('');
   const [savedViewLabel, setSavedViewLabel] = useState('');
@@ -1920,11 +1937,115 @@ const renderSaveExportToggle = ({
   // Utility: sleep
   const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
+  const RATE_LIMIT_MIN_WAIT_MS = 1000;
+  const RATE_LIMIT_DEFAULT_WAIT_MS = 2000;
+  const isRateLimitMessage = (msg) => typeof msg === 'string' && msg.startsWith('Too many requests –');
+  const formatRateLimitWaitMessage = (untilTs) => {
+    if (!untilTs) return 'Too many requests – please try again shortly.';
+    const msRemaining = Math.max(0, untilTs - Date.now());
+    const secs = Math.max(1, Math.ceil(msRemaining / 1000));
+    return `Too many requests – please try again in ${secs}s`;
+  };
+  const scheduleRateLimitCooldown = (rawWaitMs = RATE_LIMIT_DEFAULT_WAIT_MS, { suppressMessage = false } = {}) => {
+    const waitMs = Math.max(RATE_LIMIT_MIN_WAIT_MS, rawWaitMs || RATE_LIMIT_DEFAULT_WAIT_MS);
+    const nowTs = Date.now();
+    const currentUntil = rateLimitedUntilRef.current || 0;
+    const proposedUntil = nowTs + waitMs;
+    const untilTs = Math.max(currentUntil, proposedUntil);
+    rateLimitedUntilRef.current = untilTs;
+    try { setRateLimitedUntil(untilTs); } catch (_) {}
+    if (rateLimitCooldownTimeoutRef.current) {
+      clearTimeout(rateLimitCooldownTimeoutRef.current);
+      rateLimitCooldownTimeoutRef.current = null;
+    }
+    const cooldownWait = Math.max(0, untilTs - nowTs);
+    rateLimitCooldownTimeoutRef.current = setTimeout(() => {
+      if (rateLimitedUntilRef.current <= untilTs) {
+        rateLimitedUntilRef.current = 0;
+        try { setRateLimitedUntil(0); } catch (_) {}
+      }
+    }, cooldownWait + 50);
+    if (suppressMessage) {
+      return { waitMs, untilTs, message: formatRateLimitWaitMessage(untilTs) };
+    }
+    if (rateLimitClearTimeoutRef.current) {
+      clearTimeout(rateLimitClearTimeoutRef.current);
+      rateLimitClearTimeoutRef.current = null;
+    }
+    if (rateLimitIntervalRef.current) {
+      clearInterval(rateLimitIntervalRef.current);
+      rateLimitIntervalRef.current = null;
+    }
+    const token = (rateLimitMessageTokenRef.current || 0) + 1;
+    rateLimitMessageTokenRef.current = token;
+    const updateCountdownMessage = () => {
+      if (rateLimitMessageTokenRef.current !== token) return;
+      const currentUntil = rateLimitedUntilRef.current || 0;
+      if (!currentUntil || Date.now() >= currentUntil) {
+        rateLimitedUntilRef.current = 0;
+        try { setRateLimitedUntil(0); } catch (_) {}
+        try {
+          setError((prev) => (isRateLimitMessage(prev) ? '' : prev));
+        } catch (_) {}
+        if (rateLimitIntervalRef.current) {
+          clearInterval(rateLimitIntervalRef.current);
+          rateLimitIntervalRef.current = null;
+        }
+        return;
+      }
+      try { setError(formatRateLimitWaitMessage(currentUntil)); } catch (_) {}
+    };
+    updateCountdownMessage();
+    rateLimitIntervalRef.current = setInterval(updateCountdownMessage, 1000);
+    rateLimitClearTimeoutRef.current = setTimeout(() => {
+      if (rateLimitMessageTokenRef.current !== token) return;
+      rateLimitClearTimeoutRef.current = null;
+      updateCountdownMessage();
+    }, cooldownWait + 150);
+    return { waitMs, untilTs, message: formatRateLimitWaitMessage(untilTs) };
+  };
+  const handleRateLimitResponse = (response, fallbackMs = RATE_LIMIT_DEFAULT_WAIT_MS, options = {}) => {
+    if (!response || response.status !== 429) return null;
+    const headers = response.headers && typeof response.headers.get === 'function' ? response.headers : null;
+    const retryAfterHeader = headers ? (headers.get('Retry-After') || headers.get('retry-after')) : null;
+    const rateLimitResetHeader = headers ? (headers.get('RateLimit-Reset') || headers.get('ratelimit-reset')) : null;
+    let waitMs = fallbackMs;
+    if (retryAfterHeader) {
+      const parsed = Number(retryAfterHeader);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        waitMs = parsed * 1000;
+      }
+    } else if (rateLimitResetHeader) {
+      const parsed = Number(rateLimitResetHeader);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        waitMs = Math.max(waitMs, parsed * 1000);
+      }
+    }
+    return scheduleRateLimitCooldown(waitMs, options);
+  };
+  useEffect(() => {
+    return () => {
+      if (rateLimitClearTimeoutRef.current) {
+        clearTimeout(rateLimitClearTimeoutRef.current);
+        rateLimitClearTimeoutRef.current = null;
+      }
+      if (rateLimitIntervalRef.current) {
+        clearInterval(rateLimitIntervalRef.current);
+        rateLimitIntervalRef.current = null;
+      }
+      if (rateLimitCooldownTimeoutRef.current) {
+        clearTimeout(rateLimitCooldownTimeoutRef.current);
+        rateLimitCooldownTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   // Fetch with retry and exponential backoff (handles 429 with Retry-After)
   const fetchWithRetry = async (url, options = {}, { retries = 2, baseDelay = 500 } = {}) => {
     let attempt = 0;
     let lastErr;
     let lastStatus = null;
+    let lastRateLimitMessage = '';
     while (attempt <= retries) {
       try {
         // Global cooldown if we've recently been rate-limited
@@ -1936,14 +2057,10 @@ const renderSaveExportToggle = ({
         const resp = await fetch(url, options);
         lastStatus = resp.status;
         if (resp.status === 429) {
-          // Too many requests: respect Retry-After if provided
-          const ra = resp.headers && (resp.headers.get('Retry-After') || resp.headers.get('retry-after'));
-          const waitMs = ra ? (parseFloat(ra) * 1000) : (baseDelay * Math.pow(2, attempt));
-          const capped = Math.min(waitMs || baseDelay, 10000);
-          const untilTs = Date.now() + capped;
-          rateLimitedUntilRef.current = untilTs;
-          try { setRateLimitedUntil(untilTs); } catch (_) {}
-          await sleep(capped);
+          const fallbackDelay = baseDelay * Math.pow(2, attempt);
+          const info = handleRateLimitResponse(resp, fallbackDelay);
+          lastRateLimitMessage = info?.message || formatRateLimitWaitMessage(rateLimitedUntilRef.current);
+          await sleep(info?.waitMs || fallbackDelay || RATE_LIMIT_DEFAULT_WAIT_MS);
           attempt += 1;
           continue;
         }
@@ -1955,7 +2072,7 @@ const renderSaveExportToggle = ({
       }
     }
     if (lastErr) throw lastErr;
-    if (lastStatus === 429) throw new Error('Too many requests, please try again later');
+    if (lastStatus === 429) throw new Error(lastRateLimitMessage || formatRateLimitWaitMessage(rateLimitedUntilRef.current || (Date.now() + RATE_LIMIT_DEFAULT_WAIT_MS)));
     throw new Error('Request failed');
   };
 
@@ -1985,6 +2102,7 @@ const renderSaveExportToggle = ({
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ singerName: fullName, depth: 1 })
       });
+      if (handleRateLimitResponse(resp)) return null;
       const data = await resp.json();
       if (resp.ok && data && data.center) {
         cache.set(fullName, data);
@@ -2104,6 +2222,8 @@ const renderSaveExportToggle = ({
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ snapshot, label: saveLabel || '' })
       });
+      const rateInfo = handleRateLimitResponse(resp);
+      if (rateInfo) throw new Error(rateInfo.message);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Failed');
       setSaveLabel('');
@@ -2124,6 +2244,8 @@ const renderSaveExportToggle = ({
       const resp = await fetch(`${API_BASE}/views`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+      const rateInfo = handleRateLimitResponse(resp);
+      if (rateInfo) throw new Error(rateInfo.message);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Failed');
       setSavedViews(data.views || []);
@@ -2307,6 +2429,54 @@ const attemptLoadSavedView = async () => {
       }
       return String(v);
     };
+    const SOURCE_FIELD_KEYS = {
+      spelling: [
+        'spelling_source_url',
+        'spellingSourceUrl',
+        'spelling_source_text',
+        'spellingSourceText',
+        'spelling_source',
+        'spellingSource'
+      ],
+      voiceType: [
+        'voice_type_source_url',
+        'voiceType_source_url',
+        'voiceTypeSourceUrl',
+        'voice_type_source_text',
+        'voiceType_source_text',
+        'voiceTypeSourceText',
+        'voice_type_source',
+        'voiceType_source',
+        'voiceTypeSource'
+      ],
+      dates: [
+        'dates_source_url',
+        'datesSourceUrl',
+        'dates_source_text',
+        'datesSourceText',
+        'dates_source',
+        'datesSource'
+      ],
+      birthplace: [
+        'birthplace_source_url',
+        'birthplaceSourceUrl',
+        'birthplace_source_text',
+        'birthplaceSourceText',
+        'birthplace_source',
+        'birthplaceSource'
+      ]
+    };
+    const pickSourceValue = (entity, key) => {
+      if (!entity) return '';
+      const candidates = SOURCE_FIELD_KEYS[key] || [];
+      for (const candidate of candidates) {
+        if (Object.prototype.hasOwnProperty.call(entity, candidate)) {
+          const value = entity[candidate];
+          if (value !== undefined && value !== null && value !== '') return value;
+        }
+      }
+      return '';
+    };
 
     // Collect names/ids to fetch for export-only enrichment (no UI changes)
     const personNamesToFetch = new Set();
@@ -2316,7 +2486,11 @@ const attemptLoadSavedView = async () => {
 
     (networkData.nodes || []).forEach(n => {
       if (n.type === 'person' && n.name) {
-        const hasAnySource = n.spelling_source || n.voice_type_source || n.dates_source || n.birthplace_source;
+        const hasAnySource =
+          pickSourceValue(n, 'spelling') ||
+          pickSourceValue(n, 'voiceType') ||
+          pickSourceValue(n, 'dates') ||
+          pickSourceValue(n, 'birthplace');
         const hasDetails = n.voiceType || n.birthYear || n.deathYear || n.birthplace || n.citizen || n.birthplace;
         if (!hasAnySource || !hasDetails) personNamesToFetch.add(n.name);
       } else if (n.type === 'opera' && n.name) {
@@ -2362,6 +2536,7 @@ const attemptLoadSavedView = async () => {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ singerName: full_name, depth: 1 })
             });
+            if (handleRateLimitResponse(resp, undefined, { suppressMessage: true })) return;
             const data = await resp.json();
             if (resp.ok && data && data.center) personDetails.set(full_name, data);
           } catch (_) {}
@@ -2374,6 +2549,7 @@ const attemptLoadSavedView = async () => {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ operaName })
             });
+            if (handleRateLimitResponse(resp, undefined, { suppressMessage: true })) return;
             const data = await resp.json();
             if (resp.ok && data) operaDetails.set(operaName, data);
           } catch (_) {}
@@ -2386,6 +2562,7 @@ const attemptLoadSavedView = async () => {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ bookTitle: title })
             });
+            if (handleRateLimitResponse(resp, undefined, { suppressMessage: true })) return;
             const data = await resp.json();
             if (resp.ok && data) bookDetails.set(title, data);
           } catch (_) {}
@@ -2400,6 +2577,7 @@ const attemptLoadSavedView = async () => {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ operaId: raw, opera_id: raw, operaName: raw })
             });
+            if (handleRateLimitResponse(resp, undefined, { suppressMessage: true })) return;
             const data = await resp.json();
             const name = data?.opera?.opera_name;
             if (resp.ok && name) {
@@ -2415,10 +2593,10 @@ const attemptLoadSavedView = async () => {
       const empty = { spellingSource: '', voiceTypeSource: '', datesSource: '', birthplaceSource: '' };
       // Prefer direct properties on node
       const fromNode = {
-        spellingSource: n.spelling_source || n.spellingSource,
-        voiceTypeSource: n.voice_type_source || n.voiceType_source || n.voiceTypeSource,
-        datesSource: n.dates_source || n.datesSource,
-        birthplaceSource: n.birthplace_source || n.birthplaceSource || null
+        spellingSource: pickSourceValue(n, 'spelling'),
+        voiceTypeSource: pickSourceValue(n, 'voiceType'),
+        datesSource: pickSourceValue(n, 'dates'),
+        birthplaceSource: pickSourceValue(n, 'birthplace')
       };
       if (fromNode.spellingSource || fromNode.voiceTypeSource || fromNode.datesSource || fromNode.birthplaceSource) {
         return {
@@ -2434,47 +2612,47 @@ const attemptLoadSavedView = async () => {
       if (pd && pd.center) {
         const c = pd.center;
         return {
-          spellingSource: valToText(c.spelling_source),
-          voiceTypeSource: valToText(c.voice_type_source),
-          datesSource: valToText(c.dates_source),
-          birthplaceSource: valToText(c.birthplace_source)
+          spellingSource: valToText(pickSourceValue(c, 'spelling')),
+          voiceTypeSource: valToText(pickSourceValue(c, 'voiceType')),
+          datesSource: valToText(pickSourceValue(c, 'dates')),
+          birthplaceSource: valToText(pickSourceValue(c, 'birthplace'))
         };
       }
       const center = (itemDetails && itemDetails.center) ? itemDetails.center : null;
       const matchByName = (arr) => (arr || []).find(x => (x && (x.full_name === name || x.name === name)));
       if (center && (center.full_name === name)) {
         return {
-          spellingSource: valToText(center.spelling_source),
-          voiceTypeSource: valToText(center.voice_type_source),
-          datesSource: valToText(center.dates_source),
-          birthplaceSource: valToText(center.birthplace_source)
+          spellingSource: valToText(pickSourceValue(center, 'spelling')),
+          voiceTypeSource: valToText(pickSourceValue(center, 'voiceType')),
+          datesSource: valToText(pickSourceValue(center, 'dates')),
+          birthplaceSource: valToText(pickSourceValue(center, 'birthplace'))
         };
       }
       const t = matchByName(itemDetails?.teachers);
       if (t) {
         return {
-          spellingSource: valToText(t.spelling_source),
-          voiceTypeSource: valToText(t.voice_type_source),
-          datesSource: valToText(t.dates_source),
-          birthplaceSource: valToText(t.birthplace_source)
+          spellingSource: valToText(pickSourceValue(t, 'spelling')),
+          voiceTypeSource: valToText(pickSourceValue(t, 'voiceType')),
+          datesSource: valToText(pickSourceValue(t, 'dates')),
+          birthplaceSource: valToText(pickSourceValue(t, 'birthplace'))
         };
       }
       const s = matchByName(itemDetails?.students);
       if (s) {
         return {
-          spellingSource: valToText(s.spelling_source),
-          voiceTypeSource: valToText(s.voice_type_source),
-          datesSource: valToText(s.dates_source),
-          birthplaceSource: valToText(s.birthplace_source)
+          spellingSource: valToText(pickSourceValue(s, 'spelling')),
+          voiceTypeSource: valToText(pickSourceValue(s, 'voiceType')),
+          datesSource: valToText(pickSourceValue(s, 'dates')),
+          birthplaceSource: valToText(pickSourceValue(s, 'birthplace'))
         };
       }
       const f = matchByName(itemDetails?.family);
       if (f) {
         return {
-          spellingSource: valToText(f.spelling_source),
-          voiceTypeSource: valToText(f.voice_type_source),
-          datesSource: valToText(f.dates_source),
-          birthplaceSource: valToText(f.birthplace_source)
+          spellingSource: valToText(pickSourceValue(f, 'spelling')),
+          voiceTypeSource: valToText(pickSourceValue(f, 'voiceType')),
+          datesSource: valToText(pickSourceValue(f, 'dates')),
+          birthplaceSource: valToText(pickSourceValue(f, 'birthplace'))
         };
       }
       // For non-person nodes or if nothing found, return empty
@@ -2701,7 +2879,7 @@ const attemptLoadSavedView = async () => {
     // Relationships CSV: remove 'type', include only relationship source (resolved from itemDetails/fetched or link)
     const linkHeaders = ['source','label','target','role','relationshipSource'];
     const linkRows = (networkData.links || []).map(l => {
-      const relSrc = getRelationshipSource2(l);
+      const relSrc = l.teacher_rel_source_url ? valToText(l.teacher_rel_source_url) : getRelationshipSource2(l);
       const sourceDisplay = displayForEndpoint(l.source);
       const targetDisplay = displayForEndpoint(l.target);
       return {
@@ -3594,15 +3772,18 @@ const attemptLoadSavedView = async () => {
   // Prefetch actual expandable relationship counts for newly added nodes to avoid delay on right-click
   const prevNodeIdsRef = useRef(new Set());
   useEffect(() => {
-    if (!token || loading || isSearchingRef.current || currentView !== 'network' || (rateLimitedUntilRef.current && Date.now() < rateLimitedUntilRef.current)) return;
+    if (!token || loading || isSearchingRef.current || currentView !== 'network') return;
+    const cooldown = rateLimitedUntilRef.current || 0;
+    if (cooldown && Date.now() < cooldown) return;
     const currentIds = new Set(networkData.nodes.map(n => n.id));
+    const isExpansion = Boolean(isExpansionSimulation || shouldRunSimulation);
     const newlyAddedIds = [];
     currentIds.forEach((id) => {
       if (!prevNodeIdsRef.current.has(id)) newlyAddedIds.push(id);
     });
     prevNodeIdsRef.current = currentIds;
 
-    if (newlyAddedIds.length === 0) return;
+    if (newlyAddedIds.length === 0 || isExpansion) return;
 
     const fetchingIds = new Set(Object.keys(fetchingCounts).filter(k => fetchingCounts[k]));
     const PREFETCH_LIMIT = 2;
@@ -3731,7 +3912,12 @@ const attemptLoadSavedView = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      
+      const rateInfo = handleRateLimitResponse(response);
+      if (rateInfo) {
+        setLoading(false);
+        return { success: false, error: rateInfo.message };
+      }
+
       const text = await response.text();
       let data;
       try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
@@ -3774,6 +3960,12 @@ const attemptLoadSavedView = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, acceptedDisclaimer })
       });
+      const rateInfo = handleRateLimitResponse(response);
+      if (rateInfo) {
+        setLoading(false);
+        setError(rateInfo.message);
+        return;
+      }
       
       const text = await response.text();
       let data;
@@ -3820,8 +4012,7 @@ const attemptLoadSavedView = async () => {
       const until = rateLimitedUntilRef.current || 0;
       const now = Date.now();
       if (until && now < until) {
-        const secs = Math.max(1, Math.ceil((until - now) / 1000));
-        setError(`Too many requests – please try again in ${secs}s`);
+        setError(formatRateLimitWaitMessage(until));
         setLoading(false);
         return;
       }
@@ -5581,6 +5772,9 @@ const normalizeLinkForMerge = (link) => {
   // Function to expand all relationships for a node
   const expandAllRelationships = async (node) => {
     try {
+      if (centerOnNodeRef.current && (node?.id || node?.name)) {
+        centerOnNodeRef.current(node.id || node.name, { duration: 650 });
+      }
       pushHistory('expand-all');
       setLoading(true);
       showHelperMessage('', 0);
@@ -5624,6 +5818,10 @@ const normalizeLinkForMerge = (link) => {
         });
       }
 
+      if (response && handleRateLimitResponse(response)) {
+        setLoading(false);
+        return;
+      }
       if (response) {
         let responseText = '';
         try {
@@ -6133,6 +6331,9 @@ const normalizeLinkForMerge = (link) => {
   // Function to expand specific relationship type
   const expandSpecificRelationship = async (node, relationshipType) => {
     try {
+      if (centerOnNodeRef.current && (node?.id || node?.name)) {
+        centerOnNodeRef.current(node.id || node.name, { duration: 650 });
+      }
       pushHistory(`expand-${relationshipType}`);
       setLoading(true);
       const expansionBatchId = Date.now();
@@ -7099,6 +7300,67 @@ const normalizeLinkForMerge = (link) => {
     const isSimulationActiveRef = useRef(false);
     const activeSimulationCountRef = useRef(0);
     const [isSimulationLocked, setIsSimulationLocked] = useState(false);
+    const latestNodesRef = useRef([]);
+    useEffect(() => {
+      latestNodesRef.current = Array.isArray(networkData?.nodes) ? networkData.nodes : [];
+    }, [networkData?.nodes]);
+
+    const panToNode = useCallback((nodeId, { duration = 650 } = {}) => {
+      const normalizedId = normalizeNodeId(nodeId);
+      if (!normalizedId) return;
+      const nodes = latestNodesRef.current || [];
+      const targetNode = nodes.find(n => normalizeNodeId(n?.id ?? n?.name) === normalizedId);
+      if (!targetNode || !Number.isFinite(targetNode.x) || !Number.isFinite(targetNode.y)) return;
+      const container = containerRef.current;
+      const svgEl = svgRef.current;
+      const zoom = zoomRef.current;
+      if (!container || !svgEl || !zoom) return;
+      const width = container.clientWidth || container.offsetWidth || visualizationHeight || 0;
+      const height = container.clientHeight || container.offsetHeight || visualizationHeight || 0;
+      if (!width || !height) return;
+      const current = uiZoomRef.current || d3.zoomIdentity;
+      const scale = current.k || 1;
+      const target = d3.zoomIdentity
+        .translate(width / 2, height / 2)
+        .scale(scale)
+        .translate(-(Number(targetNode.x) || 0), -(Number(targetNode.y) || 0));
+      const finalize = () => {
+        zoomTransformRef.current = target;
+        uiZoomRef.current = target;
+        try { window.__cmg_zoomTransform = target; } catch (_) {}
+      };
+      try {
+        const svgSelection = d3.select(svgEl);
+        svgSelection.interrupt('cmg-center-node');
+        const transition = svgSelection
+          .transition('cmg-center-node')
+          .duration(Math.max(0, duration || 0))
+          .ease(d3.easeCubicOut)
+          .call(zoom.transform, target);
+        transition
+          .on('end', finalize)
+          .on('interrupt', finalize);
+      } catch (_) {
+        try {
+          zoom.transform(d3.select(svgEl), target);
+        } catch (_) {
+          try {
+            d3.select(svgEl).property('__zoom', target);
+            d3.select(svgEl).select('g').attr('transform', target);
+          } catch (_) {}
+        }
+        finalize();
+      }
+    }, [visualizationHeight]);
+
+    useEffect(() => {
+      centerOnNodeRef.current = panToNode;
+      return () => {
+        if (centerOnNodeRef.current === panToNode) {
+          centerOnNodeRef.current = null;
+        }
+      };
+    }, [panToNode]);
     const updateSimulationActive = useCallback((active) => {
       if (active) {
         activeSimulationCountRef.current += 1;
@@ -7453,7 +7715,7 @@ const normalizeLinkForMerge = (link) => {
             return;
           }
           // Hard block any zoom while menus are open or during menu open/close
-          if (zoomLockedRef.current || contextMenu.show || linkContextMenu.show) {
+          if ((zoomLockedRef.current && event.sourceEvent) || contextMenu.show || linkContextMenu.show) {
             const target = uiZoomRef.current || d3.zoomIdentity;
             const current = d3.select(svgRef.current).property('__zoom') || d3.zoomIdentity;
             if (!(Math.abs(target.k - current.k) < 1e-6 && Math.abs(target.x - current.x) < 1e-6 && Math.abs(target.y - current.y) < 1e-6)) {
@@ -8688,16 +8950,19 @@ const normalizeLinkForMerge = (link) => {
             // Snapshot prior to opening context menu / expansions
             pushHistory('context-open');
             zoomLockedRef.current = true;
-            setContextMenu({ show: true, x: finalX, y: finalY, node: d });
-            setExpandSubmenu(null);
             try {
-              const t = zoomTransformRef.current || d3.zoomIdentity;
-              const svgSel = d3.select(svgRef.current);
-              svgSel.property('__zoom', t);
-              g.attr('transform', t);
-            } catch (_) {}
-            // Unlock after a short delay to allow React to render menu without D3 zoom interference
-            setTimeout(() => { zoomLockedRef.current = false; }, 50);
+              setContextMenu({ show: true, x: finalX, y: finalY, node: d });
+              setExpandSubmenu(null);
+              try {
+                const t = zoomTransformRef.current || d3.zoomIdentity;
+                const svgSel = d3.select(svgRef.current);
+                svgSel.property('__zoom', t);
+                g.attr('transform', t);
+              } catch (_) {}
+            } finally {
+              // Unlock after a short delay to allow React to render menu without D3 zoom interference
+              setTimeout(() => { zoomLockedRef.current = false; }, 50);
+            }
           }, 0);
           // Clear any pending submenu timeout
           if (submenuTimeoutRef.current) {
@@ -10115,6 +10380,9 @@ const normalizeLinkForMerge = (link) => {
                       };
                     })
                     .filter(Boolean);
+                  if (centerOnNodeRef.current && sanitizedPathNodes.length > 0) {
+                    centerOnNodeRef.current(sanitizedPathNodes[0].id, { duration: 700 });
+                  }
                   const pathNodeIdSet = new Set(sanitizedPathNodes.map(n => n.id));
                   const rawPathLinks = Array.isArray(data.links) ? data.links : [];
                   const sanitizedPathLinks = rawPathLinks
@@ -12273,17 +12541,17 @@ const normalizeLinkForMerge = (link) => {
               <strong style={{ color: '#1f2937' }}>Dates:</strong>
               <div style={{ color: '#374151', marginTop: '2px' }}>
                 {data.birth_year && data.death_year
-                  ? `${data.birth_year} - ${data.death_year}`
+                  ? `${data.birth_year}-${data.death_year}`
                   : data.birth_year
-                  ? `${data.birth_year} - `
+                  ? `${data.birth_year}-`
                   : data.death_year
-                  ? ` - ${data.death_year}`
+                  ? `-${data.death_year}`
                   : (data.birth && data.death)
-                  ? `${data.birth.low} - ${data.death.low}`
+                  ? `${data.birth.low}-${data.death.low}`
                   : data.birth
-                  ? `${data.birth.low} - `
+                  ? `${data.birth.low}-`
                   : data.death
-                  ? ` - ${data.death.low}`
+                  ? `-${data.death.low}`
                   : ''}
               </div>
             </div>
@@ -12562,6 +12830,10 @@ const normalizeLinkForMerge = (link) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pendingToken: pendingTosToken })
           });
+          const rateInfo = handleRateLimitResponse(response);
+          if (rateInfo) {
+            throw new Error(rateInfo.message);
+          }
           const data = await response.json().catch(() => ({}));
           if (!response.ok) {
             throw new Error(data.error || 'Failed to record acknowledgement.');
@@ -12653,13 +12925,17 @@ const normalizeLinkForMerge = (link) => {
       setForgotLoading(true);
       setForgotMessage('');
       setForgotError('');
-      try {
-        const response = await fetch(`${API_BASE}/auth/forgot-password`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: targetEmail })
-        });
-        const data = await response.json().catch(() => ({}));
+    try {
+      const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail })
+      });
+      const rateInfo = handleRateLimitResponse(response);
+      if (rateInfo) {
+        throw new Error(rateInfo.message);
+      }
+      const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || 'Unable to send reset email. Please try again.');
         }
@@ -12685,13 +12961,17 @@ const normalizeLinkForMerge = (link) => {
         return;
       }
       setResetStatus({ loading: true, message: '', error: '' });
-      try {
-        const response = await fetch(`${API_BASE}/auth/reset-password`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: resetTokenValue.trim(), password: resetPasswordValue })
-        });
-        const data = await response.json().catch(() => ({}));
+    try {
+      const response = await fetch(`${API_BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetTokenValue.trim(), password: resetPasswordValue })
+      });
+      const rateInfo = handleRateLimitResponse(response);
+      if (rateInfo) {
+        throw new Error(rateInfo.message);
+      }
+      const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || 'Unable to reset password. Please try again.');
         }
@@ -12962,7 +13242,7 @@ const normalizeLinkForMerge = (link) => {
 
               <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
                 <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Password</label>
-                <div style={{ position: 'relative' }}>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                   <input
                     type={showPassword ? 'text' : 'password'}
                     value={password}
@@ -12976,15 +13256,17 @@ const normalizeLinkForMerge = (link) => {
                     onClick={() => setShowPassword((v) => !v)}
                     style={{
                       position: 'absolute',
-                      right: isMobileViewport ? 8 : 6,
-                      top: '50%',
-                      transform: 'translateY(-50%)',
+                      right: isMobileViewport ? 12 : 10,
                       border: 'none',
                       background: 'none',
                       color: '#2563eb',
                       fontWeight: 600,
                       cursor: 'pointer',
-                      padding: '4px 6px'
+                      padding: '4px 6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      minWidth: 48
                     }}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
                   >
@@ -13170,7 +13452,7 @@ const normalizeLinkForMerge = (link) => {
                   Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
                 </p>
                 <p className="mobile-auth-note">
-                  I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
+                  I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (15,000 singers, 6,100 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
                 </p>
                 <p className="mobile-auth-note">
                   If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know.</a> I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank" rel="noopener noreferrer">this form</a>, and I will incorporate it as quickly as I can.
@@ -13238,7 +13520,7 @@ const normalizeLinkForMerge = (link) => {
                 Welcome to The Aspen Grove of Opera Singers, and thank you for your interest in this project.
               </p>
               <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
-                I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (14,000+ singers, 3,500 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
+                I have spent the last three summers and this current sabbatical collecting information for this database. I have endeavored to include "successful" opera singers and their teachers. Success can, of course, be defined many ways. For the purposes of this tool, I have chosen to include singers who have sung roles at A- and B-level houses and their equivalents, singers who are managed, and singers who have been documented in reference books and websites specializing in classical singing and teaching history. Though the information is vast (15,000 singers, 6,100 relationships), it is far from exhaustive. I can make no claims about the quality of the teaching or of the quality of the relationship between teacher and student. Further, there is no guarantee that any teacher's methods carry forward to their students or the next generation, or to those that follow.
               </p>
               <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
                 If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank">this form</a>, and I will incorporate it as quickly as I can.
@@ -14581,16 +14863,16 @@ const normalizeLinkForMerge = (link) => {
                   )}
                   {searchType === 'singers' && (item.properties.birth_year || item.properties.death_year) && (
                     <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
-                      <strong>Dates:</strong> {
+                  <strong>Dates:</strong> {
                         item.properties.birth_year && item.properties.death_year
-                          ? `${item.properties.birth_year} - ${item.properties.death_year}`
+                          ? `${item.properties.birth_year}-${item.properties.death_year}`
                           : item.properties.birth_year
-                          ? `${item.properties.birth_year} - `
+                          ? `${item.properties.birth_year}-`
                           : item.properties.death_year
-                          ? ` - ${item.properties.death_year}`
+                          ? `-${item.properties.death_year}`
                           : ''
                       }
-                    </p>
+                  </p>
                   )}
                   {searchType === 'operas' && item.properties.composer && (
                     <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
@@ -14685,17 +14967,17 @@ const normalizeLinkForMerge = (link) => {
                     <p style={{ margin: '8px 0' }}>
                       <strong>Dates:</strong> {
                         itemDetails.center.birth_year && itemDetails.center.death_year
-                          ? `${itemDetails.center.birth_year} - ${itemDetails.center.death_year}`
+                          ? `${itemDetails.center.birth_year}-${itemDetails.center.death_year}`
                           : itemDetails.center.birth_year
-                          ? `${itemDetails.center.birth_year} - `
+                          ? `${itemDetails.center.birth_year}-`
                           : itemDetails.center.death_year
-                          ? ` - ${itemDetails.center.death_year}`
+                          ? `-${itemDetails.center.death_year}`
                           : (itemDetails.center.birth && itemDetails.center.death)
-                          ? `${itemDetails.center.birth.low} - ${itemDetails.center.death.low}`
+                          ? `${itemDetails.center.birth.low}-${itemDetails.center.death.low}`
                           : itemDetails.center.birth
-                          ? `${itemDetails.center.birth.low} - `
+                          ? `${itemDetails.center.birth.low}-`
                           : itemDetails.center.death
-                          ? ` - ${itemDetails.center.death.low}`
+                          ? `-${itemDetails.center.death.low}`
                           : ''
                       }
                     </p>
@@ -14957,16 +15239,16 @@ const normalizeLinkForMerge = (link) => {
                       )}
                       {(student.birth_year || student.death_year) && (
                         <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
-                          <strong>Dates:</strong> {
+                  <strong>Dates:</strong> {
                             student.birth_year && student.death_year
-                              ? `${student.birth_year} - ${student.death_year}`
+                              ? `${student.birth_year}-${student.death_year}`
                               : student.birth_year
-                              ? `${student.birth_year} - `
+                              ? `${student.birth_year}-`
                               : student.death_year
-                              ? ` - ${student.death_year}`
+                              ? `-${student.death_year}`
                               : ''
-                          }
-                        </p>
+                            }
+                  </p>
                       )}
                       {relationshipSourceContent && (
                         <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
@@ -15060,16 +15342,16 @@ const normalizeLinkForMerge = (link) => {
                       )}
                       {(relative.birth_year || relative.death_year) && (
                         <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
-                          <strong>Dates:</strong> {
+                  <strong>Dates:</strong> {
                             relative.birth_year && relative.death_year
-                              ? `${relative.birth_year} - ${relative.death_year}`
+                              ? `${relative.birth_year}-${relative.death_year}`
                               : relative.birth_year
-                              ? `${relative.birth_year} - `
+                              ? `${relative.birth_year}-`
                               : relative.death_year
-                              ? ` - ${relative.death_year}`
+                              ? `-${relative.death_year}`
                               : ''
-                          }
-                        </p>
+                            }
+                  </p>
                       )}
                       {relationshipSourceContent && (
                         <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}>
@@ -15137,6 +15419,10 @@ const normalizeLinkForMerge = (link) => {
                             },
                             body: JSON.stringify(payload)
                           });
+                          const rateInfo = handleRateLimitResponse(response);
+                          if (rateInfo) {
+                            throw new Error(rateInfo.message);
+                          }
 
                           const data = await response.json();
                           if (response.ok) {
@@ -15232,16 +15518,20 @@ const normalizeLinkForMerge = (link) => {
                             pushHistory('card-click-book');
                             try {
                               setLoading(true);
-                              const response = await fetch(`${API_BASE}/book/details`, {
-                                method: 'POST',
-                                headers: {
-                                  'Content-Type': 'application/json',
-                                  'Authorization': `Bearer ${token}`
-                                },
-                                body: JSON.stringify({ bookTitle: book.title })
-                              });
+                            const response = await fetch(`${API_BASE}/book/details`, {
+                              method: 'POST',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                              },
+                              body: JSON.stringify({ bookTitle: book.title })
+                            });
+                            const rateInfo = handleRateLimitResponse(response);
+                            if (rateInfo) {
+                              throw new Error(rateInfo.message);
+                            }
 
-                              const data = await response.json();
+                            const data = await response.json();
                               if (response.ok) {
                                 setItemDetails(data);
                                 setSelectedItem({ properties: { title: book.title } });
@@ -15321,6 +15611,10 @@ const normalizeLinkForMerge = (link) => {
                             },
                             body: JSON.stringify(payload)
                           });
+                          const rateInfo = handleRateLimitResponse(response);
+                          if (rateInfo) {
+                            throw new Error(rateInfo.message);
+                          }
 
                           const data = await response.json();
                           if (response.ok) {
