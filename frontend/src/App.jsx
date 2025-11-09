@@ -13256,17 +13256,21 @@ const normalizeLinkForMerge = (link) => {
                     onClick={() => setShowPassword((v) => !v)}
                     style={{
                       position: 'absolute',
-                      right: isMobileViewport ? 12 : 10,
+                      right: isMobileViewport ? 8 : 10,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
                       border: 'none',
                       background: 'none',
                       color: '#2563eb',
                       fontWeight: 600,
                       cursor: 'pointer',
-                      padding: '4px 6px',
-                      display: 'flex',
+                      padding: '0 2px',
+                      lineHeight: 1,
+                      display: 'inline-flex',
                       alignItems: 'center',
-                      justifyContent: 'flex-end',
-                      minWidth: 48
+                      justifyContent: 'center',
+                      minWidth: 'auto',
+                      width: 'auto'
                     }}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
                   >
