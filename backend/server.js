@@ -570,11 +570,6 @@ app.post('/auth/login', async (req, res) => {
   const email = rawEmail.toLowerCase();
   const password = req.body?.password || '';
 
-  // TEST USER OVERRIDE: Always allow test@example.com / password123
-  if (email === 'test@example.com' && password === 'password123') {
-    const token = generateAuthToken('test@example.com');
-    return res.json({ token, email: 'test@example.com' });
-  }
   try {
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
