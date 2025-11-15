@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -5,15 +7,14 @@ import rateLimit from 'express-rate-limit';
 import neo4j from 'neo4j-driver';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import mysql from 'mysql2/promise';
 import sgMail from '@sendgrid/mail';
-
-dotenv.config();
+import { auth as auth0Middleware } from 'express-openid-connect';
+import createAuth0MigrationRouter from './routes/auth0Migration.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +40,84 @@ const PASSWORD_RESET_TOKEN_TTL_MINUTES = parseInt(process.env.PASSWORD_RESET_TOK
 const PASSWORD_RESET_TOKEN_BYTES = Math.max(parseInt(process.env.PASSWORD_RESET_TOKEN_BYTES || '32', 10), 16);
 const MAX_SNAPSHOT_BYTES = parseInt(process.env.MAX_SNAPSHOT_BYTES || '1500000', 10); // ~1.5 MB
 const ACTIVE_TOS_VERSION = parseInt(process.env.ACTIVE_TOS_VERSION || '1', 10);
+// Global DB write guard (stops writing to Railway when disabled)
+const DB_WRITES_ENABLED = !/^(0|false|no|off)$/i.test(String(process.env.DB_WRITE_ENABLED || '1'));
+const MYSQL_ALLOW_USER_CREATION = /^(1|true|yes|on)$/i.test(String(process.env.MYSQL_ALLOW_USER_CREATION || '0'));
+// Local password reset feature flag (off = rely on Auth0)
+const PASSWORD_RESET_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.PASSWORD_RESET_ENABLED || '0'));
+// Enable internal /debug/* endpoints only when explicitly allowed
+const DEBUG_ENDPOINTS_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.DEBUG_ENDPOINTS_ENABLED || '0'));
+// ToS enforcement mode:
+//   'legacy'     -> enforce using local MySQL (default), but trust Auth0 app_metadata to auto-accept.
+//   'auth0_only' -> enforce using Auth0 app_metadata only; block if missing/outdated.
+//   'off'        -> do not block on ToS (useful during migration/testing).
+const TOS_ENFORCEMENT_MODE = (process.env.TOS_ENFORCEMENT_MODE || 'legacy').toLowerCase();
+const AUTH0_MIGRATION_TOKEN = process.env.AUTH0_MIGRATION_TOKEN || '';
+const APP_SESSION_SECRET = (process.env.APP_SESSION_SECRET || '').trim();
+const BASE_URL = ((process.env.BASE_URL || '').trim() || `http://localhost:${PORT}`).replace(/\/$/, '');
+const AUTH0_ISSUER_BASE_URL = (process.env.AUTH0_ISSUER_BASE_URL || '').trim().replace(/\/$/, '');
+const AUTH0_CLIENT_ID = (process.env.AUTH0_CLIENT_ID || '').trim();
+const AUTH0_CLIENT_SECRET = (process.env.AUTH0_CLIENT_SECRET || '').trim();
+const AUTH0_AUDIENCE = (process.env.AUTH0_AUDIENCE || '').trim();
+const AUTH0_SCOPE = (process.env.AUTH0_SCOPE || 'openid profile email').trim();
+const AUTH0_CONNECTION = (process.env.AUTH0_CONNECTION || '').trim();
+const AUTH0_COOKIE_DOMAIN = (process.env.AUTH0_COOKIE_DOMAIN || '').trim();
+// Optional namespace for custom Auth0 ID token claims (used to carry ToS info)
+const AUTH0_CLAIM_NAMESPACE = ((process.env.AUTH0_CLAIM_NAMESPACE || 'https://theaspengrove.org').trim() || 'https://theaspengrove.org').replace(/\/$/, '');
+const AUTH0_TOS_CLAIM = `${AUTH0_CLAIM_NAMESPACE}/tos_version`;
+const AUTH0_TOS_ACCEPTED_AT_CLAIM = `${AUTH0_CLAIM_NAMESPACE}/tos_accepted_at`;
+// Avoid writing ToS into MySQL users table by default
+const MYSQL_SYNC_TOS_TO_USERS = /^(1|true|yes|on)$/i.test(String(process.env.MYSQL_SYNC_TOS_TO_USERS || '0'));
+// Auth0 Management API (optional, enables server-side ToS persistence)
+const AUTH0_MGMT_CLIENT_ID = (process.env.AUTH0_MGMT_CLIENT_ID || '').trim();
+const AUTH0_MGMT_CLIENT_SECRET = (process.env.AUTH0_MGMT_CLIENT_SECRET || '').trim();
+const AUTH0_MGMT_AUDIENCE = `${AUTH0_ISSUER_BASE_URL}/api/v2/`;
+const AUTH0_BASE_IS_HTTPS = /^https:\/\//i.test(BASE_URL);
+const AUTH0_SESSION_COOKIE = {
+  sameSite: AUTH0_BASE_IS_HTTPS ? 'None' : 'Lax',
+  secure: AUTH0_BASE_IS_HTTPS,
+  httpOnly: true
+};
+if (AUTH0_COOKIE_DOMAIN) {
+  AUTH0_SESSION_COOKIE.domain = AUTH0_COOKIE_DOMAIN;
+}
+const AUTH0_CONFIG_COMPLETE = Boolean(
+  APP_SESSION_SECRET &&
+  BASE_URL &&
+  AUTH0_ISSUER_BASE_URL &&
+  AUTH0_CLIENT_ID
+);
+  const auth0Config = AUTH0_CONFIG_COMPLETE
+  ? {
+      authRequired: false,
+      auth0Logout: true,
+      secret: APP_SESSION_SECRET,
+      baseURL: BASE_URL,
+      clientID: AUTH0_CLIENT_ID,
+      issuerBaseURL: AUTH0_ISSUER_BASE_URL,
+      authorizationParams: {
+        response_type: 'code',
+        scope: AUTH0_SCOPE,
+        ...(AUTH0_AUDIENCE ? { audience: AUTH0_AUDIENCE } : {})
+      },
+      routes: {
+        login: false,
+        logout: '/logout',
+        callback: '/callback',
+        postLogoutRedirect: (CLIENT_BASE_URL || BASE_URL)
+      },
+      session: {
+        rolling: true,
+        rollingDuration: 24 * 60 * 60,
+        absoluteDuration: 7 * 24 * 60 * 60,
+        cookie: AUTH0_SESSION_COOKIE
+      }
+    }
+  : null;
+if (auth0Config && AUTH0_CLIENT_SECRET) {
+  auth0Config.clientSecret = AUTH0_CLIENT_SECRET;
+}
+console.log('🔑 AUTH0_MIGRATION_TOKEN:', AUTH0_MIGRATION_TOKEN ? 'LOADED ✓' : 'NOT LOADED ✗');
 
 const EFFECTIVE_RESET_URL_BASE = (RESET_URL_BASE || CLIENT_BASE_URL || '').replace(/\/$/, '');
 
@@ -98,61 +177,178 @@ const getMysqlPool = () => {
       const pool = mysql.createPool({
         waitForConnections: true,
         connectionLimit: MYSQL_CONNECTION_LIMIT,
-        maxIdle: Math.min(MYSQL_CONNECTION_LIMIT, 5),
+        maxIdle: Math.min(MYSQL_CONNECTION_LIMIT, 2),
         idleTimeout: 60000,
         enableKeepAlive: true,
         keepAliveInitialDelay: 0,
         ...config
       });
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS users (
-          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          email VARCHAR(320) NOT NULL UNIQUE,
-          password_hash VARCHAR(255) NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-      const ensureColumnExists = async (column, definition) => {
-        const [columns] = await pool.query(
-          `SHOW COLUMNS FROM users LIKE ?`,
-          [column]
-        );
-        if (columns.length === 0) {
-          await pool.query(`ALTER TABLE users ADD COLUMN ${definition}`);
-        }
-      };
-      await ensureColumnExists('tos_accepted_at', 'tos_accepted_at DATETIME NULL DEFAULT NULL');
-      await ensureColumnExists('tos_version', 'tos_version TINYINT UNSIGNED NOT NULL DEFAULT 0');
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS saved_views (
-          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          user_email VARCHAR(320) NOT NULL,
-          token CHAR(36) NOT NULL UNIQUE,
-          label VARCHAR(255) DEFAULT '',
-          snapshot JSON NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_saved_views_user (user_email)
-        )
-        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS password_resets (
-          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          user_email VARCHAR(320) NOT NULL,
-          token_hash CHAR(64) NOT NULL UNIQUE,
-          expires_at DATETIME NOT NULL,
-          consumed_at DATETIME DEFAULT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_password_resets_email (user_email),
-          INDEX idx_password_resets_expires (expires_at)
-        )
-        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
+      if (DB_WRITES_ENABLED) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS users (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+          ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+        const ensureColumnExists = async (column, definition) => {
+          const [columns] = await pool.query(
+            `SHOW COLUMNS FROM users LIKE ?`,
+            [column]
+          );
+          if (columns.length === 0) {
+            await pool.query(`ALTER TABLE users ADD COLUMN ${definition}`);
+          }
+        };
+        await ensureColumnExists('tos_accepted_at', 'tos_accepted_at DATETIME NULL DEFAULT NULL');
+        await ensureColumnExists('tos_version', 'tos_version TINYINT UNSIGNED NOT NULL DEFAULT 0');
+        await ensureColumnExists('public_user_id', 'public_user_id CHAR(12) NULL UNIQUE');
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS saved_views (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_public_id CHAR(12) NOT NULL,
+            token CHAR(36) NOT NULL UNIQUE,
+            label VARCHAR(255) DEFAULT '',
+            snapshot JSON NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_saved_views_user_public (user_public_id)
+          )
+          ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+      }
+      if (PASSWORD_RESET_ENABLED) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS password_resets (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_email VARCHAR(320) NOT NULL,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            expires_at DATETIME NOT NULL,
+            consumed_at DATETIME DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_password_resets_email (user_email),
+            INDEX idx_password_resets_expires (expires_at)
+          )
+          ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+      }
       return pool;
     })();
   }
   return mysqlPoolPromise;
+};
+
+// Ensure the saved_views table exists with the current minimal schema (id, user_public_id, token, label, snapshot, created_at)
+const ensureSavedViewsTable = async (pool) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS saved_views (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_public_id CHAR(12) NOT NULL,
+        token CHAR(36) NOT NULL UNIQUE,
+        label VARCHAR(255) DEFAULT '',
+        snapshot JSON NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_saved_views_user_public (user_public_id)
+      )
+      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+  } catch (e) {
+    // Let callers handle failures
+    throw e;
+  }
+};
+
+// Generate a short random public ID (8 chars [A-Z0-9])
+const generatePublicId = () => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/I/L for readability
+  const bytes = crypto.randomBytes(8);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+};
+
+const ensureUserRecordForEmail = async (email) => {
+  const normalized = (email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const pool = await getMysqlPool();
+  let rows;
+  try {
+    [rows] = await pool.query(
+      'SELECT id, email, tos_version, tos_accepted_at, public_user_id FROM users WHERE email = ? LIMIT 1',
+      [normalized]
+    );
+  } catch (e) {
+    // public_user_id column may not exist yet; fall back to legacy shape
+    [rows] = await pool.query(
+      'SELECT id, email, tos_version, tos_accepted_at FROM users WHERE email = ? LIMIT 1',
+      [normalized]
+    );
+  }
+  if (rows.length > 0) {
+    return rows[0];
+  }
+  // Do not create new rows unless explicitly allowed
+  if (!DB_WRITES_ENABLED || !MYSQL_ALLOW_USER_CREATION) {
+    return { id: 0, email: normalized, tos_version: 0, tos_accepted_at: null, public_user_id: null };
+  }
+  try {
+    const placeholderPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+    await pool.query(
+      `INSERT IGNORE INTO users (email, password_hash, tos_version, tos_accepted_at)
+       VALUES (?, ?, 0, NULL)`,
+      [normalized, placeholderPassword]
+    );
+    const [reloaded] = await pool.query(
+      'SELECT id, email, tos_version, tos_accepted_at, public_user_id FROM users WHERE email = ? LIMIT 1',
+      [normalized]
+    );
+    return reloaded.length > 0 ? reloaded[0] : null;
+  } catch (_) {
+    return { id: 0, email: normalized, tos_version: 0, tos_accepted_at: null, public_user_id: null };
+  }
+};
+
+// Ensure a stable public_user_id exists, persisted in MySQL when writable, or in Auth0 app_metadata via M2M
+const getOrCreatePublicIdForEmail = async (email) => {
+  const normalized = (email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  try {
+    const rec = await ensureUserRecordForEmail(normalized);
+    if (rec && rec.public_user_id) {
+      // Mirror to Auth0 app_metadata if missing or different
+      if (AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+        try {
+          const u = await mgmtFindUserByEmail(normalized);
+          const existing = u && u.app_metadata ? u.app_metadata.public_user_id : null;
+          if (u && u.user_id && (!existing || existing !== rec.public_user_id)) {
+            await mgmtUpdateUserAppMetadata(u.user_id, { public_user_id: rec.public_user_id });
+          }
+        } catch (_) {}
+      }
+      return rec.public_user_id;
+    }
+  } catch (_) {}
+  // Try Auth0 app_metadata via Management API
+  let mgmtUser = null;
+  if (AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+    try { mgmtUser = await mgmtFindUserByEmail(normalized); } catch (_) { mgmtUser = null; }
+    const existing = mgmtUser && mgmtUser.app_metadata && mgmtUser.app_metadata.public_user_id;
+    if (existing) return existing;
+  }
+  // Generate a new one and persist to Auth0 only (no MySQL writes to users)
+  const newId = generatePublicId();
+  if (AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+    try {
+      if (!mgmtUser) mgmtUser = await mgmtFindUserByEmail(normalized);
+      if (mgmtUser && mgmtUser.user_id) {
+        await mgmtUpdateUserAppMetadata(mgmtUser.user_id, { public_user_id: newId });
+        return newId;
+      }
+    } catch (_) {}
+  }
+  return newId;
 };
 
 const buildResetLink = (token) => {
@@ -237,9 +433,29 @@ const allowedOrigins =
 const allowedOriginsSet = new Set(allowedOrigins.map(normalizeOrigin));
 console.log('[CORS] Allowed origins:', Array.from(allowedOriginsSet));
 
-// Allow typical private-LAN hostnames like http://192.168.x.x:PORT, http://10.x.x.x:PORT
-const privateLan = [/^http:\/\/(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}:\d+$/];
-const cloudflareTunnel = /^https?:\/\/[a-z0-9-]+\.trycloudflare\.com$/;
+const ensureOriginTracked = (set, origin) => {
+  const normalized = normalizeOrigin(origin);
+  if (normalized) set.add(normalized);
+};
+const allowedReturnToOrigins = new Set(allowedOriginsSet);
+ensureOriginTracked(allowedReturnToOrigins, CLIENT_BASE_URL);
+ensureOriginTracked(allowedReturnToOrigins, BASE_URL);
+const DEFAULT_RETURN_TO =
+  CLIENT_BASE_URL ||
+  (allowedOrigins.length > 0 ? allowedOrigins[0] : null) ||
+  BASE_URL;
+const resolveAllowedReturnTo = (candidate) => {
+  if (typeof candidate === 'string' && candidate.trim()) {
+    try {
+      const parsed = new URL(candidate.trim());
+      const normalizedOrigin = normalizeOrigin(`${parsed.protocol}//${parsed.host}`);
+      if (allowedReturnToOrigins.has(normalizedOrigin)) {
+        return `${normalizedOrigin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+      }
+    } catch (_) {}
+  }
+  return DEFAULT_RETURN_TO;
+};
 
 const corsOptions = {
   origin(origin, cb) {
@@ -256,7 +472,7 @@ const corsOptions = {
     return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   exposedHeaders: ['Retry-After', 'RateLimit-Reset', 'RateLimit-Remaining', 'RateLimit-Limit']
 };
@@ -299,6 +515,40 @@ const viewsWriteLimiter = buildLimiter(20);
 
 app.use(express.json({ limit: '10mb' }));
 
+if (auth0Config) {
+  app.use(auth0Middleware(auth0Config));
+  console.log('[Auth0] Session bridge enabled. Base URL:', BASE_URL);
+
+  app.get('/login', (req, res) => {
+    if (!req.oidc || !res.oidc) {
+      return res.status(500).json({ error: 'Auth0 session context unavailable.' });
+    }
+    const fromQuery =
+      (typeof req.query?.returnTo === 'string' && req.query.returnTo) ||
+      (typeof req.query?.redirect === 'string' && req.query.redirect) ||
+      (typeof req.query?.target === 'string' && req.query.target) ||
+      '';
+    const desiredFrontUrl = resolveAllowedReturnTo(fromQuery);
+    // Bounce back through backend to stamp an app token in the URL hash, avoiding third‑party cookie issues.
+    const postAuthUrl = `${BASE_URL}/post-auth?next=${encodeURIComponent(desiredFrontUrl)}`;
+    const options = { returnTo: postAuthUrl };
+    if (AUTH0_CONNECTION) {
+      options.authorizationParams = { connection: AUTH0_CONNECTION };
+    }
+    return res.oidc.login(options);
+  });
+} else {
+  console.warn('[Auth0] Session bridge disabled. Missing APP_SESSION_SECRET, BASE_URL, AUTH0_CLIENT_ID, or AUTH0_ISSUER_BASE_URL.');
+}
+
+// Mount Auth0 migration router
+app.use(createAuth0MigrationRouter({ 
+  getMysqlPool, 
+  expectedToken: AUTH0_MIGRATION_TOKEN,
+  activeTosVersion: ACTIVE_TOS_VERSION,
+  dbWritesEnabled: DB_WRITES_ENABLED
+}));
+
 // Neo4j connection
 const NEO4J_URI = (process.env.NEO4J_URI || 'bolt://localhost:7687').trim();
 const NEO4J_USER = process.env.NEO4J_USER || process.env.NEO4J_USERNAME || 'neo4j';
@@ -316,6 +566,12 @@ const driver = uriHasEncryptionScheme
       auth,
       { encrypted: NEO4J_ENCRYPTION === 'on' ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF' }
     );
+
+const parseSearchLimit = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.min(parsed, 1000);
+};
 
 const toPlainNumber = (value, defaultValue = 0) => {
   if (value === null || value === undefined) return defaultValue;
@@ -523,47 +779,6 @@ app.get('/ping', (req, res) => {
 });
 
 // Authentication endpoints
-app.post('/auth/register', async (req, res) => {
-  // Per-route rate limiter for auth
-  await new Promise(resolve => authLimiter(req, res, resolve));
-  const rawEmail = (req.body?.email || '').trim();
-  const email = rawEmail.toLowerCase();
-  const password = req.body?.password || '';
-  const acceptedDisclaimer = Boolean(req.body?.acceptedDisclaimer);
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
-  if (!acceptedDisclaimer) {
-    return res.status(400).json({ error: 'You must agree to the disclaimer.' });
-  }
-
-  try {
-    const pool = await getMysqlPool();
-    const connection = await pool.getConnection();
-    try {
-      const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
-      if (existing.length > 0) {
-        return res.status(400).json({ error: 'User already exists' });
-      }
-
-      const hashedPassword = await bcrypt.hash(password, 10);
-      await connection.query(
-        'INSERT INTO users (email, password_hash, tos_version, tos_accepted_at) VALUES (?, ?, ?, NOW())',
-        [email, hashedPassword, ACTIVE_TOS_VERSION]
-      );
-    } finally {
-      connection.release();
-    }
-
-    const token = generateAuthToken(email);
-    res.status(201).json({ token, email });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 app.post('/auth/login', async (req, res) => {
   await new Promise(resolve => authLimiter(req, res, resolve));
   const rawEmail = (req.body?.email || '').trim();
@@ -605,9 +820,150 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
+app.get('/session/token', async (req, res) => {
+  if (!auth0Config) {
+    return res.status(503).json({ error: 'Auth0 session bridge is not configured on this server.' });
+  }
+  try {
+    if (!req.oidc || !req.oidc.isAuthenticated()) {
+      return res.status(401).json({ error: 'Auth0 session not found. Please sign in again.' });
+    }
+    const email = (req.oidc.user?.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: 'Authenticated Auth0 profile is missing an email address.' });
+    }
+
+    const userRecord = await ensureUserRecordForEmail(email);
+    if (!userRecord) {
+      return res.status(500).json({ error: 'Unable to load linked user record.' });
+    }
+
+    // Determine ToS acceptance using configured strategy
+    // 1) Prefer namespaced custom ID token claims (when set via an Auth0 Action)
+    // 2) Fallback to app_metadata if present on the ID token (often not included by default)
+    let claimTosVersion = Number(req.oidc.user?.[AUTH0_TOS_CLAIM] || 0);
+    const claimTosAcceptedAt = req.oidc.user?.[AUTH0_TOS_ACCEPTED_AT_CLAIM] || null;
+    let metadataTosVersion = Number((req.oidc.user?.app_metadata?.tos_version) || 0);
+    let metadataTosAcceptedAt = (req.oidc.user?.app_metadata?.tos_accepted_at) || null;
+    let effectiveTosVersion = Math.max(claimTosVersion, metadataTosVersion);
+    let effectiveTosAcceptedAt = claimTosAcceptedAt || metadataTosAcceptedAt || null;
+    // 3) If still unknown, consult Auth0 Management API for latest app_metadata (no Actions needed)
+    if (effectiveTosVersion < ACTIVE_TOS_VERSION && AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+      try {
+        const u = await mgmtFindUserByEmail(email);
+        const m = u && u.app_metadata ? u.app_metadata : {};
+        const v = Number(m.tos_version || 0);
+        if (Number.isFinite(v) && v > effectiveTosVersion) {
+          metadataTosVersion = v;
+          effectiveTosVersion = v;
+          metadataTosAcceptedAt = m.tos_accepted_at || metadataTosAcceptedAt;
+          effectiveTosAcceptedAt = claimTosAcceptedAt || metadataTosAcceptedAt || null;
+        }
+      } catch (e) {
+        console.warn('[ToS] mgmt lookup failed:', e?.message || e);
+      }
+    }
+
+    // Helper: promote Auth0 acceptance into MySQL if needed
+    const promoteAuth0TosToMysqlIfNeeded = async () => {
+      try {
+        if (MYSQL_SYNC_TOS_TO_USERS && effectiveTosVersion >= ACTIVE_TOS_VERSION && (userRecord.tos_version || 0) < ACTIVE_TOS_VERSION) {
+          const pool = await getMysqlPool();
+          await pool.query(
+            'UPDATE users SET tos_version = ?, tos_accepted_at = COALESCE(?, NOW()) WHERE email = ?',
+            [ACTIVE_TOS_VERSION, effectiveTosAcceptedAt, email]
+          );
+        }
+      } catch (e) {
+        console.warn('[ToS] Failed to promote Auth0 ToS to MySQL:', e?.message || e);
+      }
+    };
+
+    if (TOS_ENFORCEMENT_MODE === 'off') {
+      await promoteAuth0TosToMysqlIfNeeded();
+      // Ensure a public user id exists
+      try { await getOrCreatePublicIdForEmail(email); } catch (_) {}
+      const token = generateAuthToken(email);
+      return res.json({ token, email });
+    }
+
+    if (TOS_ENFORCEMENT_MODE === 'auth0_only') {
+      if (effectiveTosVersion >= ACTIVE_TOS_VERSION) {
+        await promoteAuth0TosToMysqlIfNeeded();
+        try { await getOrCreatePublicIdForEmail(email); } catch (_) {}
+        const token = generateAuthToken(email);
+        return res.json({ token, email });
+      }
+      const pendingToken = generatePendingTosToken(email);
+      return res.status(403).json({
+        error: 'Please review and accept the disclaimer to continue (Auth0).',
+        requiresTos: true,
+        email,
+        pendingToken
+      });
+    }
+
+    // legacy (default): enforce using MySQL, but honor Auth0 acceptance as authoritative
+    if (effectiveTosVersion >= ACTIVE_TOS_VERSION) {
+      await promoteAuth0TosToMysqlIfNeeded();
+    }
+    if ((userRecord.tos_version || 0) < ACTIVE_TOS_VERSION) {
+      const pendingToken = generatePendingTosToken(email);
+      return res.status(403).json({
+        error: 'Please review and accept the disclaimer to continue.',
+        requiresTos: true,
+        pendingToken,
+        email
+      });
+    }
+
+    try { await getOrCreatePublicIdForEmail(email); } catch (_) {}
+    const token = generateAuthToken(email);
+    return res.json({ token, email });
+  } catch (err) {
+    console.error('[session/token] error:', err);
+    return res.status(500).json({ error: 'Failed to synchronize Auth0 session' });
+  }
+});
+
 app.post('/auth/accept-tos', async (req, res) => {
   await new Promise(resolve => authLimiter(req, res, resolve));
   try {
+    if (!DB_WRITES_ENABLED || TOS_ENFORCEMENT_MODE === 'auth0_only') {
+      // ToS managed by Auth0 or writes disabled; respond success without DB writes.
+      // Derive email from provided email or from the pending acceptance token if available.
+      let emailVal = (req.body?.email || '').trim().toLowerCase();
+      if (!emailVal) {
+        const raw = (req.body?.pendingToken || req.body?.token || '').trim();
+        if (raw) {
+          try {
+            const payload = jwt.verify(raw, JWT_SECRET);
+            if (payload && typeof payload.email === 'string') {
+              emailVal = payload.email.trim().toLowerCase();
+            }
+          } catch (_) {
+            // fall through with empty email
+          }
+        }
+      }
+      // Set a cookie to remember ToS acceptance on the backend domain (works across tunnels)
+      // Best-effort: update Auth0 app_metadata so acceptance persists across devices
+      if (emailVal && AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+        try {
+          const u = await mgmtFindUserByEmail(emailVal);
+          if (u && u.user_id) {
+            await mgmtUpdateUserAppMetadata(u.user_id, {
+              tos_version: ACTIVE_TOS_VERSION,
+              tos_accepted_at: new Date().toISOString()
+            });
+          }
+        } catch (e) {
+          console.warn('[ToS] mgmt update failed:', e?.message || e);
+        }
+      }
+      const token = generateAuthToken(emailVal || '');
+      return res.json({ success: true, token, email: emailVal || '' });
+    }
     const token = (req.body?.pendingToken || req.body?.token || '').trim();
     if (!token) {
       return res.status(400).json({ error: 'Acceptance token required.' });
@@ -643,6 +999,12 @@ app.post('/auth/accept-tos', async (req, res) => {
 });
 
 app.post('/auth/forgot-password', async (req, res) => {
+  if (!PASSWORD_RESET_ENABLED) {
+    return res.status(503).json({ error: 'Password reset is managed by Auth0. Local reset endpoints are disabled.' });
+  }
+  if (!DB_WRITES_ENABLED) {
+    return res.status(503).json({ error: 'Password reset is managed by Auth0. This server is in read-only mode.' });
+  }
   await new Promise(resolve => authLimiter(req, res, resolve));
   try {
     const { email } = req.body || {};
@@ -682,6 +1044,12 @@ app.post('/auth/forgot-password', async (req, res) => {
 });
 
 app.post('/auth/reset-password', async (req, res) => {
+  if (!PASSWORD_RESET_ENABLED) {
+    return res.status(503).json({ error: 'Password reset is managed by Auth0. Local reset endpoints are disabled.' });
+  }
+  if (!DB_WRITES_ENABLED) {
+    return res.status(503).json({ error: 'Password reset is managed by Auth0. This server is in read-only mode.' });
+  }
   await new Promise(resolve => authLimiter(req, res, resolve));
   try {
     const { token, password } = req.body || {};
@@ -746,7 +1114,7 @@ app.post('/auth/reset-password', async (req, res) => {
 });
 
 // Add this debug endpoint before the existing endpoints
-app.post('/debug/corrupted-premieres', authenticateToken, async (req, res) => {
+if (DEBUG_ENDPOINTS_ENABLED) app.post('/debug/corrupted-premieres', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
     // Find PREMIERED_ROLE_IN relationships pointing to Person nodes (should only point to Opera nodes)
@@ -777,7 +1145,7 @@ app.post('/debug/corrupted-premieres', authenticateToken, async (req, res) => {
 });
 
 // Add another debug endpoint to find Eric Tappy in opera data
-app.post('/debug/eric-tappy-roles', authenticateToken, async (req, res) => {
+if (DEBUG_ENDPOINTS_ENABLED) app.post('/debug/eric-tappy-roles', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
     // Find all relationships involving Eric Tappy
@@ -793,8 +1161,6 @@ app.post('/debug/eric-tappy-roles', authenticateToken, async (req, res) => {
     );
 
     const data = result.records[0];
-    
-    console.log('[debug composedOperas] singer', singerName, composedOperas);
     res.json({
       eric_id: data.get('eric_id'),
       roles_in_operas: data.get('roles_in_operas'),
@@ -810,7 +1176,7 @@ app.post('/debug/eric-tappy-roles', authenticateToken, async (req, res) => {
 });
 
 // Add endpoint to find and fix the null-source premiere relationship
-app.post('/debug/fix-null-premiere', authenticateToken, async (req, res) => {
+if (DEBUG_ENDPOINTS_ENABLED) app.post('/debug/fix-null-premiere', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
     const { action = 'find' } = req.body; // 'find' or 'delete'
@@ -858,7 +1224,8 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
   console.log('Received /search/singers request:', req.body);
   const session = driver.session();
   try {
-    const { query, limit = 20 } = req.body;
+    const { query, limit } = req.body || {};
+    const enforcedLimit = parseSearchLimit(limit);
     console.log('About to run Neo4j query');
     
     // Manual diacritical character replacement for German umlauts
@@ -869,6 +1236,9 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
       .replace(/ü/g, 'u')
       .replace(/ß/g, 'ss');
     
+    const params = { query: query || '', cleanQuery };
+    if (enforcedLimit) params.limit = neo4j.int(enforcedLimit);
+    const cypherLimit = enforcedLimit ? 'LIMIT $limit' : '';
     const result = await session.run(
       `MATCH (s:Person) 
        WHERE apoc.text.clean(toLower(s.full_name)) CONTAINS apoc.text.clean(toLower($query))
@@ -876,8 +1246,8 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
           OR apoc.text.replace(apoc.text.replace(apoc.text.replace(apoc.text.replace(toLower(s.full_name), 'ä', 'a'), 'ö', 'o'), 'ü', 'u'), 'ß', 'ss') CONTAINS $cleanQuery
        RETURN s.full_name as name, s as properties
        ORDER BY s.full_name
-       LIMIT $limit`,
-      { query: query || '', cleanQuery, limit: neo4j.int(limit) }
+       ${cypherLimit}`,
+      params
     );
     console.log('Neo4j query complete');
     const singers = result.records.map(record => {
@@ -909,7 +1279,8 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
 app.post('/search/operas', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
-    const { query, limit = 20 } = req.body;
+    const { query, limit } = req.body || {};
+    const enforcedLimit = parseSearchLimit(limit);
     
     // Manual diacritical character replacement for German umlauts
     const cleanQuery = (query || '')
@@ -919,6 +1290,9 @@ app.post('/search/operas', authenticateToken, async (req, res) => {
       .replace(/ü/g, 'u')
       .replace(/ß/g, 'ss');
     
+    const params = { query: query || '', cleanQuery };
+    if (enforcedLimit) params.limit = neo4j.int(enforcedLimit);
+    const cypherLimit = enforcedLimit ? 'LIMIT $limit' : '';
     const result = await session.run(
       `MATCH (o:Opera) 
        WHERE apoc.text.clean(toLower(o.opera_name)) CONTAINS apoc.text.clean(toLower($query))
@@ -926,8 +1300,8 @@ app.post('/search/operas', authenticateToken, async (req, res) => {
           OR apoc.text.replace(apoc.text.replace(apoc.text.replace(apoc.text.replace(toLower(o.opera_name), 'ä', 'a'), 'ö', 'o'), 'ü', 'u'), 'ß', 'ss') CONTAINS $cleanQuery
        RETURN o as properties
        ORDER BY o.opera_name
-       LIMIT $limit`,
-      { query: query || '', cleanQuery, limit: neo4j.int(limit) }
+       ${cypherLimit}`,
+      params
     );
 
     const operas = result.records.map(record => {
@@ -954,7 +1328,8 @@ app.post('/search/operas', authenticateToken, async (req, res) => {
 app.post('/search/books', authenticateToken, async (req, res) => {
   const session = driver.session();
   try {
-    const { query, limit = 20 } = req.body;
+    const { query, limit } = req.body || {};
+    const enforcedLimit = parseSearchLimit(limit);
     
     // Manual diacritical character replacement for German umlauts
     const cleanQuery = (query || '')
@@ -964,6 +1339,9 @@ app.post('/search/books', authenticateToken, async (req, res) => {
       .replace(/ü/g, 'u')
       .replace(/ß/g, 'ss');
     
+    const params = { query: query || '', cleanQuery };
+    if (enforcedLimit) params.limit = neo4j.int(enforcedLimit);
+    const cypherLimit = enforcedLimit ? 'LIMIT $limit' : '';
     const result = await session.run(
       `MATCH (b:Book) 
        WHERE apoc.text.clean(toLower(b.title)) CONTAINS apoc.text.clean(toLower($query))
@@ -971,8 +1349,8 @@ app.post('/search/books', authenticateToken, async (req, res) => {
           OR apoc.text.replace(apoc.text.replace(apoc.text.replace(apoc.text.replace(toLower(b.title), 'ä', 'a'), 'ö', 'o'), 'ü', 'u'), 'ß', 'ss') CONTAINS $cleanQuery
        RETURN b as properties
        ORDER BY b.title
-       LIMIT $limit`,
-      { query: query || '', cleanQuery, limit: neo4j.int(limit) }
+       ${cypherLimit}`,
+      params
     );
 
     const books = result.records.map(record => {
@@ -1325,6 +1703,21 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       };
     });
 
+    // Get books the singer edited
+    const editedBooksResult = await session.run(
+      `MATCH (s:Person {full_name: $name})-[r:EDITED]->(b:Book)
+       RETURN b.title as title, b.book_id AS book_id, r AS relationship`,
+      { name: singerName }
+    );
+    const editedBooks = editedBooksResult.records.map(r => {
+      const bookId = normalizeIdComponent(r.get('book_id'));
+      return {
+        id: buildTypedId('book', bookId, r.get('title')),
+        book_id: bookId || null,
+        title: r.get('title')
+      };
+    });
+
     const composedOperasResult = await session.run(
       `MATCH (s:Person {full_name: $name})-[r:COMPOSED|WROTE]->(o:Opera)
        RETURN o AS opera_node,
@@ -1456,6 +1849,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       works: {
         operas,
         books,
+        editedBooks,
         composedOperas
       }
     };
@@ -2125,6 +2519,78 @@ app.get('/ready', async (req, res) => {
   }
 });
 
+// Post-auth bridge: after Auth0 callback, redirect back to frontend with an app token (or pending ToS)
+app.get('/post-auth', async (req, res) => {
+  try {
+    const rawNext = (req.query?.next || '').toString();
+    const nextUrl = resolveAllowedReturnTo(rawNext);
+    if (!req.oidc || !req.oidc.isAuthenticated()) {
+      const loginUrl = `${BASE_URL}/login?returnTo=${encodeURIComponent(nextUrl)}`;
+      return res.redirect(loginUrl);
+    }
+
+    const email = (req.oidc.user?.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.redirect(nextUrl);
+    }
+
+    const claimTosVersion = Number(req.oidc.user?.[AUTH0_TOS_CLAIM] || 0);
+    const metadataTosVersion = Number((req.oidc.user?.app_metadata?.tos_version) || 0);
+    const effectiveTosVersion = Math.max(claimTosVersion, metadataTosVersion);
+
+    // Ensure we have a local record and a stable public_user_id; mirror to Auth0 app_metadata when possible
+    try {
+      await ensureUserRecordForEmail(email);
+      await getOrCreatePublicIdForEmail(email);
+    } catch (_) {}
+
+    if (TOS_ENFORCEMENT_MODE === 'auth0_only' && effectiveTosVersion < ACTIVE_TOS_VERSION) {
+      // First, consult Auth0 app_metadata via Management API (if configured)
+      if (AUTH0_MGMT_CLIENT_ID && AUTH0_MGMT_CLIENT_SECRET) {
+        try {
+          const u = await mgmtFindUserByEmail(email);
+          const m = u && u.app_metadata ? u.app_metadata : {};
+          const v = Number(m.tos_version || 0);
+          if (Number.isFinite(v) && v >= ACTIVE_TOS_VERSION) {
+            const appToken = generateAuthToken(email);
+            const hashOk = `#authToken=${encodeURIComponent(appToken)}`;
+            const redirectOk = `${nextUrl.replace(/#.*$/, '')}${hashOk}`;
+            return res.redirect(redirectOk);
+          }
+        } catch (_) {}
+      }
+      // If user previously accepted ToS via in‑app modal, trust cookie and skip prompt
+      try {
+        const v = getCookie(req, 'cmg_tos_v');
+        if (v) {
+          try {
+            const payload = JSON.parse(Buffer.from(v, 'base64').toString('utf8'));
+            if (payload && payload.email && payload.email.toLowerCase() === email && Number(payload.v || 0) >= ACTIVE_TOS_VERSION) {
+              const appToken = generateAuthToken(email);
+              const hashOk = `#authToken=${encodeURIComponent(appToken)}`;
+              const redirectOk = `${nextUrl.replace(/#.*$/, '')}${hashOk}`;
+              return res.redirect(redirectOk);
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+      // No in-memory fallback; rely on cookie or Auth0 app_metadata only
+      const pendingToken = generatePendingTosToken(email);
+      const hash = `#pendingTosToken=${encodeURIComponent(pendingToken)}&email=${encodeURIComponent(email)}`;
+      const redirect = `${nextUrl.replace(/#.*$/, '')}${hash}`;
+      return res.redirect(redirect);
+    }
+
+    const appToken = generateAuthToken(email);
+    const hash = `#authToken=${encodeURIComponent(appToken)}`;
+    const redirect = `${nextUrl.replace(/#.*$/, '')}${hash}`;
+    return res.redirect(redirect);
+  } catch (err) {
+    console.error('[post-auth] error:', err?.message || err);
+    try { return res.redirect(CLIENT_BASE_URL || BASE_URL); } catch (_) { return res.status(500).end(); }
+  }
+});
+
 // View snapshot storage (file-based per-user)
 const SAMPLE_VIEW_DIRS = [
   path.resolve(__dirname, 'data', 'views', 'test%40example.com'),
@@ -2144,6 +2610,9 @@ const readSnapshotFromDir = async (dir, token) => {
 
 // Save a snapshot and return a token
 app.post('/views', authenticateToken, async (req, res) => {
+  if (!DB_WRITES_ENABLED) {
+    return res.status(503).json({ error: 'Saving views is temporarily disabled (read-only mode).' });
+  }
   await new Promise(resolve => viewsWriteLimiter(req, res, resolve));
   try {
     const { snapshot, label = '' } = req.body || {};
@@ -2164,9 +2633,15 @@ app.post('/views', authenticateToken, async (req, res) => {
     const token = crypto.randomUUID();
     const createdAt = new Date();
     const pool = await getMysqlPool();
+    await ensureSavedViewsTable(pool);
+    // Resolve or create the stable public ID for this user
+    const publicId = await getOrCreatePublicIdForEmail(req.user.email || '');
+    if (!publicId) {
+      return res.status(500).json({ error: 'Could not resolve user identifier for saving view' });
+    }
     await pool.query(
-      'INSERT INTO saved_views (user_email, token, label, snapshot, created_at) VALUES (?, ?, ?, ?, ?)',
-      [req.user.email, token, label, JSON.stringify(snapshot), createdAt]
+      'INSERT INTO saved_views (user_public_id, token, label, snapshot, created_at) VALUES (?, ?, ?, ?, ?)',
+      [publicId, token, label, JSON.stringify(snapshot), createdAt]
     );
 
     return res.json({ token, label, createdAt: createdAt.toISOString() });
@@ -2181,9 +2656,14 @@ app.get('/views', authenticateToken, async (req, res) => {
   await new Promise(resolve => viewsReadLimiter(req, res, resolve));
   try {
     const pool = await getMysqlPool();
+    await ensureSavedViewsTable(pool);
+    const publicId = await getOrCreatePublicIdForEmail(req.user.email || '');
+    if (!publicId) {
+      return res.status(500).json({ error: 'Could not resolve user identifier for listing views' });
+    }
     const [rows] = await pool.query(
-      'SELECT token, label, created_at FROM saved_views WHERE user_email = ? ORDER BY created_at DESC',
-      [req.user.email]
+      'SELECT token, label, created_at FROM saved_views WHERE user_public_id = ? ORDER BY created_at DESC',
+      [publicId]
     );
     const views = rows.map((row) => ({
       token: row.token,
@@ -2207,13 +2687,15 @@ app.get('/views/:token', authenticateToken, async (req, res) => {
     let data = null;
 
     const pool = await getMysqlPool();
+    await ensureSavedViewsTable(pool);
     const [rows] = await pool.query(
-      'SELECT token, label, created_at, snapshot, user_email FROM saved_views WHERE token = ?',
+      'SELECT token, label, created_at, snapshot, user_public_id FROM saved_views WHERE token = ?',
       [token]
     );
     if (rows.length > 0) {
       const row = rows[0];
-      if (row.user_email !== req.user.email) {
+      const currentPublicId = await getOrCreatePublicIdForEmail(req.user.email || '');
+      if (!currentPublicId || row.user_public_id !== currentPublicId) {
         return res.status(403).json({ error: 'Forbidden' });
       }
       let snapshotPayload = row.snapshot;
@@ -2288,3 +2770,90 @@ app.listen(PORT, () => {
   console.log(`💥 Environment: ${process.env.NODE_ENV}`);
   startNeo4jKeepAlive();
 });
+// Helper to parse cookies safely without extra deps
+const getCookie = (req, name) => {
+  try {
+    const raw = req.headers?.cookie || '';
+    const parts = raw.split(/;\s*/);
+    for (const p of parts) {
+      const idx = p.indexOf('=');
+      if (idx === -1) continue;
+      const k = p.slice(0, idx).trim();
+      if (k === name) return decodeURIComponent(p.slice(idx + 1));
+    }
+  } catch (_) {}
+  return null;
+};
+const setCookie = (res, name, value, opts = {}) => {
+  const {
+    maxAgeSec = 365 * 24 * 60 * 60,
+    path = '/',
+    sameSite = AUTH0_BASE_IS_HTTPS ? 'None' : 'Lax',
+    secure = AUTH0_BASE_IS_HTTPS,
+    httpOnly = true,
+    domain = AUTH0_COOKIE_DOMAIN || undefined
+  } = opts;
+  const parts = [`${name}=${encodeURIComponent(value)}`, `Path=${path}`, `Max-Age=${Math.max(1, maxAgeSec)}`];
+  if (domain) parts.push(`Domain=${domain}`);
+  if (sameSite) parts.push(`SameSite=${sameSite}`);
+  if (secure) parts.push('Secure');
+  if (httpOnly) parts.push('HttpOnly');
+  try {
+    // Append to support multiple Set-Cookie headers
+    res.append('Set-Cookie', parts.join('; '));
+  } catch (_) {
+    res.setHeader('Set-Cookie', parts.join('; '));
+  }
+};
+
+// In-memory fallback for ToS acceptance (survives until server restarts)
+// Removed in-memory ToS fallback to avoid cross-session confusion
+// const tosLocalAcceptance = new Map(); // key: email -> { v, at }
+
+// Management API helpers (Node 18+ has global fetch)
+let mgmtTokenCache = { token: null, exp: 0 };
+const getMgmtToken = async () => {
+  try {
+    if (!AUTH0_MGMT_CLIENT_ID || !AUTH0_MGMT_CLIENT_SECRET || !AUTH0_ISSUER_BASE_URL) return null;
+    const now = Date.now();
+    if (mgmtTokenCache.token && now < mgmtTokenCache.exp - 60_000) return mgmtTokenCache.token;
+    const resp = await fetch(`${AUTH0_ISSUER_BASE_URL}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'client_credentials',
+        client_id: AUTH0_MGMT_CLIENT_ID,
+        client_secret: AUTH0_MGMT_CLIENT_SECRET,
+        audience: AUTH0_MGMT_AUDIENCE
+      })
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const token = data.access_token;
+    const ttl = Number(data.expires_in || 3600) * 1000;
+    mgmtTokenCache = { token, exp: now + ttl };
+    return token || null;
+  } catch (_) { return null; }
+};
+
+const mgmtFindUserByEmail = async (email) => {
+  const token = await getMgmtToken();
+  if (!token) return null;
+  const resp = await fetch(`${AUTH0_MGMT_AUDIENCE}users-by-email?email=${encodeURIComponent(email)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!resp.ok) return null;
+  const arr = await resp.json().catch(() => []);
+  return Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+};
+
+const mgmtUpdateUserAppMetadata = async (userId, meta) => {
+  const token = await getMgmtToken();
+  if (!token || !userId) return false;
+  const resp = await fetch(`${AUTH0_MGMT_AUDIENCE}users/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ app_metadata: meta })
+  });
+  return resp.ok;
+};

@@ -1129,6 +1129,76 @@ const normalizeDetailsRelationshipSources = (details = {}) => {
 };
 
 const ClassicalMusicGenealogy = () => {
+  // Minimal ToS/Disclaimer route to support Auth0 Post-Login Redirect Action
+  const isDisclaimerRoute = (typeof window !== 'undefined') && (window.location.pathname.replace(/\/+$/, '') === '/disclaimer');
+  if (isDisclaimerRoute) {
+    const AUTH0_DOMAIN = (import.meta && import.meta.env && import.meta.env.VITE_AUTH0_DOMAIN) || '';
+    let state = '';
+    let redirectToken = '';
+    let nonce = '';
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      state = params.get('state') || '';
+      redirectToken = params.get('redirect_token') || '';
+      nonce = params.get('nonce') || '';
+    } catch (_) {}
+    const canContinue = Boolean(AUTH0_DOMAIN && state);
+    const continueAction = canContinue ? `https://${AUTH0_DOMAIN}/continue` : '';
+    const containerStyle = {
+      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: '#f3f4f6', padding: 16
+    };
+    const cardStyle = {
+      maxWidth: 820, width: '100%', background: '#fff', border: '1px solid #e5e7eb',
+      borderRadius: 12, padding: 24, boxShadow: '0 10px 24px rgba(15, 23, 42, 0.12)'
+    };
+    return (
+      <div style={containerStyle}>
+        <div style={cardStyle}>
+          <h1 style={{ marginTop: 0, marginBottom: 10 }}>The Aspen Grove of Opera Singers, Disclaimer</h1>
+          <p style={{ color: '#374151' }}>
+            Please review and accept this disclaimer to continue. By selecting Agree & Continue you
+            acknowledge the extent of the site's current contents and the limitations expressed in this disclaimer.
+          </p>
+          {!AUTH0_DOMAIN && (
+            <div style={{ background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+              Missing VITE_AUTH0_DOMAIN. Add your Auth0 tenant domain (e.g., dev-xxxxx.us.auth0.com) to frontend/.env.
+            </div>
+          )}
+          {!state && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', padding: 10, borderRadius: 8, marginBottom: 12 }}>
+              This page must be opened from the Auth0 login redirect. Missing state.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+            <form action={continueAction} method="GET" style={{ margin: 0 }}>
+              <input type="hidden" name="state" value={state} />
+              <input type="hidden" name="accepted" value="1" />
+              {redirectToken ? (<input type="hidden" name="redirect_token" value={redirectToken} />) : null}
+              {nonce ? (<input type="hidden" name="nonce" value={nonce} />) : null}
+              <button
+                type="submit"
+                disabled={!canContinue}
+                style={{
+                  background: canContinue ? '#2563eb' : '#93c5fd', color: '#fff', border: 'none', padding: '10px 16px',
+                  borderRadius: 8, fontWeight: 600, cursor: canContinue ? 'pointer' : 'not-allowed'
+                }}
+              >
+                Agree & Continue
+              </button>
+            </form>
+            <button
+              type="button"
+              onClick={() => { try { window.history.back(); } catch (_) {} }}
+              style={{ background: '#fff', color: '#111', border: '1px solid #d1d5db', padding: '10px 16px', borderRadius: 8, fontWeight: 600 }}
+            >
+              Go Back
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 const viewport = useViewport();
 const { width: viewportWidth, height: viewportHeight, isTablet, isPhone } = viewport;
 const isMobileViewport = !!isPhone;
@@ -1156,6 +1226,7 @@ const isHeaderMobile = !!isPhone || (viewportWidth > 0 && viewportWidth <= 600);
   const backgroundAttachmentMode = isMobileViewport ? 'fixed' : 'fixed';
 
   const [token, setToken] = useState('');
+  const [userEmail, setUserEmail] = useState('');
   const [initialResetToken, setInitialResetToken] = useState('');
   const [pendingTosToken, setPendingTosToken] = useState('');
   const [pendingTosEmail, setPendingTosEmail] = useState('');
@@ -1409,12 +1480,153 @@ const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
   const headerContainerRef = useRef(null);
   const [headerWidth, setHeaderWidth] = useState(null);
 
+  // Consume auth token handed off via URL (from backend /post-auth)
+  useEffect(() => {
+    try {
+      const current = new URL(window.location.href);
+      let tokenFrom = current.searchParams.get('authToken');
+      // Also support pending ToS token delivered via URL hash or query
+      let pendingFrom = current.searchParams.get('pendingTosToken');
+      let pendingEmailFrom = current.searchParams.get('email');
+      if (!tokenFrom) {
+        const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+        tokenFrom = hashParams.get('authToken');
+        if (!pendingFrom) pendingFrom = hashParams.get('pendingTosToken');
+        if (!pendingEmailFrom) pendingEmailFrom = hashParams.get('email');
+        if (tokenFrom) {
+          hashParams.delete('authToken');
+          hashParams.delete('pendingTosToken');
+          hashParams.delete('email');
+          const newHash = hashParams.toString();
+          const newUrl = `${current.pathname}${current.search}${newHash ? `#${newHash}` : ''}`;
+          window.history.replaceState({}, '', newUrl);
+        }
+      } else {
+        current.searchParams.delete('authToken');
+        current.searchParams.delete('pendingTosToken');
+        current.searchParams.delete('email');
+        const newUrl = `${current.pathname}${current.search}${current.hash}`;
+        window.history.replaceState({}, '', newUrl);
+      }
+      if (tokenFrom) {
+        setToken(tokenFrom);
+        try { localStorage.setItem('token', tokenFrom); } catch (_) {}
+        try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
+        // Derive email from the token payload so header can greet the user
+        try {
+          const parts = String(tokenFrom).split('.');
+          if (parts.length >= 2) {
+            const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            const json = JSON.parse(atob(base64));
+            const emailInToken = (json && typeof json.email === 'string') ? json.email.trim().toLowerCase() : '';
+            if (emailInToken) {
+              setUserEmail(emailInToken);
+              try { localStorage.setItem('userEmail', emailInToken); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        // If asked to show support after login (from a pre-redirect flow), honor it now
+        try {
+          if (localStorage.getItem('cmgShowSupportAfterLogin') === '1') {
+            setShowSupportPanel(true);
+            localStorage.removeItem('cmgShowSupportAfterLogin');
+          }
+        } catch (_) {}
+        setError('');
+      }
+      if (pendingFrom) {
+        try { setPendingTosToken(pendingFrom); } catch (_) {}
+        if (pendingEmailFrom) {
+          try { setPendingTosEmail(pendingEmailFrom); localStorage.setItem('userEmail', pendingEmailFrom); } catch (_) {}
+        }
+        try { setShowTerms(true); } catch (_) {}
+      }
+    } catch (_) {}
+  }, []);
+
+  // Option A: Backend-managed Auth0 session. Provide helpers to redirect to backend and sync a local token.
+  const localResolveApiBase = () => {
+    try {
+      if (typeof window !== 'undefined') {
+        const override = window.__CMG_API_BASE;
+        if (typeof override === 'string' && override.trim()) {
+          return override.trim().replace(/\/$/, '');
+        }
+      }
+    } catch (_) {}
+    let envBase = '';
+    try { if (typeof import.meta !== 'undefined' && import.meta.env && typeof import.meta.env.VITE_API_BASE === 'string') envBase = import.meta.env.VITE_API_BASE; } catch (_) {}
+    envBase = (envBase || '').trim();
+    if (envBase) return envBase.replace(/\/$/, '');
+    if (typeof window !== 'undefined') {
+      const { protocol, hostname } = window.location;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:3001';
+      return `${protocol}//${hostname}`;
+    }
+    return 'http://localhost:3001';
+  };
+
+  const redirectToAuth0Login = () => {
+    try {
+      const base = localResolveApiBase();
+      const url = `${base}/login?returnTo=${encodeURIComponent(window.location.origin)}`;
+      window.location.href = url;
+    } catch (_) {}
+  };
+
+  const syncSessionToken = useCallback(async () => {
+    try {
+      const base = localResolveApiBase();
+      const resp = await fetch(`${base}/session/token`, { credentials: 'include' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && typeof data.token === 'string') {
+          setToken(data.token);
+          try { localStorage.setItem('token', data.token); } catch (_) {}
+          try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
+          try { if (data.email) { setUserEmail(data.email); localStorage.setItem('userEmail', data.email); } } catch (_) {}
+          setError('');
+          return true;
+        }
+        return false;
+      }
+      // Handle ToS required case (403) to show in‑app disclaimer without Action redirects
+      if (resp.status === 403) {
+        let data = {};
+        try { data = await resp.json(); } catch (_) {}
+        const pendingTokenValue = typeof data.pendingToken === 'string' ? data.pendingToken : '';
+        if (data && data.requiresTos && pendingTokenValue) {
+          try { if (typeof data.email === 'string') { setUserEmail(data.email); localStorage.setItem('userEmail', data.email); } } catch (_) {}
+          setPendingTosToken(pendingTokenValue);
+          setPendingTosEmail(typeof data.email === 'string' ? data.email : '');
+          // No page redirect; keep user in app after ToS modal
+          // Surface the ToS modal
+          try { setShowTerms(true); } catch (_) {}
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!token) { syncSessionToken(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const clearStoredToken = () => {
     try { localStorage.removeItem('token'); } catch (_) {}
     try { localStorage.removeItem(TOKEN_LOGIN_TS_KEY); } catch (_) {}
+    try { localStorage.removeItem('userEmail'); } catch (_) {}
     setPendingTosToken('');
     setPendingTosEmail('');
     setPendingTosRedirect('');
+    try { setUserEmail(''); } catch (_) {}
+    try {
+      const base = localResolveApiBase();
+      window.location.replace(`${base}/logout`);
+    } catch (_) {}
   };
 
 const hasSearchResults = Array.isArray(searchResults) && searchResults.length > 0;
@@ -3613,6 +3825,17 @@ const attemptLoadSavedView = async () => {
       return;
     }
     setToken(savedToken);
+    try {
+      const savedEmail = localStorage.getItem('userEmail');
+      if (typeof savedEmail === 'string') setUserEmail(savedEmail);
+    } catch (_) {}
+    // If a support panel reopen was requested before a redirect, honor it now
+    try {
+      if (localStorage.getItem('cmgShowSupportAfterLogin') === '1') {
+        setShowSupportPanel(true);
+        localStorage.removeItem('cmgShowSupportAfterLogin');
+      }
+    } catch (_) {}
   }, []);
 
   useEffect(() => {
@@ -3903,91 +4126,7 @@ const attemptLoadSavedView = async () => {
 
   // Resize handler removed
 
-  const login = async (email, password) => {
-    const normalizedEmail = (email || '').trim();
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      const rateInfo = handleRateLimitResponse(response);
-      if (rateInfo) {
-        setLoading(false);
-        return { success: false, error: rateInfo.message };
-      }
-
-      const text = await response.text();
-      let data;
-      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
-      if (response.ok) {
-        setJustLoggedIn(true);
-        setToken(data.token);
-        try { localStorage.setItem('token', data.token); } catch (_) {}
-        try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
-        setError('');
-        setPendingTosToken('');
-        setPendingTosEmail('');
-        setPendingTosRedirect('');
-        return { success: true };
-      }
-
-      if (response.status === 403 && data?.requiresTos && data?.pendingToken) {
-        setPendingTosToken(data.pendingToken);
-        setPendingTosEmail(data.email || normalizedEmail);
-        setPendingTosRedirect('');
-        setError('');
-        return { success: false, requiresTos: true };
-      }
-
-      setError(data.error || `Login failed (${response.status})`);
-      return { success: false, error: data.error || `Login failed (${response.status})` };
-    } catch (err) {
-      setError(err?.message || 'Login failed - please try again');
-      return { success: false, error: err?.message || 'Login failed - please try again' };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const register = async (email, password, options = {}) => {
-    const { acceptedDisclaimer = false } = options;
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, acceptedDisclaimer })
-      });
-      const rateInfo = handleRateLimitResponse(response);
-      if (rateInfo) {
-        setLoading(false);
-        setError(rateInfo.message);
-        return;
-      }
-      
-      const text = await response.text();
-      let data;
-      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || 'Invalid response' }; }
-      if (response.ok) {
-        setJustLoggedIn(true);
-        setToken(data.token);
-        try { localStorage.setItem('token', data.token); } catch (_) {}
-        try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
-        setError('');
-        setPendingTosToken('');
-        setPendingTosEmail('');
-        setPendingTosRedirect('');
-      } else {
-        setError(data.error || `Registration failed (${response.status})`);
-      }
-    } catch (err) {
-      setError(err?.message || 'Registration failed - please try again');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Local registration is removed; all sign-up flows go through Auth0.
 
   const performSearch = async () => {
     if (!searchQuery.trim() || searchQuery.length < 2) {
@@ -4759,6 +4898,36 @@ const attemptLoadSavedView = async () => {
             relationshipSourceDisplay: relationshipSource,
             sourceInfo: relationshipSource,
             relationship_source: null
+          });
+        });
+      }
+
+      // Add edited books
+      if (details.works.editedBooks) {
+        details.works.editedBooks.forEach((book, index) => {
+          const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
+          const bookLabel = String(book.title || `Unknown Book ${index + 1}`).trim();
+          const bookId = normalizeNodeId(typedIdRaw || bookLabel);
+          if (!bookId || isPlaceholderName(bookId)) return;
+          nodes.push(createBookNodePayload({
+            id: typedIdRaw || bookId,
+            name: bookLabel || bookId,
+            book_id: book?.book_id,
+            title: bookLabel || bookId,
+            link: book?.link,
+            x: 500 + (index * 80),
+            y: 560
+          }));
+
+          const relationshipSource = deriveRelationshipSourceText(book.source, book.relationship_source);
+          links.push({
+            source: centerId,
+            target: bookId,
+            type: 'edited',
+            label: 'edited',
+            relationshipSourceDisplay: relationshipSource,
+            sourceInfo: relationshipSource,
+            relationship_source: book.relationship_source || null
           });
         });
       }
@@ -6093,6 +6262,24 @@ const normalizeLinkForMerge = (link) => {
                   });
                 });
               }
+              if (data.works.editedBooks) {
+                data.works.editedBooks.forEach(book => {
+                  const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
+                  const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
+                  const bookId = registerNode(createBookNodePayload({
+                    id: typedIdRaw || bookLabel,
+                    name: bookLabel,
+                    book_id: book?.book_id,
+                    title: bookLabel,
+                    link: book?.link
+                  }));
+                  if (!bookId) return;
+                  addLink(anchorId, bookId, 'edited', {
+                    label: 'edited',
+                    relationshipSourceCandidates: [book.source, book.relationship_source]
+                  });
+                });
+              }
             }
           } else if (node.type === 'opera') {
             if (data.premieredRoles) {
@@ -6619,6 +6806,25 @@ const normalizeLinkForMerge = (link) => {
                 if (!bookId) return;
                 addLink(anchorId, bookId, 'authored', {
                   label: 'authored',
+                  relationshipSourceCandidates: [book.source, book.relationship_source]
+                });
+              });
+            }
+
+            if (relationshipType === 'edited' && data.works && data.works.editedBooks) {
+              data.works.editedBooks.forEach(book => {
+                const bookLabel = String(book.title || book.name || '').trim() || 'Unknown Book';
+                const typedIdRaw = book?.id || (book?.book_id ? `book:${book.book_id}` : '');
+                const bookId = registerNode(createBookNodePayload({
+                  id: typedIdRaw || bookLabel,
+                  name: bookLabel,
+                  book_id: book?.book_id,
+                  title: bookLabel,
+                  link: book?.link
+                }));
+                if (!bookId) return;
+                addLink(anchorId, bookId, 'edited', {
+                  label: 'edited',
                   relationshipSourceCandidates: [book.source, book.relationship_source]
                 });
               });
@@ -11145,6 +11351,7 @@ const normalizeLinkForMerge = (link) => {
         if (data.works) {
           if (Array.isArray(data.works.operas)) counts.premieredRoleIn = data.works.operas.length;
           if (Array.isArray(data.works.books)) counts.authored = data.works.books.length;
+          if (Array.isArray(data.works.editedBooks)) counts.edited = data.works.editedBooks.length;
         }
 
         const combinedWrote = [...composedOperas, ...wroteRelationships];
@@ -12712,7 +12919,6 @@ const normalizeLinkForMerge = (link) => {
     );
   };
   const AuthForm = ({ initialResetToken = '' }) => {
-    const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -12828,6 +13034,7 @@ const normalizeLinkForMerge = (link) => {
           const response = await fetch(`${API_BASE}/auth/accept-tos`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ pendingToken: pendingTosToken })
           });
           const rateInfo = handleRateLimitResponse(response);
@@ -12842,6 +13049,8 @@ const normalizeLinkForMerge = (link) => {
           if (acceptedEmail) {
             setEmail(acceptedEmail);
             setForgotEmail(acceptedEmail);
+            try { setUserEmail(acceptedEmail); } catch (_) {}
+            try { localStorage.setItem('userEmail', acceptedEmail); } catch (_) {}
           }
           const authToken = typeof data.token === 'string' ? data.token : '';
           if (authToken) {
@@ -12859,15 +13068,8 @@ const normalizeLinkForMerge = (link) => {
           try { localStorage.setItem('tosAccepted', '1'); } catch (_) {}
           setTermsChecked(true);
 
-          if (pendingTosRedirect) {
-            const target = pendingTosRedirect;
-            setPendingTosRedirect('');
-            setTimeout(() => {
-              try { window.location.assign(target); } catch (_) {}
-            }, 400);
-          } else {
-            setPendingTosRedirect('');
-          }
+          // No page redirect; keep user in app after acceptance
+          setPendingTosRedirect('');
         } catch (err) {
           setAcceptingTos(false);
           setTosAcceptError(err?.message || 'Failed to record acknowledgement.');
@@ -12895,25 +13097,7 @@ const normalizeLinkForMerge = (link) => {
     };
 
 
-    const handleSubmit = async () => {
-      // Add some basic validation
-      if (!email || !password) {
-        alert('Please enter both email and password');
-        return;
-      }
-
-      // Require terms acknowledgement before proceeding
-      if (!termsChecked) {
-        setShowTerms(true);
-        return;
-      }
-      
-      if (isLogin) {
-        await login(email, password);
-      } else {
-        register(email, password, { acceptedDisclaimer: Boolean(termsChecked) });
-      }
-    };
+    // Local registration is removed. Use the Sign in button to go through Auth0.
 
     const handleForgotSubmit = async () => {
       const targetEmail = (forgotEmail || email || '').trim();
@@ -13015,20 +13199,17 @@ const normalizeLinkForMerge = (link) => {
         }
 
         setToken(nextToken);
+        const resolvedEmail = (nextEmail || email || '').trim();
+        try { setUserEmail(resolvedEmail); } catch (_) {}
         setJustLoggedIn(true);
         try { localStorage.setItem('token', nextToken); } catch (_) {}
         try { localStorage.setItem(TOKEN_LOGIN_TS_KEY, String(Date.now())); } catch (_) {}
+        try { if (resolvedEmail) localStorage.setItem('userEmail', resolvedEmail); } catch (_) {}
         setError('');
 
-        setResetStatus({ loading: false, message: 'Password updated. Redirecting…', error: '' });
-
-        const redirectTarget = computeRedirectTarget();
+        setResetStatus({ loading: false, message: 'Password updated.', error: '' });
+        // Stay on the page; no redirect needed
         setPendingTosRedirect('');
-        setTimeout(() => {
-          try {
-            window.location.assign(redirectTarget);
-          } catch (_) {}
-        }, 800);
       } catch (err) {
         setResetStatus({ loading: false, message: '', error: err?.message || 'Failed to reset password.' });
       }
@@ -13146,266 +13327,35 @@ const normalizeLinkForMerge = (link) => {
             boxShadow: isMobileViewport ? '0 6px 18px rgba(15, 23, 42, 0.18)' : '0 8px 20px rgba(15, 23, 42, 0.15)'
           }}>
             <h1 style={{ fontSize: isMobileViewport ? '26px' : '30px', fontWeight: '700', color: '#111827', margin: 0, lineHeight: 1.25 }}>
-              The Aspen Grove of Opera Singers
+              Welcome to<br/>
+              The Aspen Grove of<br/>
+              Opera Singers
             </h1>
             <p style={{ margin: '12px 0 0 0', fontSize: isMobileViewport ? '16px' : '17px', fontWeight: '500', color: '#1f2937', lineHeight: 1.4 }}>
               Discover connections among classical singers, opera premieres, and vocal pedagogy books.
             </p>
           </div>
   
-          {isForgotPassword ? (
-            <>
-              <div style={{ marginBottom: isMobileViewport ? 18 : 20, color: '#1f2937', lineHeight: 1.55, fontSize: isMobileViewport ? '15px' : '14px' }}>
-                Enter the email associated with your account and we’ll send you a secure link to reset your password.
-              </div>
-              {forgotError && (
-                <div style={{
-                  backgroundColor: '#fef2f2',
-                  border: '2px solid #fca5a5',
-                  color: '#b91c1c',
-                  padding: '10px',
-                  borderRadius: isMobileViewport ? '12px' : '8px',
-                  marginBottom: 12
-                }}>
-                  {forgotError}
-                </div>
-              )}
-              {forgotMessage && (
-                <div style={{
-                  backgroundColor: '#ecfdf5',
-                  border: '2px solid #6ee7b7',
-                  color: '#047857',
-                  padding: '10px',
-                  borderRadius: isMobileViewport ? '12px' : '8px',
-                  marginBottom: 12
-                }}>
-                  {forgotMessage}
-                </div>
-              )}
-              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
-                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Account email</label>
-                <input
-                  type="email"
-                  value={forgotEmail}
-                  onChange={(e) => setForgotEmail(e.target.value)}
-                  style={inputStyle}
-                  placeholder="your@email.com"
-                  autoComplete="email"
-                />
-              </div>
-              <button
-                onClick={handleForgotSubmit}
-                disabled={forgotLoading}
-                style={{
-                  width: '100%',
-                  backgroundColor: '#2563eb',
-                  color: '#ffffff',
-                  padding: isMobileViewport ? '14px' : '12px',
-                  border: 'none',
-                  borderRadius: isMobileViewport ? '12px' : '8px',
-                  fontSize: '16px',
-                  cursor: forgotLoading ? 'not-allowed' : 'pointer',
-                  opacity: forgotLoading ? 0.7 : 1
-                }}
-              >
-                {forgotLoading ? 'Sending reset link…' : 'Send reset link'}
-              </button>
+          <>
+            <div style={{ marginTop: 4, textAlign: 'center' }}>
               <button
                 type="button"
-                onClick={closeForgotPassword}
+                onClick={redirectToAuth0Login}
                 style={{
-                  marginTop: 16,
-                  background: 'none',
-                  border: 'none',
-                  color: '#2563eb',
-                  textDecoration: 'underline',
+                  backgroundColor: '#fff',
+                  color: '#111',
+                  border: '2px solid #3e96e2',
+                  borderRadius: isMobileViewport ? '12px' : '8px',
+                  padding: isMobileViewport ? '12px 18px' : '10px 16px',
                   fontWeight: 600,
                   cursor: 'pointer'
                 }}
               >
-                Back to sign in
+                Sign in or create an account
               </button>
-            </>
-          ) : (
-            <>
-              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
-                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  style={inputStyle}
-                  placeholder="your@email.com"
-                  autoComplete="email"
-                />
-              </div>
-
-              <div className={isMobileViewport ? 'mobile-auth-field' : undefined} style={isMobileViewport ? undefined : { marginBottom: '20px' }}>
-                <label style={{ fontWeight: '500', fontSize: isMobileViewport ? '15px' : '16px' }}>Password</label>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    style={{ ...inputStyle, paddingRight: '44px' }}
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    style={{
-                      position: 'absolute',
-                      right: isMobileViewport ? 8 : 10,
-                      top: '50%',
-                      transform: 'translateY(-50%)',
-                      border: 'none',
-                      background: 'none',
-                      color: '#2563eb',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      padding: '0 2px',
-                      lineHeight: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      minWidth: 'auto',
-                      width: 'auto'
-                    }}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  >
-                    {showPassword ? 'Hide' : 'Show'}
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <div style={{
-                  backgroundColor: '#fee',
-                  border: '2px solid #3e96e2',
-                  color: '#c33',
-                  padding: '10px',
-                  borderRadius: isMobileViewport ? '12px' : '8px'
-                }}>
-                  {error}
-                </div>
-              )}
-
-              <div
-                className={isMobileViewport ? 'mobile-auth-inline' : undefined}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  marginBottom: isMobileViewport ? 14 : 16
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowTerms(true)}
-                  style={{
-                    background: '#ffffff',
-                    border: '2px solid #3e96e2',
-                    color: '#0f172a',
-                    textDecoration: 'none',
-                    cursor: 'pointer',
-                    fontSize: isMobileViewport ? '15px' : '13px',
-                    padding: isMobileViewport ? '12px 18px' : '10px 16px',
-                    borderRadius: '14px',
-                    fontWeight: 600,
-                    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.18)'
-                  }}
-                >
-                  View and acknowledge disclaimer to continue
-                </button>
-              </div>
-
-              <button
-                onClick={handleSubmit}
-                disabled={loading}
-                style={{
-                  width: '100%',
-                  backgroundColor: '#667eea',
-                  color: '#ffffff',
-                  padding: isMobileViewport ? '14px' : '12px',
-                  border: 'none',
-                  borderRadius: isMobileViewport ? '12px' : '8px',
-                  fontSize: '16px',
-                  cursor: loading ? 'not-allowed' : 'pointer',
-                  opacity: loading ? 0.7 : 1
-                }}
-              >
-                {loading ? 'Loading...' : (isLogin ? 'Sign In' : 'Create Account')}
-              </button>
-
-              {isMobileViewport ? (
-                <div className="mobile-auth-actions">
-                  <button
-                    type="button"
-                    onClick={() => setIsLogin(!isLogin)}
-                    style={{
-                      backgroundColor: '#f3f4f6',
-                      color: '#0f172a',
-                      border: '2px solid #3e96e2',
-                      borderRadius: '12px',
-                      fontWeight: 600
-                    }}
-                  >
-                    {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openForgotPassword}
-                    style={{
-                      backgroundColor: '#ffffff',
-                      color: '#2563eb',
-                      border: '2px solid #3e96e2',
-                      borderRadius: '12px',
-                      fontWeight: 600
-                    }}
-                  >
-                    Forgot password?
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <div style={{ marginTop: '10px', textAlign: 'center' }}>
-                    <div style={{ display: 'inline-block', backgroundColor: 'rgba(255,255,255,0.6)', padding: '6px 10px', borderRadius: '8px' }}>
-                      <button
-                        onClick={() => setIsLogin(!isLogin)}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: '#111',
-                          cursor: 'pointer',
-                          fontWeight: 600,
-                          textDecoration: 'underline'
-                        }}
-                      >
-                        {isLogin ? "Don't have an account? Sign up!" : "Already have an account? Sign in"}
-                      </button>
-                    </div>
-                  </div>
-                  <div style={{ marginTop: '12px', textAlign: 'center' }}>
-                    <button
-                      type="button"
-                      onClick={openForgotPassword}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#2563eb',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                        textDecoration: 'underline'
-                      }}
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-                </>
-              )}
-            </>
-          )}
+            </div>
+            {/* Disclaimer button removed per request */}
+          </>
         </div>
       </div>
   
@@ -13530,7 +13480,7 @@ const normalizeLinkForMerge = (link) => {
                 If you would like some or all of your personal information to be removed from the dataset for any reason, please <a href="mailto:classicalsinginghumanitieslab@gmail.com">let me know</a>. I will happily remove anyone's information. If you have a correction from a credible source, I will happily incorporate that too. If you have information to add that meets the criteria described above, please fill out <a href="https://forms.gle/TZmuaPpMUu9ob4jT8" target="_blank">this form</a>, and I will incorporate it as quickly as I can.
               </p>
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <p style={{ fontSize: 14, color: '#111' }}>
+                <p style={{ fontSize: 14, color: '#333', lineHeight: 1.6 }}>
                   By selecting Agree &amp; Continue you acknowledge the extent of the site's current contents and the limitations expressed in this disclaimer.
                 </p>
                 {isTosAcceptanceRequired && (
@@ -13860,7 +13810,7 @@ const normalizeLinkForMerge = (link) => {
             boxShadow: isHeaderMobile ? '0 14px 32px rgba(15, 23, 42, 0.18)' : undefined,
             border: isHeaderMobile ? '2px solid #3e96e2' : undefined,
             paddingRight: isHeaderMobile ? undefined : 440,
-            minHeight: isHeaderMobile ? 'auto' : 140
+            minHeight: isHeaderMobile ? 'auto' : 170
           }}
         >
           <div
@@ -13934,6 +13884,19 @@ const normalizeLinkForMerge = (link) => {
               gap: isHeaderMobile ? 6 : 8
             }}
           >
+            {/* Welcome line above buttons / hamburger (hide on phones to avoid crowding) */}
+            {!isHeaderMobile && (
+              <div
+                style={{
+                  color: '#374151',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  textAlign: 'right'
+                }}
+              >
+                {`Welcome to The Aspen Grove${userEmail ? ", " + ((userEmail.split('@')[0]) || userEmail) : ''}`}
+              </div>
+            )}
             {isHeaderMobile ? (
               <button
                 type="button"
@@ -14179,6 +14142,12 @@ const normalizeLinkForMerge = (link) => {
                   ×
                 </button>
               </div>
+              {/* Signed-in identity for mobile, shown inside the menu */}
+              {userEmail && (
+                <div style={{ marginTop: 8, marginBottom: 8, color: '#374151', fontSize: 14, fontWeight: 600 }}>
+                  {`Signed in as ${userEmail.split('@')[0]}`}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -14845,28 +14814,35 @@ const normalizeLinkForMerge = (link) => {
                   style={{
                     backgroundColor: 'white',
                     borderRadius: '8px',
-                    padding: isHeaderMobile ? '18px' : '20px',
+                    padding: isHeaderMobile ? '10px 12px' : '10px 12px',
                     boxShadow: showResultsHalo ? '0 0 12px 2px rgba(255,255,255,0.85), 0 0 18px 6px rgba(62,150,226,0.45), 0 0 22px 9px rgba(228,162,1,0.35), 0 0 28px 12px rgba(62,150,226,0.25)' : '0 2px 4px rgba(0,0,0,0.1)',
                     border: '2px solid #3e96e2',
                     cursor: 'pointer',
-                    transition: 'box-shadow 0.35s ease'
+                    transition: 'box-shadow 0.35s ease',
+                    minHeight: '68px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center',
+                    rowGap: '2px'
                   }}
                   onMouseOver={(e) => e.currentTarget.style.boxShadow = showResultsHalo ? '0 0 12px 2px rgba(255,255,255,0.90), 0 0 22px 8px rgba(62,150,226,0.50), 0 0 26px 10px rgba(228,162,1,0.40), 0 10px 22px rgba(0,0,0,0.12)' : '0 4px 8px rgba(0,0,0,0.15)'}
                   onMouseOut={(e) => e.currentTarget.style.boxShadow = showResultsHalo ? '0 0 12px 2px rgba(255,255,255,0.85), 0 0 18px 6px rgba(62,150,226,0.45), 0 0 22px 9px rgba(228,162,1,0.35), 0 0 28px 12px rgba(62,150,226,0.25)' : '0 2px 4px rgba(0,0,0,0.1)'}
                 >
-                  <h4>{searchType === 'singers' ? (item.name || item.properties.full_name) : searchType === 'operas' ? item.properties.opera_name : item.properties.title}</h4>
+                  <h4 style={{ margin: '0 0 2px 0', fontSize: '15px', lineHeight: 1.2 }}>
+                    {searchType === 'singers' ? (item.name || item.properties.full_name) : searchType === 'operas' ? item.properties.opera_name : item.properties.title}
+                  </h4>
                   {searchType === 'operas' && item.properties.version && (
-                    <p style={{ margin: '2px 0 6px 0', fontSize: '16px', color: '#555', fontWeight: 400 }}>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#555', fontWeight: 400, lineHeight: 1.2 }}>
                       {item.properties.version}
                     </p>
                   )}
                   {searchType === 'singers' && item.properties.voice_type && (
-                    <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#555', lineHeight: 1.2 }}>
                       <strong>Voice type:</strong> {item.properties.voice_type}
                     </p>
                   )}
                   {searchType === 'singers' && (item.properties.birth_year || item.properties.death_year) && (
-                    <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
+                    <p style={{ margin: '1px 0', fontSize: '13px', color: '#555', lineHeight: 1.2 }}>
                   <strong>Dates:</strong> {
                         item.properties.birth_year && item.properties.death_year
                           ? `${item.properties.birth_year}-${item.properties.death_year}`
@@ -14879,12 +14855,12 @@ const normalizeLinkForMerge = (link) => {
                   </p>
                   )}
                   {searchType === 'operas' && item.properties.composer && (
-                    <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
+                    <p style={{ margin: '1px 0', fontSize: '13px', color: '#555', lineHeight: 1.2 }}>
                       <strong>Composer:</strong> {item.properties.composer}
                     </p>
                   )}
                   {searchType === 'books' && item.properties.author && (
-                    <p style={{ margin: '4px 0', fontSize: '16px', color: '#666' }}>
+                    <p style={{ margin: '1px 0', fontSize: '13px', color: '#555', lineHeight: 1.2 }}>
                       <strong>Author:</strong> {item.properties.author}
                     </p>
                   )}
@@ -14900,7 +14876,18 @@ const normalizeLinkForMerge = (link) => {
           >
             <NetworkVisualization viewport={viewport} />
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
-              <div className="network-hint" style={{ textAlign: 'center' }}>
+              <div
+                className="network-hint"
+                style={{
+                  textAlign: 'center',
+                  display: 'inline-block',
+                  backgroundColor: 'rgba(255,255,255,0.9)',
+                  border: 'none',
+                  borderRadius: 12,
+                  padding: '8px 12px',
+                  color: '#111827'
+                }}
+              >
                 {isMobileViewport ? (
                   <>
                     Drag nodes to reposition • Pinch to zoom • Drag to pan • Long-press a node or relationship for more information
@@ -15556,6 +15543,76 @@ const normalizeLinkForMerge = (link) => {
                           <p style={{ margin: '4px 0', fontWeight: '500' }}>{book.title}</p>
                         </div>
                       ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {itemDetails.works.editedBooks && itemDetails.works.editedBooks.length > 0 && (
+                    <div style={{
+                      backgroundColor: 'white',
+                      borderRadius: '8px',
+                      padding: 0,
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                      border: '2px solid #3e96e2',
+                      height: '300px',
+                      overflow: 'hidden',
+                      marginTop: 16
+                    }}>
+                      <div style={{ height: '100%', overflowY: 'auto', padding: '20px 16px 20px 20px' }}>
+                        <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#6a7304', marginBottom: '15px' }}>
+                          ✏️ Edited Books ({itemDetails.works.editedBooks.length})
+                        </h3>
+                        {itemDetails.works.editedBooks.map((book, index) => (
+                          <div
+                            key={`edited-${index}`}
+                            style={{
+                              marginBottom: '12px',
+                              paddingBottom: '12px',
+                              borderBottom: index < itemDetails.works.editedBooks.length - 1 ? '1px solid #e5e7eb' : 'none',
+                              cursor: 'pointer',
+                              padding: '8px',
+                              borderRadius: '8px',
+                              transition: 'background-color 0.2s'
+                            }}
+                            onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f3f4f6'}
+                            onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                            onClick={async () => {
+                              pushHistory('card-click-book-edited');
+                              try {
+                                setLoading(true);
+                                const response = await fetch(`${API_BASE}/book/details`, {
+                                  method: 'POST',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${token}`
+                                  },
+                                  body: JSON.stringify({ bookTitle: book.title })
+                                });
+                                const rateInfo = handleRateLimitResponse(response);
+                                if (rateInfo) {
+                                  throw new Error(rateInfo.message);
+                                }
+                                const data = await response.json();
+                                if (response.ok) {
+                                  setItemDetails(data);
+                                  setSelectedItem({ properties: { title: book.title } });
+                                  setSearchType('books');
+                                  setCurrentView('network');
+                                  generateNetworkFromDetails(data, book.title, 'books');
+                                  setShouldRunSimulation(true);
+                                } else {
+                                  setError(data.error);
+                                }
+                              } catch (err) {
+                                setError('Failed to fetch book details');
+                              } finally {
+                                setLoading(false);
+                              }
+                            }}
+                          >
+                            <p style={{ margin: '4px 0', fontWeight: '500' }}>{book.title}</p>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
