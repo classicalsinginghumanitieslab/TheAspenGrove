@@ -13253,6 +13253,19 @@ const normalizeLinkForMerge = (link) => {
 
     // Auto-fill test credentials
 
+    const backgroundDescriptionId = 'aspens-bg-description';
+    const srOnlyStyle = {
+      position: 'absolute',
+      width: '1px',
+      height: '1px',
+      padding: 0,
+      margin: '-1px',
+      overflow: 'hidden',
+      clip: 'rect(0, 0, 0, 0)',
+      whiteSpace: 'nowrap',
+      border: 0
+    };
+
     const outerStyle = isMobileViewport ? {
       minHeight: backgroundMinHeight,
       width: '100%',
@@ -13315,7 +13328,10 @@ const normalizeLinkForMerge = (link) => {
       boxSizing: 'border-box'
     };
   return (
-    <div style={outerStyle}>
+    <div style={outerStyle} aria-describedby={backgroundDescriptionId}>
+      <span id={backgroundDescriptionId} style={srOnlyStyle}>
+        Aspen grove background photo with tall trunks and filtered sunlight setting a calm outdoor mood.
+      </span>
       <div {...wrapperProps}>
         <div {...cardProps}>
           <div className={isMobileViewport ? 'mobile-auth-title' : undefined} style={{
@@ -13331,9 +13347,16 @@ const normalizeLinkForMerge = (link) => {
               The Aspen Grove of<br/>
               Opera Singers
             </h1>
-            <p style={{ margin: '12px 0 0 0', fontSize: isMobileViewport ? '16px' : '17px', fontWeight: '500', color: '#1f2937', lineHeight: 1.4 }}>
-              Discover connections among classical singers, opera premieres, and vocal pedagogy books.
-            </p>
+            <img
+              src="/logo.png"
+              alt="The Aspen Grove logo"
+              style={{
+                width: isMobileViewport ? '96px' : '112px',
+                height: 'auto',
+                margin: '12px auto 0 auto',
+                display: 'block'
+              }}
+            />
           </div>
   
           <>
@@ -13353,6 +13376,21 @@ const normalizeLinkForMerge = (link) => {
               >
                 Sign in or create an account
               </button>
+            </div>
+            <div
+              style={{
+                marginTop: isMobileViewport ? '16px' : '20px',
+                backgroundColor: '#ffffff',
+                padding: isMobileViewport ? '14px 16px' : '16px 20px',
+                borderRadius: isMobileViewport ? '12px' : '10px',
+                boxShadow: '0 8px 20px rgba(15, 23, 42, 0.12)',
+                color: '#1f2937',
+                lineHeight: 1.5
+              }}
+            >
+              <p style={{ margin: 0, fontSize: isMobileViewport ? '15px' : '16px' }}>
+                The Aspen Grove of Opera Singers is an online database and data visualization project that illuminates relationships among opera singers and their teachers. Classical singing technique and tradition has been passed down in one-on-one lessons from its very origins in Florence in the late 16th century to the present day. The Aspen Grove makes this vast history available in text and in a visualization making exploration intuitive. Until now, this information has been scattered across online and print sources. Intended for students, teachers, scholars, and opera fans, this resource allows for a deep exploration of a singer’s pedagogical lineage and contextualizes the history of the entire operatic art form.
+              </p>
             </div>
             {/* Disclaimer button removed per request */}
           </>
