@@ -2262,7 +2262,7 @@ app.post('/path/find', authenticateToken, async (req, res) => {
     if (!from || !to) {
       return res.status(400).json({ error: 'from and to (full_name) are required' });
     }
-    const hops = Math.min(Math.max(parseInt(maxHops || 8, 10), 1), 12);
+    const hops = Math.min(Math.max(parseInt(maxHops || 25, 10), 1), 30);
     const cached = getCachedPath(from, to, hops);
     if (cached) {
       console.log(`[path/find] cache HIT in ${Date.now() - startedAt}ms`, { from, to, hops });

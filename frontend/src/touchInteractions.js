@@ -1,7 +1,8 @@
 import * as d3 from 'd3';
 
-const PAN_ACTIVATION_PX = (typeof window !== 'undefined' && 'ontouchstart' in window) ? 20 : 6;
-const PINCH_ACTIVATION_PX = 20;
+const PAN_ACTIVATION_PX = (typeof window !== 'undefined' && 'ontouchstart' in window) ? 16 : 8;
+const PINCH_ACTIVATION_PX = 32;
+const MIN_GESTURE_MS = 80;
 const POINTER_STALE_MS = 4000;
 
 const isDomElement = (el) => (typeof Element !== 'undefined') && el instanceof Element;
@@ -12,6 +13,7 @@ const isContextTarget = (el) => {
   if (el.closest('button') || el.closest('input') || el.closest('textarea')) return true;
   if (el.closest('.mobile-toolbar__button')) return true;
   if (el.closest('.mobile-tap-target')) return true;
+  if (el.closest('.link-label-hit')) return true;
   return false;
 };
 
@@ -81,6 +83,16 @@ export default function initTouchInteractions({
   const activePointers = new Map();
   let panState = null;
   let pinchState = null;
+  let inertiaFrame = null;
+  let inertiaVelocity = null;
+
+  const stopInertia = () => {
+    if (inertiaFrame !== null) {
+      cancelAnimationFrame(inertiaFrame);
+      inertiaFrame = null;
+    }
+    inertiaVelocity = null;
+  };
 
   const resetPanState = () => {
     panState = null;
@@ -99,6 +111,7 @@ export default function initTouchInteractions({
       startY: meta.startY,
       lastX: meta.lastX,
       lastY: meta.lastY,
+      startTime: meta.startTime,
       activated: false,
       startTransform: zoomTransformRef.current ? zoomTransformRef.current : d3.zoomIdentity
     };
@@ -124,6 +137,7 @@ export default function initTouchInteractions({
         y: (first.lastY + second.lastY) / 2
       },
       initialDistance: dist,
+      startTime: Math.min(first.startTime, second.startTime),
       activated: false
     };
   };
@@ -143,7 +157,8 @@ export default function initTouchInteractions({
     const totalDy = event.clientY - panState.startY;
     if (!panState.activated) {
       const distance = Math.hypot(totalDx, totalDy);
-      if (distance >= PAN_ACTIVATION_PX) {
+      const elapsed = Date.now() - panState.startTime;
+      if (distance >= PAN_ACTIVATION_PX && elapsed >= MIN_GESTURE_MS) {
         panState.activated = true;
         closeOpenMenus();
       } else {
@@ -182,7 +197,8 @@ export default function initTouchInteractions({
 
     if (!pinchState.activated) {
       const distanceChange = Math.abs(distance - pinchState.initialDistance);
-      if (distanceChange >= PINCH_ACTIVATION_PX) {
+      const elapsed = Date.now() - pinchState.startTime;
+      if (distanceChange >= PINCH_ACTIVATION_PX && elapsed >= MIN_GESTURE_MS) {
         pinchState.activated = true;
         resetPanState();
       } else {
@@ -216,6 +232,7 @@ export default function initTouchInteractions({
 
   const handlePointerDown = (event) => {
     if (event.pointerType !== 'touch') return;
+    stopInertia();
     const target = event.target;
     if (shouldIgnoreTarget(target)) return;
 
@@ -233,16 +250,23 @@ export default function initTouchInteractions({
       } catch (_) {}
     }
 
+    const now = Date.now();
     const meta = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       lastX: event.clientX,
       lastY: event.clientY,
+      prevX: event.clientX,
+      prevY: event.clientY,
+      lastTime: now,
       target,
       captureTarget,
       onNodeSurface,
-      timestamp: Date.now()
+      startTime: now,
+      timestamp: now,
+      vx: 0,
+      vy: 0
     };
 
     activePointers.set(event.pointerId, meta);
@@ -260,8 +284,15 @@ export default function initTouchInteractions({
     if (event.pointerType !== 'touch') return;
     const meta = activePointers.get(event.pointerId);
     if (!meta) return;
+    const now = Date.now();
+    const dt = Math.max(1, now - (meta.lastTime || now));
+    meta.prevX = meta.lastX;
+    meta.prevY = meta.lastY;
     meta.lastX = event.clientX;
     meta.lastY = event.clientY;
+    meta.vx = (meta.lastX - meta.prevX) / dt;
+    meta.vy = (meta.lastY - meta.prevY) / dt;
+    meta.lastTime = now;
 
     if (pinchState) {
       const didPinch = processPinchMove(event);
@@ -295,6 +326,37 @@ export default function initTouchInteractions({
       resetPinchState();
     }
 
+    // Apply simple inertia after pan release
+    if (!pinchState && panState === null && meta) {
+      const vx = meta.vx || 0;
+      const vy = meta.vy || 0;
+      const speed = Math.hypot(vx, vy);
+      if (speed > 0.02) { // px/ms threshold
+        const friction = 0.92;
+        const minSpeed = 0.005;
+        let lastTs = performance.now();
+        inertiaVelocity = { vx, vy };
+        const step = (ts) => {
+          const dtMs = Math.max(1, ts - lastTs);
+          lastTs = ts;
+          const current = zoomTransformRef.current || d3.zoomIdentity;
+          const dx = inertiaVelocity.vx * dtMs / current.k;
+          const dy = inertiaVelocity.vy * dtMs / current.k;
+          zoomBehavior.translateBy(selection, dx, dy);
+          updateTransformRefs(svgElement, zoomTransformRef, uiZoomRef);
+          inertiaVelocity.vx *= friction;
+          inertiaVelocity.vy *= friction;
+          if (Math.hypot(inertiaVelocity.vx, inertiaVelocity.vy) < minSpeed) {
+            stopInertia();
+            return;
+          }
+          inertiaFrame = requestAnimationFrame(step);
+        };
+        stopInertia();
+        inertiaFrame = requestAnimationFrame(step);
+      }
+    }
+
     if (!pinchState && !panState) {
       const remaining = Array.from(activePointers.values()).find(p => !p.onNodeSurface);
       if (remaining) {
@@ -309,6 +371,7 @@ export default function initTouchInteractions({
   svgElement.addEventListener('pointercancel', handlePointerEnd, { passive: false });
 
   return () => {
+    stopInertia();
     activePointers.clear();
     resetPanState();
     resetPinchState();

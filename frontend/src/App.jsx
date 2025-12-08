@@ -1456,8 +1456,11 @@ const [isSavingView, setIsSavingView] = useState(false);
 const [saveLabel, setSaveLabel] = useState('');
 const [loadToken, setLoadToken] = useState('');
 const [isLoadingView, setIsLoadingView] = useState(false);
-const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
+  const [showSaveExportMenu, setShowSaveExportMenu] = useState(false);
   const isLoadingViewRef = useRef(false);
+  const dragSuppressClickRef = useRef(false);
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const longPressClickSuppressRef = useRef(false);
   // Temporary halo effect for search result cards after a search
   const [showResultsHalo, setShowResultsHalo] = useState(false);
   const resultsHaloTimeoutRef = useRef(null);
@@ -1672,11 +1675,6 @@ const togglePathPanel = () => {
 const closePathPanel = () => {
   setShowSaveExportMenu(false);
   setShowPathPanel(false);
-  if (pathPreviousViewRef.current && pathPreviousViewRef.current !== 'network') {
-    setCurrentView(pathPreviousViewRef.current);
-  } else if (!hasExecutedSearch && networkData.nodes.length === 0) {
-    setCurrentView('search');
-  }
   pathPreviousViewRef.current = null;
 };
 
@@ -7582,7 +7580,7 @@ const normalizeLinkForMerge = (link) => {
     const zoomLockedRef = useRef(false);
     const baseChargeStrengthRef = useRef(-1000);
     const hasAppliedInitialFitRef = useRef(false);
-    const LONG_PRESS_DELAY_MS = 550;
+    const LONG_PRESS_DELAY_MS = 700;
     const LONG_PRESS_MOVE_CANCEL_PX = 8;
     const nodeLongPressState = {
       pointerId: null,
@@ -7617,6 +7615,10 @@ const normalizeLinkForMerge = (link) => {
       datum: null,
       fired: false
     };
+    const markLongPressConsumed = () => {
+      longPressClickSuppressRef.current = true;
+      setTimeout(() => { longPressClickSuppressRef.current = false; }, 500);
+    };
     const clearLinkLongPress = ({ releasePointer = false } = {}) => {
       if (linkLongPressState.timerId) {
         clearTimeout(linkLongPressState.timerId);
@@ -7642,20 +7644,21 @@ const normalizeLinkForMerge = (link) => {
       nodeLongPressState.target = target;
       nodeLongPressState.datum = datum;
       nodeLongPressState.fired = false;
-      try { target.setPointerCapture(event.pointerId); } catch (_) {}
-      nodeLongPressState.timerId = window.setTimeout(() => {
-        nodeLongPressState.timerId = null;
-        nodeLongPressState.fired = true;
-        const syntheticEvent = new MouseEvent('contextmenu', {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: nodeLongPressState.startX,
-          clientY: nodeLongPressState.startY
-        });
-        try { target.dispatchEvent(syntheticEvent); } catch (_) {}
-      }, LONG_PRESS_DELAY_MS);
-    };
+        try { target.setPointerCapture(event.pointerId); } catch (_) {}
+        nodeLongPressState.timerId = window.setTimeout(() => {
+          nodeLongPressState.timerId = null;
+          nodeLongPressState.fired = true;
+          const syntheticEvent = new MouseEvent('contextmenu', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: nodeLongPressState.startX,
+            clientY: nodeLongPressState.startY
+          });
+          try { target.dispatchEvent(syntheticEvent); } catch (_) {}
+          markLongPressConsumed();
+        }, LONG_PRESS_DELAY_MS);
+      };
     const scheduleLinkLongPress = (event, datum, target) => {
       if (!target || event.pointerType !== 'touch') return;
       clearLinkLongPress({ releasePointer: true });
@@ -7666,20 +7669,21 @@ const normalizeLinkForMerge = (link) => {
       linkLongPressState.target = target;
       linkLongPressState.datum = datum;
       linkLongPressState.fired = false;
-      try { target.setPointerCapture(event.pointerId); } catch (_) {}
-      linkLongPressState.timerId = window.setTimeout(() => {
-        linkLongPressState.timerId = null;
-        linkLongPressState.fired = true;
-        const syntheticEvent = new MouseEvent('contextmenu', {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: linkLongPressState.startX,
-          clientY: linkLongPressState.startY
-        });
-        try { target.dispatchEvent(syntheticEvent); } catch (_) {}
-      }, LONG_PRESS_DELAY_MS);
-    };
+        try { target.setPointerCapture(event.pointerId); } catch (_) {}
+        linkLongPressState.timerId = window.setTimeout(() => {
+          linkLongPressState.timerId = null;
+          linkLongPressState.fired = true;
+          const syntheticEvent = new MouseEvent('contextmenu', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: linkLongPressState.startX,
+            clientY: linkLongPressState.startY
+          });
+          try { target.dispatchEvent(syntheticEvent); } catch (_) {}
+          markLongPressConsumed();
+        }, LONG_PRESS_DELAY_MS);
+      };
     // Date ranges will be reset manually when needed to avoid setState in useEffect
 
     useEffect(() => {
@@ -8700,12 +8704,18 @@ const normalizeLinkForMerge = (link) => {
           const currentY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : linkLongPressState.startY);
           const dx = currentX - linkLongPressState.startX;
           const dy = currentY - linkLongPressState.startY;
-          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX * 0.8) {
             clearLinkLongPress({ releasePointer: true });
           }
         })
         .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
           if (event.pointerType !== 'touch') return;
+          if (longPressClickSuppressRef.current) {
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation();
+            setTimeout(() => { longPressClickSuppressRef.current = false; }, 250);
+            return;
+          }
           const isSamePointer = linkLongPressState.pointerId === event.pointerId;
           const longPressFired = linkLongPressState.fired && isSamePointer;
           clearLinkLongPress({ releasePointer: isSamePointer });
@@ -8807,12 +8817,17 @@ const normalizeLinkForMerge = (link) => {
           const currentY = Number.isFinite(event.clientY) ? event.clientY : (Number.isFinite(event.pageY) ? event.pageY : linkLongPressState.startY);
           const dx = currentX - linkLongPressState.startX;
           const dy = currentY - linkLongPressState.startY;
-          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
+          if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX * 0.8) {
             clearLinkLongPress({ releasePointer: true });
           }
         })
         .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event) {
           if (event.pointerType !== 'touch') return;
+          if (longPressClickSuppressRef.current) {
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
           const isSamePointer = linkLongPressState.pointerId === event.pointerId;
           const longPressFired = linkLongPressState.fired && isSamePointer;
           clearLinkLongPress({ releasePointer: isSamePointer });
@@ -9031,6 +9046,12 @@ const normalizeLinkForMerge = (link) => {
           }, 0);
         });
       // Create nodes
+      const getNodeHitRadius = () => {
+        const base = 40 * 0.75; // 75% of visual node radius
+        const k = zoomTransformRef.current && zoomTransformRef.current.k;
+        return (k && k > 0) ? (base / k) : base;
+      };
+
       const node = g.append("g")
         .selectAll("circle")
         .data(networkData.nodes)
@@ -9043,6 +9064,13 @@ const normalizeLinkForMerge = (link) => {
         .attr("opacity", d => isNodeVisible(d) ? 1 : 0.2) // Apply filter-based opacity
         .style("cursor", "pointer")
         .on("pointerdown.longpress", function(event, d) {
+          try {
+            const [px, py] = d3.pointer(event, g.node());
+            if (Math.hypot(px - d.x, py - d.y) > getNodeHitRadius()) {
+              clearNodeLongPress({ releasePointer: true });
+              return;
+            }
+          } catch (_) {}
           if (event.pointerType !== 'touch') {
             clearNodeLongPress({ releasePointer: true });
             return;
@@ -9052,6 +9080,14 @@ const normalizeLinkForMerge = (link) => {
         .on("pointermove.longpress", function(event) {
           if (event.pointerType !== 'touch') return;
           if (nodeLongPressState.pointerId !== event.pointerId || nodeLongPressState.timerId === null) return;
+          try {
+            const [px, py] = d3.pointer(event, g.node());
+            const datum = nodeLongPressState.datum;
+            if (datum && Math.hypot(px - datum.x, py - datum.y) > getNodeHitRadius()) {
+              clearNodeLongPress({ releasePointer: true });
+              return;
+            }
+          } catch (_) {}
           const dx = (event.clientX ?? nodeLongPressState.startX) - nodeLongPressState.startX;
           const dy = (event.clientY ?? nodeLongPressState.startY) - nodeLongPressState.startY;
           if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_CANCEL_PX) {
@@ -9060,6 +9096,25 @@ const normalizeLinkForMerge = (link) => {
         })
         .on("pointerup.longpress pointercancel.longpress pointerleave.longpress", function(event, d) {
           if (event.pointerType !== 'touch') return;
+          try {
+            const [px, py] = d3.pointer(event, g.node());
+            if (Math.hypot(px - d.x, py - d.y) > getNodeHitRadius()) {
+              clearNodeLongPress({ releasePointer: true });
+              return;
+            }
+          } catch (_) {}
+          if (longPressClickSuppressRef.current) {
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation();
+            setTimeout(() => { longPressClickSuppressRef.current = false; }, 250);
+            return;
+          }
+          if (dragActiveRef.current || dragSuppressClickRef.current) {
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation();
+            dragSuppressClickRef.current = false;
+            return;
+          }
           const isSamePointer = nodeLongPressState.pointerId === event.pointerId;
           const longPressFired = nodeLongPressState.fired && isSamePointer;
           clearNodeLongPress({ releasePointer: isSamePointer });
@@ -9092,6 +9147,23 @@ const normalizeLinkForMerge = (link) => {
         })
         .on("click", (event, d) => {
           const pointerType = event?.sourceEvent?.pointerType || event.pointerType || '';
+          try {
+            const [px, py] = d3.pointer(event, g.node());
+            if (Math.hypot(px - d.x, py - d.y) > getNodeHitRadius()) {
+              event.stopPropagation();
+              return;
+            }
+          } catch (_) {}
+          if (dragActiveRef.current || dragSuppressClickRef.current) {
+            event.stopPropagation();
+            dragSuppressClickRef.current = false;
+            return;
+          }
+          if (longPressClickSuppressRef.current) {
+            event.stopPropagation();
+            longPressClickSuppressRef.current = false;
+            return;
+          }
           if (pointerType === 'touch' && suppressNextClickRef.current) {
             event.stopPropagation();
             return;
@@ -9101,6 +9173,26 @@ const normalizeLinkForMerge = (link) => {
           handleNodeSingleActivation(d);
         })
         .on("dblclick", (event, d) => {
+          try {
+            const [px, py] = d3.pointer(event, g.node());
+            if (Math.hypot(px - d.x, py - d.y) > getNodeHitRadius()) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+          } catch (_) {}
+          if (longPressClickSuppressRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            longPressClickSuppressRef.current = false;
+            return;
+          }
+          if (dragActiveRef.current || dragSuppressClickRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            dragSuppressClickRef.current = false;
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
           clearPendingNodeAction();
@@ -10143,9 +10235,12 @@ const normalizeLinkForMerge = (link) => {
 
       
 
+      const DRAG_ACTIVATION_PX = 8;
       const startDragForNode = (dragEvent, node) => {
         if (!node) return;
-        dragActiveRef.current = true;
+        dragActiveRef.current = false;
+        dragSuppressClickRef.current = false;
+        dragStartPosRef.current = { x: node.x, y: node.y };
 
         if (simulationRef.current) {
           try {
@@ -10254,11 +10349,17 @@ const normalizeLinkForMerge = (link) => {
 
       function dragged(event, d) {
         if (!dragActiveRef.current) {
-          startDragForNode(event, d);
-        }
-
-        if (!dragActiveRef.current) {
-          return;
+          // Activate drag only after movement threshold
+          const dx0 = event.x - dragStartPosRef.current.x;
+          const dy0 = event.y - dragStartPosRef.current.y;
+          const dist = Math.hypot(dx0, dy0);
+          if (dist >= DRAG_ACTIVATION_PX) {
+            dragActiveRef.current = true;
+            dragSuppressClickRef.current = true;
+            clearNodeLongPress({ releasePointer: true });
+          } else {
+            return;
+          }
         }
 
         const dx = event.x - dragLeaderInitialPosRef.current.x;
@@ -10285,6 +10386,9 @@ const normalizeLinkForMerge = (link) => {
           return;
         }
         dragActiveRef.current = false;
+        // Suppress click/doubleclick immediately after a drag
+        dragSuppressClickRef.current = true;
+        setTimeout(() => { dragSuppressClickRef.current = false; }, 300);
         dragGroupIdsRef.current.forEach(id => {
           const nodeObj = networkData.nodes.find(n => n.id === id);
           if (!nodeObj) return;
@@ -10539,7 +10643,7 @@ const normalizeLinkForMerge = (link) => {
                   if (pathApiUnavailableRef.current) {
                     throw new Error('Path finding is currently unavailable.');
                   }
-                  const payload = { from, to, maxHops: 8 };
+                  const payload = { from, to, maxHops: 25 };
                   const resp = await fetchWithRetry(`${API_BASE}/path/find`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -13269,7 +13373,7 @@ const normalizeLinkForMerge = (link) => {
     const outerStyle = isMobileViewport ? {
       minHeight: backgroundMinHeight,
       width: '100%',
-      backgroundImage: 'url(/aspens.jpg)',
+      backgroundImage: 'url(/public/aspens_2000.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center center',
       backgroundRepeat: 'no-repeat',
@@ -13284,7 +13388,7 @@ const normalizeLinkForMerge = (link) => {
       justifyContent: 'flex-start'
     } : {
       minHeight: backgroundMinHeight,
-      backgroundImage: 'url(/aspens.jpg)',
+      backgroundImage: 'url(/public/aspens_2000.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center center',
       backgroundRepeat: 'no-repeat',
@@ -13650,7 +13754,7 @@ const normalizeLinkForMerge = (link) => {
   const appBackgroundStyle = isMobileViewport ? {
     minHeight: backgroundMinHeight,
     width: '100%',
-    backgroundImage: 'url(/aspens.jpg)',
+    backgroundImage: 'url(/public/aspens_2000.jpg)',
     backgroundSize: 'cover',
     backgroundPosition: 'center center',
     backgroundRepeat: 'no-repeat',
@@ -13661,7 +13765,7 @@ const normalizeLinkForMerge = (link) => {
     paddingBottom: 'var(--cmg-mobile-block-padding-end)'
   } : {
     minHeight: backgroundMinHeight,
-    backgroundImage: 'url(/aspens.jpg)',
+    backgroundImage: 'url(/public/aspens_2000.jpg)',
     backgroundSize: 'cover',
     backgroundPosition: 'center center',
     backgroundRepeat: 'no-repeat',
@@ -13671,6 +13775,7 @@ const normalizeLinkForMerge = (link) => {
   if (!token) {
     return <AuthForm initialResetToken={initialResetToken} />;
   }
+  const shouldBreakTitle = isHeaderMobile || (Number.isFinite(headerWidth) && headerWidth < 720);
   return (
     <div style={appBackgroundStyle}>
       {false && (<header style={{
@@ -13888,7 +13993,11 @@ const normalizeLinkForMerge = (link) => {
                   lineHeight: isHeaderMobile ? undefined : 1.2
                 }}
               >
-                The Aspen Grove of Opera Singers
+                {shouldBreakTitle ? (
+                  <>The Aspen Grove<br />of Opera Singers</>
+                ) : (
+                  'The Aspen Grove of Opera Singers'
+                )}
               </h1>
               <h2
                 className={isHeaderMobile ? 'mobile-subheading mobile-muted' : undefined}
@@ -14205,6 +14314,29 @@ const normalizeLinkForMerge = (link) => {
               >
                 Help center
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showPathPanel) {
+                    closePathPanel();
+                  } else {
+                    openPathPanel();
+                  }
+                  setShowHeaderMenu(false);
+                }}
+                style={{
+                  padding: '12px 16px',
+                  border: '2px solid #3e96e2',
+                  borderRadius: 12,
+                  backgroundColor: '#ffffff',
+                  color: '#374151',
+                  fontSize: '16px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Path
+              </button>
               {(!hasSearchResults && currentView !== 'network') && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <input
@@ -14229,7 +14361,7 @@ const normalizeLinkForMerge = (link) => {
                   {renderSaveExportFields({ isMobileLayout: true })}
                 </div>
               )}
-              {currentView === 'network' && !isMobileViewport && (
+              {currentView === 'network' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <button type="button" onClick={() => { goBack(); }} disabled={historyCounts.past === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.past ? 'pointer' : 'not-allowed', opacity: historyCounts.past ? 1 : 0.6 }}>Back</button>
                   <button type="button" onClick={() => { goForward(); }} disabled={historyCounts.future === 0} style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: historyCounts.future ? 'pointer' : 'not-allowed', opacity: historyCounts.future ? 1 : 0.6 }}>Forward</button>
@@ -14240,20 +14372,6 @@ const normalizeLinkForMerge = (link) => {
                         {selectedVoiceTypes.size}
                       </span>
                     )}
-                  </button>
-                  <button
-                    type="button"
-                      onClick={() => {
-                      if (showPathPanel) {
-                        closePathPanel();
-                      } else {
-                        openPathPanel();
-                      }
-                      setShowHeaderMenu(false);
-                    }}
-                    style={{ padding: '12px 16px', border: '2px solid #3e96e2', borderRadius: 12, backgroundColor: '#ffffff', color: '#374151', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}
-                  >
-                    Path
                   </button>
                 </div>
               )}
@@ -14411,7 +14529,7 @@ const normalizeLinkForMerge = (link) => {
                     token: 'd4240ab6-d2a5-4199-8e06-6d24c01e3ad7'
                   }, {
                     key: 'longest',
-                    label: 'Longest Path',
+                    label: 'Back almost 500 years',
                     image: '/Longest.png',
                     token: '97a81f43-ac2f-4b1b-9403-326f2453b4fb'
                   }, {
@@ -16117,15 +16235,6 @@ const normalizeLinkForMerge = (link) => {
               }}
             >
               Filters
-            </button>
-            <button
-              type="button"
-              className="mobile-toolbar__button"
-              onClick={() => {
-                togglePathPanel();
-              }}
-            >
-              Path
             </button>
           </div>
         </>
