@@ -11038,6 +11038,7 @@ const normalizeLinkForMerge = (link) => {
                   // Mark nodes in path
                   mergedNodes.forEach(n => { if (pathNodeIds.has(n.id)) n.isPath = true; });
                   setNetworkData(sanitizeGraphData({ nodes: mergedNodes, links: mergedLinks }));
+                  try { setHasExecutedSearch(true); } catch (_) {}
                   const pathPersons = mergedNodes.filter(n => n && n.type === 'person' && pathNodeIds.has(n.id));
                   extendDateRangesForNodes(pathPersons, { resetUserRangeFlags: true });
                   // Enrich newly added path person nodes so CSV has full details
