@@ -13373,7 +13373,7 @@ const normalizeLinkForMerge = (link) => {
     const outerStyle = isMobileViewport ? {
       minHeight: backgroundMinHeight,
       width: '100%',
-      backgroundImage: 'url(/public/aspens_2000.jpg)',
+      backgroundImage: 'url(/aspens_2000.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center center',
       backgroundRepeat: 'no-repeat',
@@ -13388,7 +13388,7 @@ const normalizeLinkForMerge = (link) => {
       justifyContent: 'flex-start'
     } : {
       minHeight: backgroundMinHeight,
-      backgroundImage: 'url(/public/aspens_2000.jpg)',
+      backgroundImage: 'url(/aspens_2000.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center center',
       backgroundRepeat: 'no-repeat',
@@ -13754,7 +13754,7 @@ const normalizeLinkForMerge = (link) => {
   const appBackgroundStyle = isMobileViewport ? {
     minHeight: backgroundMinHeight,
     width: '100%',
-    backgroundImage: 'url(/public/aspens_2000.jpg)',
+    backgroundImage: 'url(/aspens_2000.jpg)',
     backgroundSize: 'cover',
     backgroundPosition: 'center center',
     backgroundRepeat: 'no-repeat',
@@ -13765,7 +13765,7 @@ const normalizeLinkForMerge = (link) => {
     paddingBottom: 'var(--cmg-mobile-block-padding-end)'
   } : {
     minHeight: backgroundMinHeight,
-    backgroundImage: 'url(/public/aspens_2000.jpg)',
+    backgroundImage: 'url(/aspens_2000.jpg)',
     backgroundSize: 'cover',
     backgroundPosition: 'center center',
     backgroundRepeat: 'no-repeat',
@@ -14220,7 +14220,7 @@ const normalizeLinkForMerge = (link) => {
                           marginLeft: 'auto'
                         }}
                       >
-                        {renderSaveExportToggle()}
+                        {renderSaveExportToggle({ isMobileLayout: isHeaderMobile })}
                       </div>
                     )}
                   </div>
