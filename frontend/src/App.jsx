@@ -8877,13 +8877,24 @@ const normalizeLinkForMerge = (link) => {
         return v;
       };
       const toNodeObj = (n) => getEndpointNode(n);
-      const directedPairKey = (s, t) => `${getNodeId(s)}->${getNodeId(t)}`;
+      const isSymmetricRelation = (ld) => {
+        const t = String(ld?.label || ld?.role || ld?.type || '').toLowerCase();
+        return t.includes('spouse') || t.includes('sibling') || t.includes('family');
+      };
+      const directedPairKey = (s, t, ld) => {
+        const a = getNodeId(s);
+        const b = getNodeId(t);
+        if (isSymmetricRelation(ld)) {
+          return `${[a, b].sort().join('~')}~sym`;
+        }
+        return `${a}->${b}`;
+      };
       const directedGroups = new Map();
       linkData.forEach(ld => {
         const sObj = toNodeObj(ld.source);
         const tObj = toNodeObj(ld.target);
         if (!sObj || !tObj) return;
-        const key = directedPairKey(sObj, tObj);
+        const key = directedPairKey(sObj, tObj, ld);
         if (!directedGroups.has(key)) {
           directedGroups.set(key, { source: sObj, target: tObj, labels: [], isPath: false });
         }
@@ -14532,7 +14543,7 @@ const normalizeLinkForMerge = (link) => {
                     key: 'longest',
                     label: 'Back almost 500 years',
                     image: '/Longest.png',
-                    token: '97a81f43-ac2f-4b1b-9403-326f2453b4fb'
+                    token: 'b1fea644-6471-44f0-8c59-b7c454c782fa'
                   }, {
                     key: 'books-premieres',
                     label: 'Books &\nPremieres',
@@ -14988,11 +14999,6 @@ const normalizeLinkForMerge = (link) => {
                   <h4 style={{ margin: '0 0 2px 0', fontSize: '15px', lineHeight: 1.2 }}>
                     {searchType === 'singers' ? (item.name || item.properties.full_name) : searchType === 'operas' ? item.properties.opera_name : item.properties.title}
                   </h4>
-                  {searchType === 'operas' && item.properties.version && (
-                    <p style={{ margin: 0, fontSize: '13px', color: '#555', fontWeight: 400, lineHeight: 1.2 }}>
-                      {item.properties.version}
-                    </p>
-                  )}
                   {searchType === 'singers' && item.properties.voice_type && (
                     <p style={{ margin: 0, fontSize: '13px', color: '#555', lineHeight: 1.2 }}>
                       <strong>Voice type:</strong> {item.properties.voice_type}
