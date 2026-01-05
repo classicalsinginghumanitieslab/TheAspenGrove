@@ -2394,13 +2394,44 @@ const renderSaveExportToggle = ({
         };
         return Object.fromEntries(Object.entries(withPos).filter(([, v]) => v !== undefined && v !== null));
       };
-      const slimLink = (l) => ({
-        source: (typeof l.source === 'string' ? l.source : (l.source && l.source.id) || l.source),
-        target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target),
-        label: l.label,
-        role: l.role,
-        type: l.type
-      });
+      // Save all relevant relationship source fields for each link
+      const REL_SOURCE_FIELDS = [
+        'relationshipSourceDisplay',
+        'relationship_source_display',
+        'teacher_rel_source',
+        'teacher_rel_source_text',
+        'relationship_rel_source',
+        'relationship_source',
+        'relationshipSource',
+        'sourceInfo',
+        'source',
+        'relSource',
+        'reference_source',
+        'referenceSource',
+        'citation',
+        'notes',
+        'text',
+        'label',
+        'opera_source_text',
+        'opera_source_url',
+        'teacher_rel_source_url',
+        'sourceUrl',
+        'meta'
+      ];
+      const slimLink = (l) => {
+        const base = {
+          source: (typeof l.source === 'string' ? l.source : (l.source && l.source.id) || l.source),
+          target: (typeof l.target === 'string' ? l.target : (l.target && l.target.id) || l.target),
+          label: l.label,
+          role: l.role,
+          type: l.type
+        };
+        // Copy all relevant relationship source fields if present
+        REL_SOURCE_FIELDS.forEach(field => {
+          if (l[field] !== undefined) base[field] = l[field];
+        });
+        return base;
+      };
       const slimGraph = {
         nodes: (networkData.nodes || []).map(slimNode),
         links: (networkData.links || []).map(slimLink)
@@ -2492,6 +2523,7 @@ const renderSaveExportToggle = ({
 
       const snapshotToApply = {
         nodes: (graph.nodes || snapshot.nodes || []).map(n => ({ ...n })),
+        // Restore all relationship source fields for each link
         links: (graph.links || snapshot.links || []).map(l => ({ ...l })),
         currentView: view.currentView || snapshot.currentView || 'network',
         searchType: view.searchType || snapshot.searchType || 'singers',
@@ -14543,7 +14575,7 @@ const normalizeLinkForMerge = (link) => {
                     key: 'longest',
                     label: 'Back almost 500 years',
                     image: '/Longest.png',
-                    token: '93debf11-85ad-4655-9be0-5344a9b67b1b'
+                    token: 'df0cfcbc-45d6-43cc-99df-deb25a13fa6e'
                   }, {
                     key: 'books-premieres',
                     label: 'Books &\nPremieres',
