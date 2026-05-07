@@ -22,7 +22,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const JWT_SECRET = (() => {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[FATAL] JWT_SECRET env var is not set in production. Refusing to start with an insecure default.');
+    process.exit(1);
+  }
+  console.warn('[WARN] JWT_SECRET is not set. Using insecure default — DO NOT use in production.');
+  return 'dev-secret';
+})();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const MYSQL_URL = process.env.MYSQL_URL || process.env.DATABASE_URL || process.env.MYSQL_CONNECTION_URL || '';
 const MYSQL_HOST = process.env.MYSQL_HOST;
@@ -239,26 +247,8 @@ const getMysqlPool = () => {
   return mysqlPoolPromise;
 };
 
-// Ensure the saved_views table exists with the current minimal schema (id, user_public_id, token, label, snapshot, created_at)
-const ensureSavedViewsTable = async (pool) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS saved_views (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        user_public_id CHAR(12) NOT NULL,
-        token CHAR(36) NOT NULL UNIQUE,
-        label VARCHAR(255) DEFAULT '',
-        snapshot JSON NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_saved_views_user_public (user_public_id)
-      )
-      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    `);
-  } catch (e) {
-    // Let callers handle failures
-    throw e;
-  }
-};
+// Allow typical private-LAN hostnames like http://192.168.x.x:PORT, http://10.x.x.x:PORT
+
 
 // Generate a short random public ID (8 chars [A-Z0-9])
 const generatePublicId = () => {
@@ -404,18 +394,15 @@ const createPasswordResetRecord = async (pool, userEmail) => {
 
 // Security middleware
 app.set('trust proxy', 1);
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+}));
 // Simple request timing logger (path, status, duration)
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const ms = Date.now() - start;
-    try {
-      console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} in ${ms}ms`);
-    } catch (_) {}
-  });
-  next();
-});
 const rawClientOrigins = process.env.CLIENT_ORIGINS;
 console.log('[CORS] raw CLIENT_ORIGINS:', rawClientOrigins);
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/$/, '');
@@ -461,10 +448,7 @@ const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true); // allow non-browser clients / curl
     const normalized = normalizeOrigin(origin);
-    const ok =
-      allowedOriginsSet.has(normalized) ||
-      privateLan.some((rx) => rx.test(origin)) ||
-      cloudflareTunnel.test(normalized);
+    const ok = allowedOriginsSet.has(normalized);
     if (ok) {
       return cb(null, true);
     }
@@ -488,14 +472,41 @@ setInterval(() => {
     rateLimitHits = 0;
   }
 }, 60 * 1000);
-const buildLimiter = (maxPerMinute) => rateLimit({
+
+// For authenticated routes, key by user email rather than IP so that
+// shared IPs (e.g. university NAT) don't cause one user to consume
+// another's quota. Falls back to IP for unauthenticated requests.
+const getUserKey = (req) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      const payload = jwt.decode(token); // decode only — not for access control
+      if (payload?.email) return `user:${payload.email.toLowerCase().trim()}`;
+    }
+  } catch (_) {}
+  return `ip:${req.ip}`;
+};
+
+const buildLimiter = (maxPerMinute, { userBased = false } = {}) => rateLimit({
   windowMs: 60 * 1000,
   max: maxPerMinute,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: userBased ? getUserKey : undefined,
   handler: (req, res, _next, options) => {
     rateLimitHits += 1;
-    const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+    // Retry-After (2026-05-06): use the actual time remaining until the
+    // rolling window resets (req.rateLimit.resetTime) rather than the full
+    // windowMs. The latter overstates the wait by up to a full window since
+    // express-rate-limit's MemoryStore uses fixed-window counter resets, so
+    // the user could often retry well before the displayed countdown ends.
+    // Falls back to windowMs if resetTime isn't available for any reason.
+    const resetTime = req.rateLimit?.resetTime;
+    const msUntilReset = resetTime instanceof Date
+      ? Math.max(0, resetTime.getTime() - Date.now())
+      : options.windowMs;
+    const retryAfterSeconds = Math.max(1, Math.ceil(msUntilReset / 1000));
     res.set('Retry-After', retryAfterSeconds.toString());
     return res.status(options.statusCode).json({
       error: 'Too many requests. Please wait before retrying.',
@@ -503,15 +514,19 @@ const buildLimiter = (maxPerMinute) => rateLimit({
     });
   }
 });
+// Login removal (2026-05-06): all keying falls back to IP. Bumped per-route
+// limits so shared-IP groups (universities, libraries, etc.) have headroom.
 // Gentle global limiter as a safety net
-app.use(buildLimiter(300));
+app.use(buildLimiter(600));
 
 // Route-specific limiters
+// Auth stays IP-based — brute force protection requires IP keying
 const authLimiter = buildLimiter(60);
-const networkLimiter = buildLimiter(30); // heavier endpoints
-const detailsLimiter = buildLimiter(60);
-const viewsReadLimiter = buildLimiter(60);
-const viewsWriteLimiter = buildLimiter(20);
+// userBased fallback to IP applies after login removal
+const networkLimiter = buildLimiter(300, { userBased: true });
+const detailsLimiter = buildLimiter(300, { userBased: true });
+const viewsReadLimiter = buildLimiter(200, { userBased: true });
+const viewsWriteLimiter = buildLimiter(50, { userBased: true });
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -746,31 +761,13 @@ const startNeo4jKeepAlive = () => {
   neo4jKeepAliveInterval = setInterval(ping, intervalMs);
 };
 
-// Middleware to verify JWT token
-const authenticateToken = (req, res, next) => {
-  console.log('authenticateToken called');
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    console.error('No access token provided');
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, payload) => {
-    if (err) {
-      console.error('JWT verification error:', err);
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    if (payload?.purpose === 'tos_accept') {
-      return res.status(403).json({ error: 'Disclaimer acknowledgement pending', requiresTos: true });
-    }
-    if (payload?.tosVersion !== ACTIVE_TOS_VERSION) {
-      return res.status(403).json({ error: 'Disclaimer acknowledgement required', requiresTos: true });
-    }
-    req.user = payload;
-    next();
-  });
+// Login removal (2026-05-06): the app is public. authenticateToken is now a
+// no-op that just stamps a sentinel user so downstream code reading
+// req.user.email continues to work. Rate limiting falls back to IP-keying.
+// To restore login: revert this function to the JWT-verification version.
+const authenticateToken = (req, _res, next) => {
+  req.user = { email: 'public' };
+  next();
 };
 
 // Health check endpoint
@@ -1221,13 +1218,11 @@ if (DEBUG_ENDPOINTS_ENABLED) app.post('/debug/fix-null-premiere', authenticateTo
 
 // Search endpoints
 app.post('/search/singers', authenticateToken, async (req, res) => {
-  console.log('Received /search/singers request:', req.body);
   const session = driver.session();
   try {
     const { query, limit } = req.body || {};
     const enforcedLimit = parseSearchLimit(limit);
-    console.log('About to run Neo4j query');
-    
+
     // Manual diacritical character replacement for German umlauts
     const cleanQuery = (query || '')
       .toLowerCase()
@@ -1249,7 +1244,6 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
        ${cypherLimit}`,
       params
     );
-    console.log('Neo4j query complete');
     const singers = result.records.map(record => {
       const node = record.get('properties');
       const props = node?.properties || {};
@@ -1262,7 +1256,6 @@ app.post('/search/singers', authenticateToken, async (req, res) => {
         properties: props
       };
     });
-    console.log('Sending singers response:', singers);
     res.json({ singers });
   } catch (error) {
     console.error('Singer search error:', error);
@@ -1441,11 +1434,6 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         normalizeRelationshipSourceValue(rawRelationshipProps.text) ||
         normalizeRelationshipSourceValue(rawRelationshipProps.notes) ||
         normalizeRelationshipSourceValue(rawRelationshipProps.citation);
-      console.log('[singer/network] mapped teacher', {
-        name: teacherNode.full_name,
-        derived_teacher_rel_source: teacherRelSource,
-        raw_relationship: rawRelationshipProps
-      });
       return {
         ...teacherNode,
         teacher_rel_source: teacherRelSource,
@@ -1501,11 +1489,6 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         normalizeRelationshipSourceValue(rawRelationshipProps.text) ||
         normalizeRelationshipSourceValue(rawRelationshipProps.notes) ||
         normalizeRelationshipSourceValue(rawRelationshipProps.citation);
-      console.log('[singer/network] mapped student', {
-        name: studentNode.full_name,
-        derived_teacher_rel_source: teacherRelSource,
-        raw_relationship: rawRelationshipProps
-      });
       return {
         ...studentNode,
         teacher_rel_source: teacherRelSource,
@@ -1643,7 +1626,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
       };
     });
 
-    // Get works (operas and books)
+    // Get works (operas / premiered roles) — one query serves both response fields
     const operasResult = await session.run(
       'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, o.opera_id as opera_id, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
       { name: singerName }
@@ -1665,29 +1648,7 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
         opera_source_url: resolvedSourceUrl || null
       };
     });
-
-    // Get specific roles premiered (for the new Roles premiered card)
-    const premieredRolesResult = await session.run(
-      'MATCH (s:Person {full_name: $name})-[r:PREMIERED_ROLE_IN]->(o:Opera) RETURN o.opera_name as opera_name, o.opera_id as opera_id, r.role as role, r.opera_source_text as opera_source_text, r.opera_source_url as opera_source_url, r.source as legacy_source',
-      { name: singerName }
-    );
-    const premieredRoles = premieredRolesResult.records.map(r => {
-      const operaId = normalizeIdComponent(r.get('opera_id'));
-      const sourceTextRaw = r.get('opera_source_text');
-      const sourceUrlRaw = r.get('opera_source_url');
-      const legacySourceRaw = r.get('legacy_source');
-      const resolvedSourceText = pickRelationshipSourceValue(sourceTextRaw, legacySourceRaw);
-      const resolvedSourceUrl = normalizeRelationshipSourceValue(sourceUrlRaw);
-      return {
-        id: buildTypedId('opera', operaId, r.get('opera_name')),
-        opera_id: operaId || null,
-        opera_name: r.get('opera_name'),
-        role: r.get('role'),
-        source: resolvedSourceText || null,
-        opera_source_text: resolvedSourceText || null,
-        opera_source_url: resolvedSourceUrl || null
-      };
-    });
+    const premieredRoles = operas;
 
     const booksResult = await session.run(
       `MATCH (s:Person {full_name: $name})-[r:AUTHORED]->(b:Book)
@@ -1731,16 +1692,11 @@ app.post('/singer/network', authenticateToken, async (req, res) => {
               r AS relationship`,
       { name: singerName }
     );
-    console.log('[debug composedOperas raw] count', composedOperasResult.records.length);
-    const composedOperasRaw = composedOperasResult.records.map((r, index) => {
+    const composedOperasRaw = composedOperasResult.records.map((r) => {
       const operaNodeValue = r.get('opera_node');
       const operaProps = operaNodeValue ? operaNodeValue.properties || {} : {};
       const relationshipValue = r.get('relationship');
       const relationshipProps = relationshipValue ? relationshipValue.properties || {} : {};
-      console.log('[debug composedOperas entry]', index, {
-        operaProps,
-        relationshipProps
-      });
 
       const directOperaValues = {
         opera_name: toPlainString(r.get('opera_name')),
@@ -2265,10 +2221,8 @@ app.post('/path/find', authenticateToken, async (req, res) => {
     const hops = Math.min(Math.max(parseInt(maxHops || 25, 10), 1), 30);
     const cached = getCachedPath(from, to, hops);
     if (cached) {
-      console.log(`[path/find] cache HIT in ${Date.now() - startedAt}ms`, { from, to, hops });
       return res.json(cached);
     }
-    console.log('[path/find] cache MISS, querying…', { from, to, hops });
 
     // Single-query resolution + shortest path to minimize round-trips
     const optimizedQuery = `
@@ -2351,7 +2305,6 @@ app.post('/path/find', authenticateToken, async (req, res) => {
 
     const result = await session.run(optimizedQuery, { from, to });
     if (result.records.length === 0) {
-      console.log('[path/find] no resolution for from/to');
       setCachedPath(from, to, hops, { error: 'No path found' }, true);
       return res.status(404).json({ error: 'No path found' });
     }
@@ -2360,7 +2313,6 @@ app.post('/path/find', authenticateToken, async (req, res) => {
     const pathNodes = record.get('pathNodes');
 
     if (!oriented || oriented.length === 0) {
-      console.log('[path/find] no path found');
       setCachedPath(from, to, hops, { error: 'No path found' }, true);
       return res.status(404).json({ error: 'No path found' });
     }
@@ -2370,6 +2322,15 @@ app.post('/path/find', authenticateToken, async (req, res) => {
     const links = [];
     const steps = [];
 
+    // Helper: pull a year value from Neo4j props that may store it directly
+    // (number) or wrapped in a Neo4j Integer-like { low } object.
+    const readYear = (raw) => {
+      if (raw == null) return null;
+      if (typeof raw === 'number') return raw;
+      if (typeof raw === 'object' && raw.low !== undefined) return raw.low;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
     const getNodeInfo = (node) => {
       const labels = node.labels || [];
       const props = node.properties || {};
@@ -2379,7 +2340,18 @@ app.post('/path/find', authenticateToken, async (req, res) => {
         return {
           id: buildTypedId('person', personId, displayName),
           name: displayName || (personId ? `Person ${personId}` : 'Unknown Person'),
-          type: 'person'
+          type: 'person',
+          // Include the same attributes regular graph endpoints return so the
+          // path visualization renders with correct voice-type colors and
+          // populated filters on first paint — no follow-up enrichment needed.
+          voice_type: props.voice_type || null,
+          birth_year: readYear(props.birth_year ?? props.birth),
+          death_year: readYear(props.death_year ?? props.death),
+          birthplace: props.birthplace || props.citizen || null,
+          spelling_source: props.spelling_source || null,
+          voice_type_source: props.voice_type_source || null,
+          dates_source: props.dates_source || null,
+          birthplace_source: props.birthplace_source || null,
         };
       }
       if (labels.includes('Opera')) {
@@ -2389,7 +2361,10 @@ app.post('/path/find', authenticateToken, async (req, res) => {
           id: buildTypedId('opera', operaId, displayName),
           name: displayName || (operaId ? `Opera ${operaId}` : 'Unknown Opera'),
           type: 'opera',
-          composer: props.composer || null
+          opera_id: operaId || null,
+          opera_name: displayName || null,
+          version: props.version || null,
+          composer: props.composer || null,
         };
       }
       if (labels.includes('Book')) {
@@ -2398,7 +2373,10 @@ app.post('/path/find', authenticateToken, async (req, res) => {
         return {
           id: buildTypedId('book', bookId, displayName),
           name: displayName || (bookId ? `Book ${bookId}` : 'Unknown Book'),
-          type: 'book'
+          type: 'book',
+          book_id: bookId || null,
+          title: displayName || null,
+          link: props.link || props.url || null,
         };
       }
       const fallbackId = normalizeIdComponent(props.id ?? props.name) || JSON.stringify(props);
@@ -2482,7 +2460,6 @@ app.post('/path/find', authenticateToken, async (req, res) => {
       steps
     };
     setCachedPath(from, to, hops, payload, false);
-    console.log(`[path/find] served in ${Date.now() - startedAt}ms`);
     res.json(payload);
   } catch (error) {
     console.error('Path find error:', error);
@@ -2633,12 +2610,10 @@ app.post('/views', authenticateToken, async (req, res) => {
     const token = crypto.randomUUID();
     const createdAt = new Date();
     const pool = await getMysqlPool();
-    await ensureSavedViewsTable(pool);
-    // Resolve or create the stable public ID for this user
-    const publicId = await getOrCreatePublicIdForEmail(req.user.email || '');
-    if (!publicId) {
-      return res.status(500).json({ error: 'Could not resolve user identifier for saving view' });
-    }
+    // Login removal (2026-05-06): saved views are user-agnostic. The
+    // user_public_id column is NOT NULL, so we write a fixed sentinel.
+    // Existing rows with real public IDs continue to load via GET /views/:token.
+    const publicId = 'PUBLIC000000';
     await pool.query(
       'INSERT INTO saved_views (user_public_id, token, label, snapshot, created_at) VALUES (?, ?, ?, ?, ?)',
       [publicId, token, label, JSON.stringify(snapshot), createdAt]
@@ -2651,33 +2626,10 @@ app.post('/views', authenticateToken, async (req, res) => {
   }
 });
 
-// List snapshots for current user
-app.get('/views', authenticateToken, async (req, res) => {
-  await new Promise(resolve => viewsReadLimiter(req, res, resolve));
-  try {
-    const pool = await getMysqlPool();
-    await ensureSavedViewsTable(pool);
-    const publicId = await getOrCreatePublicIdForEmail(req.user.email || '');
-    if (!publicId) {
-      return res.status(500).json({ error: 'Could not resolve user identifier for listing views' });
-    }
-    const [rows] = await pool.query(
-      'SELECT token, label, created_at FROM saved_views WHERE user_public_id = ? ORDER BY created_at DESC',
-      [publicId]
-    );
-    const views = rows.map((row) => ({
-      token: row.token,
-      label: row.label || '',
-      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
-    }));
-    return res.json({ views });
-  } catch (err) {
-    console.error('List views error:', err);
-    return res.status(500).json({ error: 'Failed to list views' });
-  }
-});
+// GET /views (list-by-user) removed (2026-05-06) along with login. Users
+// keep track of their own tokens via the SavedViewDialog copy flow.
 
-// Load a snapshot by token (user-scoped)
+// Load a snapshot by token (public — anyone with the token can load)
 app.get('/views/:token', authenticateToken, async (req, res) => {
   await new Promise(resolve => viewsReadLimiter(req, res, resolve));
   try {
@@ -2687,17 +2639,14 @@ app.get('/views/:token', authenticateToken, async (req, res) => {
     let data = null;
 
     const pool = await getMysqlPool();
-    await ensureSavedViewsTable(pool);
     const [rows] = await pool.query(
       'SELECT token, label, created_at, snapshot, user_public_id FROM saved_views WHERE token = ?',
       [token]
     );
     if (rows.length > 0) {
       const row = rows[0];
-      const currentPublicId = await getOrCreatePublicIdForEmail(req.user.email || '');
-      if (!currentPublicId || row.user_public_id !== currentPublicId) {
-        return res.status(403).json({ error: 'Forbidden' });
-      }
+      // Login removal (2026-05-06): ownership check dropped — views are
+      // public; anyone with the token can load.
       let snapshotPayload = row.snapshot;
       if (snapshotPayload && typeof snapshotPayload === 'string') {
         try {
@@ -2758,12 +2707,14 @@ app.use((req, res) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
+const shutdown = async () => {
   console.log('Shutting down gracefully...');
   if (neo4jKeepAliveInterval) clearInterval(neo4jKeepAliveInterval);
   await driver.close();
   process.exit(0);
-});
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 app.listen(PORT, () => {
   console.log(`💥 Server running on http://0.0.0.0:${PORT}`);

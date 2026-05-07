@@ -7,7 +7,15 @@ export default defineConfig({
   root: '.',
   build: {
     outDir: 'dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-d3': ['d3'],
+        }
+      }
+    }
   },
   server: {
     host: true,
@@ -17,14 +25,14 @@ export default defineConfig({
       '.trycloudflare.com'
     ],
     proxy: {
-      '/auth': 'http://localhost:3001',
-      '/search': 'http://localhost:3001',
-      '/singer': 'http://localhost:3001',
-      '/opera': 'http://localhost:3001',
-      '/book': 'http://localhost:3001',
-      '/subscription': 'http://localhost:3001',
-      '/health': 'http://localhost:3001',
-      '/views': 'http://localhost:3001'
+      '/auth': 'web-production-31a17.up.railway.app',
+      '/search': 'web-production-31a17.up.railway.app',
+      '/singer': 'web-production-31a17.up.railway.app',
+      '/opera': 'web-production-31a17.up.railway.app',
+      '/book': 'web-production-31a17.up.railway.app',
+      '/subscription': 'web-production-31a17.up.railway.app',
+      '/health': 'web-production-31a17.up.railway.app',
+      '/views': 'web-production-31a17.up.railway.app'
     }
   },
   resolve: {

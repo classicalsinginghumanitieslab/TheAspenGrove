@@ -1,4 +1,5 @@
 import React from 'react';
+import { VOICE_TYPES } from './constants/voiceTypes';
 
 export default function HelpCenter({ onBack }) {
   return (
@@ -74,35 +75,8 @@ export default function HelpCenter({ onBack }) {
               gap: '10px'
             }}
           >
-            {[
-              { label: 'Soprano', color: '#ae996b' },
-              { label: 'Mezzo-soprano', color: '#695531' },
-              { label: 'Contralto', color: '#443f39' },
-              { label: 'Countertenor', color: '#4e2d06' },
-              { label: 'Tenor', color: '#e4a201' },
-              { label: 'Baritone', color: '#6a7304' },
-              { label: 'Bass-baritone', color: '#a09602' },
-              { label: 'Bass', color: '#a09602' },
-              { label: 'Castrato', color: '#99c0e3' },
-              { label: 'Soprano castrato', color: '#99c0e3' },
-              { label: 'Alto castrato', color: '#99c0e3' },
-              { label: 'Haute-contre', color: '#99c0e3' },
-              { label: 'Treble, unchanged voice', color: '#99c0e3' },
-              { label: 'Composer', color: '#7c8b23' },
-              { label: 'Conductor', color: '#7c8b23' },
-              { label: 'Instrumentalist', color: '#7c8b23' },
-              { label: 'Opera director', color: '#7c8b23' },
-              { label: 'Teacher, other', color: '#7c8b23' },
-              { label: 'Vocal coach', color: '#7c8b23' },
-              { label: 'Speech Language Pathologist', color: '#7c8b23' },
-              { label: 'Librettist', color: '#7c8b23' },
-              { label: 'Critic', color: '#7c8b23' },
-              { label: 'Actor', color: '#7c8b23' },
-              { label: 'Inventor', color: '#7c8b23' },
-              { label: 'Non-singing', color: '#7c8b23' },
-              { label: 'Unknown', color: '#7c8b23' }
-            ].map((entry) => (
-              <li key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {VOICE_TYPES.map((entry) => (
+              <li key={entry.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <span
                   style={{
                     width: 16,
@@ -113,7 +87,7 @@ export default function HelpCenter({ onBack }) {
                     flex: '0 0 auto'
                   }}
                 />
-                <span style={{ color: '#1f2937' }}>{entry.label}</span>
+                <span style={{ color: '#1f2937' }}>{entry.name}</span>
               </li>
             ))}
           </ul>
@@ -169,7 +143,7 @@ export default function HelpCenter({ onBack }) {
         <section>
           <h3 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a' }}>Acknowledgements</h3>
           <p style={{ margin: 0, color: '#374151' }}>
-            This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thanks, too, to my friends at the Marriott Library. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
+            This project would not have been possible without the help of a large community that surrounds me. I am grateful for my friends and colleagues at the Universtiy of Utah who entertain and support my wild ideas. I am grateful for this faculty position which allows me to choose my research agenda and work on it throughout the summers. I am grateful to the Universtiy of Utah and the College of Fine Arts in granting me a sabbatical so that I have time to create this site and to recharge after the first 10 years of my work here. Thanks, too, to my friends at the Marriott Library. Thank you to those countless researchers whose work I have collected and distilled here. There would be no Aspen Grove without you. Thanks to Angie and Miles who have heard about my daily successes and failures for so long. Thank you to the supportive group of singing teachers whose work is of such an inspiringly high caliber. Finally a thanks to my first teacher, Mr. Wolfe. The reverence with which he spoke of his colossal teachers created the spark that became this project 35 years later.
           </p>
         </section>
       </div>
